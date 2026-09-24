@@ -1,0 +1,16 @@
+{
+  "name": "@lsa-eg/emu",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lsa-eg/config": "workspace:*",
+    "@lsa/model": "link:../../../lsa-9600sp-backend/packages/model",
+    "@lsa/points": "link:../../../lsa-9600sp-backend/packages/points",
+    "mqtt": "^5.10.1"
+  }
+}

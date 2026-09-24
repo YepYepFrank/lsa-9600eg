@@ -1,0 +1,135 @@
+/* 同事的转换程序的仿真：把本柜各传感器的数据按《EG 内部 MQTT 格式》发到本机总线。
+ *
+ *   pnpm emu                      按 run/eg.yaml 的柜，mixed 场景（与子站模拟器同一套预埋异常）
+ *   pnpm emu -- --scenario calm
+ *
+ * 数值来自 @lsa/points 的确定性发生器 —— 与子站模拟器（apps/sim）同一个函数，
+ * 所以这面柜交给 EG 端以后，子站看到的曲线与模拟器跑时一样，前后接得上。
+ *
+ * 只发「传感器本来就有的量」：负荷率 el.load_pct、质量码 q、EG 自身指标、南向统计由 eg-agent 算（开发计划 §6.1），这里不发。
+ *
+ * 控制面（默认 127.0.0.1:3190，只给开发 / 自检用）：
+ *   GET  /emu/status
+ *   POST /emu/dev/<设备名>/dead?on=1|0   这台设备停发（模拟传感器掉线）/ 恢复
+ *   POST /emu/arc?intensity=420&ms=22    热点隔室的 SAM 打一次弧光脉冲 */
+import { createServer } from 'node:http'
+import mqtt from 'mqtt'
+import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { attributesOf, PERIOD, planCabinets, telemetryOf, type CabPlan, type Ctx, type Period, type Scenario } from '@lsa/points'
+import type { CabinetSpec, SubDeviceSpec } from '@lsa/model'
+
+const argv = process.argv.slice(2)
+const arg = (name: string, d: string) => {
+  const i = argv.indexOf('--' + name)
+  return i >= 0 && argv[i + 1] ? argv[i + 1]! : d
+}
+const SCENARIO = arg('scenario', 'mixed') as Scenario
+const CTL_PORT = Number(process.env['EMU_CTL_PORT'] ?? 3190)
+const log = (...a: unknown[]) => console.log(new Date().toLocaleTimeString(), ...a)
+
+/** 同事那边不算的量，由 eg-agent 算 */
+const NOT_FROM_SENSORS = new Set(['el.load_pct'])
+
+function cabinetOf(cfg: EgConfig): CabinetSpec {
+  const sub = (d: EgConfig['devices'][number]): SubDeviceSpec => ({ name: d.name, kind: d.kind, profile: '', label: d.label, attrs: d.attrs })
+  return {
+    ...cfg.cabinet,
+    assetType: '',
+    samProfile: '',
+    eg: { name: cfg.eg.name, kind: 'eg', profile: '', label: cfg.eg.name, attrs: cfg.eg.attrs },
+    subs: cfg.devices.map(sub),
+  }
+}
+
+/** SAM 名字以 -A/-B/-C 结尾，按隔室顺序；其余设备算第 0 个隔室（同子站模拟器） */
+function roomIndexOf(s: SubDeviceSpec, cab: CabinetSpec): number {
+  if (s.kind !== 'sam') return 0
+  const i = 'ABC'.indexOf(s.name.slice(-1))
+  return i >= 0 && i < cab.rooms.length ? i : 0
+}
+
+async function main() {
+  const cfg = loadConfig()
+  const cab = cabinetOf(cfg)
+  const plan: CabPlan = planCabinets([cab], SCENARIO, Date.now()).get(cab.code)!
+  const ctxOf = new Map<string, Ctx>()
+  for (const s of cab.subs) {
+    const room = roomIndexOf(s, cab)
+    ctxOf.set(s.name, { plan, room, roomName: cab.rooms[room] ?? '', zones: false })
+  }
+  const dead = new Set<string>()
+  let sent = 0
+
+  const client = await mqtt.connectAsync(cfg.conn.bus, {
+    clientId: `emu-${cab.code}-${Math.random().toString(16).slice(2, 6)}`,
+    reconnectPeriod: 3000,
+    keepalive: 30,
+  })
+  log(`已连本机总线 ${cfg.conn.bus}，仿真 ${cab.code} 的 ${cab.subs.length} 台传感器（场景 ${SCENARIO}）`)
+
+  const pub = (dev: string, values: Record<string, unknown>, ts: number) => {
+    client.publish(BUS_TOPIC.telemetry(dev), JSON.stringify({ ts, values }), { qos: 1 })
+    sent += Object.keys(values).length
+  }
+
+  // 静态属性：上电发一次（同事的程序每次连上总线也要发）
+  const sendAttrs = () => {
+    for (const s of cab.subs) client.publish(BUS_TOPIC.attributes(s.name), JSON.stringify(attributesOf(s, ctxOf.get(s.name)!)), { qos: 1 })
+  }
+  sendAttrs()
+  client.on('connect', sendAttrs)
+
+  const tick = (period: Period) => {
+    const ts = Date.now()
+    for (const s of cab.subs) {
+      if (dead.has(s.name)) continue
+      const kv = telemetryOf(s, ctxOf.get(s.name)!, period, ts)
+      if (!kv) continue
+      for (const k of NOT_FROM_SENSORS) delete kv[k]
+      if (Object.keys(kv).length) pub(s.name, kv, ts)
+    }
+  }
+  for (const p of ['fast', 'slow', 'minute'] as const) setInterval(() => tick(p), PERIOD[p])
+
+  const arc = (intensity: number, ms: number) => {
+    const sam = cab.subs.find(s => s.kind === 'sam' && roomIndexOf(s, cab) === plan.params.hotRoom) ?? cab.subs.find(s => s.kind === 'sam')
+    if (!sam) return null
+    pub(sam.name, { 'uv.int': intensity, 'uv.pulse': JSON.stringify({ peak: intensity, ms }) }, Date.now())
+    log(`${sam.name} 弧光脉冲 强度 ${intensity} 持续 ${ms} ms`)
+    return sam.name
+  }
+  // 预埋的周期性弧光（mixed 场景的 AH05）
+  if (plan.arcEveryMs > 0) setInterval(() => arc(380 + Math.round(Math.random() * 200), 18 + Math.round(Math.random() * 25)), plan.arcEveryMs)
+
+  createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const seg = url.pathname.split('/').filter(Boolean)
+    const json = (code: number, body: unknown) => {
+      res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(body, null, 2))
+    }
+    const num = (k: string, d: number) => {
+      const n = Number(url.searchParams.get(k) ?? d)
+      return Number.isFinite(n) ? n : d
+    }
+    if (req.method === 'GET' && seg[1] === 'status') {
+      return json(200, { cabinet: cab.code, scenario: SCENARIO, connected: client.connected, sentValues: sent, dead: [...dead] })
+    }
+    if (req.method === 'POST' && seg[1] === 'dev' && seg[2] && seg[3] === 'dead') {
+      if (!cab.subs.some(s => s.name === seg[2])) return json(404, { error: `没有设备 ${seg[2]}` })
+      if (url.searchParams.get('on') === '0') dead.delete(seg[2])
+      else dead.add(seg[2])
+      log(`${seg[2]} ${dead.has(seg[2]) ? '停发（仿真掉线）' : '恢复'}`)
+      return json(200, { ok: true, dead: [...dead] })
+    }
+    if (req.method === 'POST' && seg[1] === 'arc') return json(200, { ok: true, device: arc(num('intensity', 420), num('ms', 22)) })
+    json(404, { error: '未知路径' })
+  }).listen(CTL_PORT, '127.0.0.1', () => log(`控制面 http://127.0.0.1:${CTL_PORT}/emu/status`))
+
+  setInterval(() => log(`累计发出 ${sent.toLocaleString()} 个值${dead.size ? `，停发 ${[...dead].join('、')}` : ''}`), 60_000)
+}
+
+main().catch(e => {
+  console.error('仿真器启动失败：', e instanceof Error ? e.message : e)
+  process.exit(1)
+})

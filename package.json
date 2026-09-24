@@ -1,0 +1,30 @@
+{
+  "name": "lsa9600eg",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "dev:config": "node scripts/dev-config.mjs",
+    "dev:up": "node scripts/dev.mjs up",
+    "dev:down": "node scripts/dev.mjs down",
+    "gateway:render": "pnpm -F @lsa-eg/agent gateway:render",
+    "agent": "pnpm -F @lsa-eg/agent start",
+    "video": "pnpm -F @lsa-eg/video start",
+    "emu": "pnpm -F @lsa-eg/emu start",
+    "web": "pnpm -F @lsa-eg/admin-web dev",
+    "g0:verify": "pnpm -F @lsa-eg/agent verify:g0",
+    "dev:agent": "node scripts/dev.mjs agent",
+    "dev:emu": "node scripts/dev.mjs emu",
+    "dev:video": "node scripts/dev.mjs video"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "tsx": "^4.19.2",
+    "typescript": "~5.6.3"
+  }
+}

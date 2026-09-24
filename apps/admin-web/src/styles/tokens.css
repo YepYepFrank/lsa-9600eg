@@ -1,0 +1,32 @@
+/* 与子站前端同一套 token（web/src/styles/tokens.css 拷来），两边观感一致 */
+/* ===== Design tokens ===== */
+:root{
+  --font: "HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --r:6px; --gap:12px;
+  /* status — 全系统唯一一套，不随主题改色相 */
+  --crit:#e5484d; --major:#f08c3a; --minor:#e0b020; --info:#3b8fe6; --good:#2fb36b; --off:#65757b;
+  /* 同一组颜色的 r,g,b 分量：半透明底 / 边框用 rgba(var(--crit-rgb),.12)。不用 color-mix()——它要 Chromium 111+，信创终端的浏览器内核常低于此 */
+  --crit-rgb:229,72,77; --major-rgb:240,140,58; --minor-rgb:224,176,32; --info-rgb:59,143,230; --good-rgb:47,179,107;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0c1417; --surface:#131d21; --surface2:#1a272c; --hover:#20313700;
+  --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+  --text:#e4ecee; --text2:#a3b3b8; --muted:#6d8087;
+  --brand:#22a99c; --brand-ink:#5fd2c6; --brand-bg:rgba(34,169,156,.14);
+  --brand-rgb:34,169,156; --brand-l3:#1e7f77; --brand-l5:#1a635e; --brand-l7:#184746; --brand-l8:#16393a; --brand-l9:#142b2d; --brand-d2:#1b877d;
+  --grid:#22313680; --axis:#33464c;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9a7be0; --s6:#d4639f; --s7:#8fa3b8; --s8:#93a83e;
+  --side:#0f1a1d; --shade:rgba(59,143,230,.13);
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#eef2f2; --surface:#ffffff; --surface2:#f5f8f8;
+  --line:rgba(10,30,35,.10); --line2:rgba(10,30,35,.18);
+  --text:#0f1d20; --text2:#4a5c61; --muted:#7f9095;
+  --brand:#14827a; --brand-ink:#0f6a63; --brand-bg:rgba(20,130,122,.10);
+  --brand-rgb:20,130,122; --brand-l3:#5ba8a2; --brand-l5:#8ac0bc; --brand-l7:#b8dad7; --brand-l8:#d0e6e4; --brand-l9:#e8f2f2; --brand-d2:#106862;
+  --grid:#e3e9ea; --axis:#c2cdd0;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#7d5bd0; --s6:#c9478b; --s7:#6f8196; --s8:#7d9426;
+  --side:#0f3b3a; --shade:rgba(42,120,214,.10);
+}
