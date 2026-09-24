@@ -7,17 +7,27 @@
 #   2. 另开一条 MQTT 连接用 EG 的令牌直发 v1/devices/me/telemetry，两条会话互相挤掉（TB 一台设备只留一个会话）。
 # 所以 EG 自身指标（eg.*，eg-agent 发）与 EG 级信号（sw.cb、eg.power，同事发）只能走网关自己的会话。
 #
+# 看门（G1）：子站靠 EG 设备有数据判它在线（20 s 没数据就报「通信中断」）。eg-agent 停了时传感器数据照样经本网关上送，
+# 不能让子站误报中断 —— 超过 HOLD_S 秒没收到 agent 的 EG 自身数据，这里每 KEEP_S 秒自己发一条 eg.state=degraded
+# （EG 确实降级了：质量码看护、负荷率这些 agent 算的量没了），agent 恢复后自然停止。
+#
 # 配置（lsa_self.json）：{"broker": {"host": "mosquitto", "port": 1883, "username": "", "password": ""}, "device": "EG-AH03"}
 # 载荷与其他设备相同：{"ts": 毫秒, "values": {...}} 或其数组；属性为平铺对象。
 
 import json
 import threading
-from random import randint
+from time import monotonic, time
 
 import paho.mqtt.client as paho
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
 
 from thingsboard_gateway.connectors.connector import Connector
 from thingsboard_gateway.tb_utility.tb_logger import init_logger
+
+
+HOLD_S = 12
+KEEP_S = 5
 
 
 class LsaSelfConnector(Connector):
@@ -38,23 +48,35 @@ class LsaSelfConnector(Connector):
         broker = config.get('broker', {})
         self.__host = broker.get('host', 'mosquitto')
         self.__port = int(broker.get('port', 1883))
+        # MQTT 5：要读 eg-agent 发的消息上的用户属性 src=eg-agent（同事发到同一主题的 EG 级信号不算 agent 活着）
+        # 固定 clientId + 持久会话：IoT Gateway 重启那几秒 eg-agent 发的数据由 Mosquitto 排着
         self.__client = paho.Client(paho.CallbackAPIVersion.VERSION2,
-                                    client_id=f'tb-gateway-self-{self.__device}-{randint(0, 0xffff):04x}')
+                                    client_id=f'tb-gateway-self-{self.__device}',
+                                    protocol=paho.MQTTv5)
+        self.__session_expiry = int(config.get('sessionExpiry', 86400))
         if broker.get('username'):
             self.__client.username_pw_set(broker['username'], broker.get('password') or None)
         self.__client.on_connect = self.__on_connect
         self.__client.on_disconnect = self.__on_disconnect
         self.__client.on_message = self.__on_message
         self.__client.reconnect_delay_set(1, 5)
+        self.__last_self = monotonic()
+        self.__holding = False
+        self.__stop_event = threading.Event()
+        self.__keeper = threading.Thread(target=self.__keep, name='lsa-self-keeper', daemon=True)
 
     def open(self):
         self.__stopped = False
-        self.__client.connect_async(self.__host, self.__port, keepalive=30)
+        props = Properties(PacketTypes.CONNECT)
+        props.SessionExpiryInterval = self.__session_expiry
+        self.__client.connect_async(self.__host, self.__port, keepalive=30, clean_start=False, properties=props)
         self.__client.loop_start()
+        self.__keeper.start()
         self.__log.info('%s: 订阅本机总线 %s:%s 的 %s', self.name, self.__host, self.__port, ', '.join(self.__topics))
 
     def close(self):
         self.__stopped = True
+        self.__stop_event.set()
         try:
             self.__client.disconnect()
             self.__client.loop_stop()
@@ -113,5 +135,31 @@ class LsaSelfConnector(Connector):
                     for entry in body if isinstance(body, list) else [body]:
                         if isinstance(entry, dict) and entry:
                             self.__gateway.send_telemetry(entry)
+                    if not self.__from_agent(msg):
+                        return
+                    self.__last_self = monotonic()
+                    if self.__holding:
+                        self.__holding = False
+                        self.__log.info('%s: eg-agent 恢复，停止代发', self.name)
         except Exception as e:
             self.__log.error('%s: 上送失败 %s', self.name, e)
+
+    @staticmethod
+    def __from_agent(msg):
+        props = getattr(msg, 'properties', None)
+        return ('src', 'eg-agent') in (getattr(props, 'UserProperty', None) or [])
+
+    def __keep(self):
+        while not self.__stop_event.wait(KEEP_S):
+            if monotonic() - self.__last_self < HOLD_S:
+                continue
+            try:
+                if not self.__gateway.tb_client.is_connected():
+                    continue
+                if not self.__holding:
+                    self.__holding = True
+                    self.__log.warning('%s: %s 秒没收到 eg-agent 的数据，代发 eg.state=degraded 维持 EG 在线', self.name, HOLD_S)
+                with self.__lock:
+                    self.__gateway.send_telemetry({'ts': int(time() * 1000), 'values': {'eg.state': 'degraded'}})
+            except Exception as e:
+                self.__log.error('%s: 代发失败 %s', self.name, e)

@@ -29,6 +29,11 @@ mqtt:
   edge: mqtt://edge-${code.toLowerCase()}:1883
 http:
   port: 9100
+# 开发机没有站内时钟源，对时偏差拿公网 NTP 测（现场留空 = 子站主机）
+ntp:
+  server: ntp.aliyun.com
+net:
+  uplink: ''
 camera:
   onvif: ''
   user: admin

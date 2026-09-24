@@ -15,6 +15,7 @@ services:
     restart: unless-stopped
     volumes:
       - ../mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf:ro
+      - mq-data:/mosquitto/data
     ports:
       # 宿主机上的 eg-agent、emu 连这里（EG 上是 127.0.0.1:1884）
       - '127.0.0.1:11883:1883'
@@ -37,6 +38,7 @@ services:
 
 volumes:
   gw-logs:
+  mq-data:
 
 networks:
   sp:

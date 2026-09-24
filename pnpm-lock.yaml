@@ -45,6 +45,12 @@ importers:
       '@lsa-eg/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@lsa/model':
+        specifier: link:../../../lsa-9600sp-backend/packages/model
+        version: link:../../../lsa-9600sp-backend/packages/model
+      '@lsa/points':
+        specifier: link:../../../lsa-9600sp-backend/packages/points
+        version: link:../../../lsa-9600sp-backend/packages/points
       '@nestjs/common':
         specifier: ^10.4.15
         version: 10.4.22(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)

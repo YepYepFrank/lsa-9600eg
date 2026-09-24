@@ -10,12 +10,17 @@ interface Dev {
   msgs: number
   lastTs: number | null
   ageSec: number | null
+  dead: boolean
+  q: Record<string, string>
+  south: { req: number; timeout: number; rate: number | null } | null
 }
 interface Status {
   eg: string
   cabinet: { code: string; name: string }
   station: { label: string }
   uptimeSec: number
+  rssMb: number
+  state: 'online' | 'degraded'
   bus: { url: string; connected: boolean; msgs: number }
   devices: Dev[]
   unknownDevices: string[]
@@ -42,6 +47,14 @@ function fresh(d: Dev): 'good' | 'minor' | 'off' {
   const limit = d.kind === 'camera' ? 180 : d.kind === 'pm' ? 30 : 6
   return d.ageSec <= limit ? 'good' : 'minor'
 }
+/** 质量码摘要：几个无效、几个陈旧 */
+function qText(q: Record<string, string>): string {
+  const v = Object.values(q)
+  const inv = v.filter(x => x === 'invalid').length
+  const sta = v.filter(x => x === 'stale').length
+  return [inv && `${inv} 个无效`, sta && `${sta} 个陈旧`].filter(Boolean).join('，') || '全部有效'
+}
+const qDetail = (q: Record<string, string>) => Object.entries(q).map(([k, v]) => `${k} ${v === 'invalid' ? '无效' : '陈旧'}`).join('；')
 const tsText = (ts: number | null) => (ts ? new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—')
 
 onMounted(() => {
@@ -66,8 +79,14 @@ onBeforeUnmount(() => clearInterval(timer))
           <div class="s">{{ st.bus.url }} · 已收 {{ st.bus.msgs.toLocaleString() }} 条</div>
         </div>
         <div class="card">
+          <div class="k">EG 状态</div>
+          <div class="v" :class="st.state === 'online' ? 'good' : 'minor'">{{ st.state === 'online' ? '正常' : '降级' }}</div>
+          <div class="s">{{ st.state === 'online' ? '下挂设备都有数据' : '有下挂设备整台没有数据' }}</div>
+        </div>
+        <div class="card">
           <div class="k">运行时长</div>
           <div class="v">{{ Math.floor(st.uptimeSec / 3600) }} 时 {{ Math.floor((st.uptimeSec % 3600) / 60) }} 分</div>
+          <div class="s">eg-agent 内存 {{ st.rssMb }} MB</div>
         </div>
       </section>
       <el-table :data="st.devices" size="small" class="tbl">
@@ -79,8 +98,19 @@ onBeforeUnmount(() => clearInterval(timer))
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <span class="dot" :class="fresh(row)" />{{ fresh(row) === 'good' ? '正常' : fresh(row) === 'off' ? '无数据' : `${row.ageSec} 秒未更新` }}
+            <span class="dot" :class="row.dead ? 'crit' : fresh(row)" />{{ row.dead ? '整台失效' : fresh(row) === 'good' ? '正常' : fresh(row) === 'off' ? '无数据' : `${row.ageSec} 秒未更新` }}
           </template>
+        </el-table-column>
+        <el-table-column label="质量码" width="150">
+          <template #default="{ row }">
+            <el-tooltip v-if="Object.keys(row.q).length" :content="qDetail(row.q)" placement="top">
+              <span class="minor">{{ qText(row.q) }}</span>
+            </el-tooltip>
+            <span v-else class="muted">全部有效</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="到达率（24 h）" width="130" align="right">
+          <template #default="{ row }">{{ row.south?.rate == null ? '—' : `${row.south.rate.toFixed(2)} %` }}</template>
         </el-table-column>
       </el-table>
       <el-alert v-if="st.unknownDevices.length" type="warning" :closable="false" show-icon
@@ -102,7 +132,10 @@ html, body { margin: 0; background: var(--bg); color: var(--text); font-family: 
 .card .s { color: var(--text2); font-size: 12px; }
 .good { color: var(--good); }
 .crit { color: var(--crit); }
+.minor { color: var(--minor); }
+.muted { color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--off); }
 .dot.good { background: var(--good); }
 .dot.minor { background: var(--minor); }
+.dot.crit { background: var(--crit); }
 </style>

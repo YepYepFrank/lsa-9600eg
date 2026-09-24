@@ -18,6 +18,9 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { BUS_TOPIC, type EgConfig } from '@lsa-eg/config'
 
+/** IoT Gateway 在 Mosquitto 上的会话保留多久：它停得比这久，排着的数据才会丢 */
+export const SESSION_EXPIRY_S = 86_400
+
 export interface RenderResult {
   dir: string
   files: string[]
@@ -76,9 +79,10 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
       version: 5,
       maxMessageNumberPerWorker: 10,
       maxNumberOfWorkers: 100,
-      cleanSession: true,
-      cleanStart: true,
-      sessionExpiryInterval: 0,
+      // 持久会话：IoT Gateway 重启那几秒同事发的数据由 Mosquitto 替它排着（固定 clientId + 不清会话，G1 实测）
+      cleanSession: false,
+      cleanStart: false,
+      sessionExpiryInterval: SESSION_EXPIRY_S,
       security: busSecurity,
     },
     mapping: cfg.devices.flatMap(d => [
@@ -99,6 +103,7 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
   const selfConnector = {
     name: 'LSA EG 自身',
     device: cfg.eg.name,
+    sessionExpiry: SESSION_EXPIRY_S,
     broker: {
       host: bus.hostname,
       port: Number(bus.port || 1883),

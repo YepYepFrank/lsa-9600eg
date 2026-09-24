@@ -11,6 +11,7 @@
  * 控制面（默认 127.0.0.1:3190，只给开发 / 自检用）：
  *   GET  /emu/status
  *   POST /emu/dev/<设备名>/dead?on=1|0   这台设备停发（模拟传感器掉线）/ 恢复
+ *   POST /emu/dev/<设备名>/drop?keys=a,b  这台设备只停发这几个量（模拟单个传感器坏）；keys 为空 = 恢复
  *   POST /emu/arc?intensity=420&ms=22    热点隔室的 SAM 打一次弧光脉冲 */
 import { createServer } from 'node:http'
 import mqtt from 'mqtt'
@@ -58,6 +59,7 @@ async function main() {
     ctxOf.set(s.name, { plan, room, roomName: cab.rooms[room] ?? '', zones: false })
   }
   const dead = new Set<string>()
+  const drop = new Map<string, Set<string>>()
   let sent = 0
 
   const client = await mqtt.connectAsync(cfg.conn.bus, {
@@ -72,9 +74,15 @@ async function main() {
     sent += Object.keys(values).length
   }
 
-  // 静态属性：上电发一次（同事的程序每次连上总线也要发）
+  // 静态属性：上电发一次（同事的程序每次连上总线也要发）。只发同事那边知道的（固件版本、SAM 的分框）；
+  // 隔室、端口、额定电流这些子站下发的由 eg-agent 按 eg.yaml 发
+  const FROM_SENSORS = ['fw', 'ir.boxes']
   const sendAttrs = () => {
-    for (const s of cab.subs) client.publish(BUS_TOPIC.attributes(s.name), JSON.stringify(attributesOf(s, ctxOf.get(s.name)!)), { qos: 1 })
+    for (const s of cab.subs) {
+      const all = attributesOf(s, ctxOf.get(s.name)!)
+      const mine = Object.fromEntries(FROM_SENSORS.filter(k => k in all).map(k => [k, all[k]]))
+      if (Object.keys(mine).length) client.publish(BUS_TOPIC.attributes(s.name), JSON.stringify(mine), { qos: 1 })
+    }
   }
   sendAttrs()
   client.on('connect', sendAttrs)
@@ -86,6 +94,7 @@ async function main() {
       const kv = telemetryOf(s, ctxOf.get(s.name)!, period, ts)
       if (!kv) continue
       for (const k of NOT_FROM_SENSORS) delete kv[k]
+      for (const k of drop.get(s.name) ?? []) delete kv[k]
       if (Object.keys(kv).length) pub(s.name, kv, ts)
     }
   }
@@ -113,7 +122,14 @@ async function main() {
       return Number.isFinite(n) ? n : d
     }
     if (req.method === 'GET' && seg[1] === 'status') {
-      return json(200, { cabinet: cab.code, scenario: SCENARIO, connected: client.connected, sentValues: sent, dead: [...dead] })
+      return json(200, {
+        cabinet: cab.code,
+        scenario: SCENARIO,
+        connected: client.connected,
+        sentValues: sent,
+        dead: [...dead],
+        drop: Object.fromEntries([...drop].map(([d, ks]) => [d, [...ks]])),
+      })
     }
     if (req.method === 'POST' && seg[1] === 'dev' && seg[2] && seg[3] === 'dead') {
       if (!cab.subs.some(s => s.name === seg[2])) return json(404, { error: `没有设备 ${seg[2]}` })
@@ -121,6 +137,14 @@ async function main() {
       else dead.add(seg[2])
       log(`${seg[2]} ${dead.has(seg[2]) ? '停发（仿真掉线）' : '恢复'}`)
       return json(200, { ok: true, dead: [...dead] })
+    }
+    if (req.method === 'POST' && seg[1] === 'dev' && seg[2] && seg[3] === 'drop') {
+      if (!cab.subs.some(s => s.name === seg[2])) return json(404, { error: `没有设备 ${seg[2]}` })
+      const keys = (url.searchParams.get('keys') ?? '').split(',').map(k => k.trim()).filter(Boolean)
+      if (keys.length) drop.set(seg[2], new Set(keys))
+      else drop.delete(seg[2])
+      log(`${seg[2]} ${keys.length ? `停发 ${keys.join('、')}` : '各量恢复'}`)
+      return json(200, { ok: true, drop: keys })
     }
     if (req.method === 'POST' && seg[1] === 'arc') return json(200, { ok: true, device: arc(num('intensity', 420), num('ms', 22)) })
     json(404, { error: '未知路径' })

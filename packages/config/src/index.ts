@@ -40,6 +40,10 @@ export interface LocalFile {
     edge: string
   }
   http: { port: number }
+  /** 对时：SNTP 查询的服务器，测 eg.clk_offset 用（EG 自己的对时由系统 chrony 做）。空 = 子站主机 */
+  ntp: { server: string }
+  /** 上行网口名（算 eg.up_kbps）；空 = 按默认路由自动找 */
+  net: { uplink: string }
   camera: {
     /** ONVIF 设备服务地址，如 http://192.168.10.64/onvif/device_service */
     onvif: string
@@ -63,6 +67,8 @@ export const SUPPORTED_SCHEMA = 1
 export const LOCAL_DEFAULTS: LocalFile = {
   mqtt: { bus: 'mqtt://mosquitto:1883', edge: 'mqtt://edge:1883' },
   http: { port: 80 },
+  ntp: { server: '' },
+  net: { uplink: '' },
   camera: { onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 

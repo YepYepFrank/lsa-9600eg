@@ -15,7 +15,7 @@ const cmd = process.argv[2]
 const shellFor = bin => process.platform === 'win32' && bin === 'pnpm'
 
 /** 宿主机进程连容器里的总线；管理页端口 9100（EG 上是 80） */
-const HOST_ENV = { ...process.env, EG_BUS_MQTT: 'mqtt://127.0.0.1:11883', EG_HTTP_PORT: '9100' }
+const HOST_ENV = { ...process.env, EG_BUS_MQTT: 'mqtt://127.0.0.1:11883', EG_HTTP_PORT: '9100', EG_DEBUG: '1' }
 
 function run(bin, args, env = process.env) {
   const r = spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit', env, shell: shellFor(bin) })

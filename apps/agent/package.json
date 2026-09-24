@@ -7,10 +7,13 @@
     "start": "node --import @swc-node/register/esm-register src/main.ts",
     "gateway:render": "node --import @swc-node/register/esm-register src/gateway/cli.ts",
     "typecheck": "tsc --noEmit",
-    "verify:g0": "node --import @swc-node/register/esm-register src/verify-g0.ts"
+    "verify:g0": "node --import @swc-node/register/esm-register src/verify-g0.ts",
+    "verify:g1": "node --import @swc-node/register/esm-register src/verify-g1.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",
+    "@lsa/model": "link:../../../lsa-9600sp-backend/packages/model",
+    "@lsa/points": "link:../../../lsa-9600sp-backend/packages/points",
     "@nestjs/common": "^10.4.15",
     "@nestjs/core": "^10.4.15",
     "@nestjs/platform-express": "^10.4.15",

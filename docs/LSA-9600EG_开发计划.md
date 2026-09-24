@@ -149,7 +149,7 @@ EG 页面只在 LAN2 上监听；LAN1（摄像机网）不开管理页。站内�
 | # | 内容 | 验收 | 估算 |
 |---|---|---|---|
 | **G0 基座** ✅ | 建库；NestJS agent / eg-video、Vue 管理页骨架；`eg.yaml` / `local.yaml`；后端库抽 `packages/points`、模拟器加 `--except`、加 `pnpm eg:config`；**开发用 EG 样机**：Mosquitto + IoT Gateway 容器接本机 `lsa-edge-ah03`，仿真器扮同事程序，模拟器让出 AH03 | `g0:verify` 24 项、`sim:verify` 22 项、`e:verify` 18 项全过（2026-09-24） | 2 d |
-| **G1 数据链路** | 《EG 内部 MQTT 格式》；IoT Gateway 映射生成；派生量与质量码看护；EG 自身指标与南向统计 | 子站网关页 AH03 逐点有值、质量有效、设备时间与到达时间差 < 3 s、周期符合规范 §6（写成自检）；仿真器停某台设备 → `stale` → `invalid` + degraded，恢复后清；Edge / IoT Gateway / Mosquitto 各重启一次数据自动恢复；断 Edge 上行 2 min 子站趋势无缺口；实测 IoT Gateway 与 agent 内存 | 4 d |
+| **G1 数据链路** ✅ | 《EG 内部 MQTT 格式》；IoT Gateway 映射生成；派生量与质量码看护；EG 自身指标与南向统计；设备属性；持久会话不丢数 | `g1:verify -- --edge` 39 项全过（逐点核负荷率、单量 / 整台停发、agent 停发维持在线、重启 Mosquitto / IoT Gateway / Edge 无断档、断上行 2 min 补齐）；eg-agent 147 MB、IoT Gateway 37 MB（2026-09-24） | 4 d |
 | **G2 本地服务与访问** | 本地 API（实时数据、设备与映射、诊断、各组件状态、Edge 本地排队数、日志、重启组件）；本地账号 + 子站票据单点登录；子站扩展服务签票据与控制调用；子站 Nginx `/eg/<柜号>/` 反代；前端网关页加入口 | `pnpm g2:verify`；从子站页面点进 AH03 管理页无需再登录、权限按子站角色；笔记本直连用本地账号；两条路的操作都有审计 | 4 d |
 | **G3 本地管理页** | 概览、实时数据、设备与映射、视频、诊断、日志、系统 | 无头浏览器截图逐张看（直连与经子站两种），进 `docs/验收截图/`；评审 | 4 d |
 | **G4 视频** | EG 与子站 mediamtx 两级按需拉；配置按 `eg.yaml` / `model.yaml` 生成；RTSP 测试源扮摄像机 | 子站监视墙播 AH03 各路（WebRTC 延迟 < 1 s，关 UDP 退 HLS）；**无人看时 EG 上行与摄像机侧都无视频流量**；看完 10 s 内断开 | 3 d |
