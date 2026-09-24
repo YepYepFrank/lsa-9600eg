@@ -44,6 +44,10 @@ export interface LocalFile {
   ntp: { server: string }
   /** 上行网口名（算 eg.up_kbps）；空 = 按默认路由自动找 */
   net: { uplink: string }
+  /** 本机容器：看状态、取日志、重启（只开放 Edge 与 IoT Gateway 的重启）。api：unix:///var/run/docker.sock、npipe:////./pipe/docker_engine、http://docker-proxy:2375 */
+  docker: { api: string; containers: { edge: string; gateway: string; mosquitto: string; mediamtx: string } }
+  /** Edge 本地库（只读）：本地排队条数、最近上送进度 */
+  edgeDb: string
   camera: {
     /** ONVIF 设备服务地址，如 http://192.168.10.64/onvif/device_service */
     onvif: string
@@ -69,6 +73,11 @@ export const LOCAL_DEFAULTS: LocalFile = {
   http: { port: 80 },
   ntp: { server: '' },
   net: { uplink: '' },
+  docker: {
+    api: 'unix:///var/run/docker.sock',
+    containers: { edge: 'lsa-eg-edge', gateway: 'lsa-eg-gateway', mosquitto: 'lsa-eg-mosquitto', mediamtx: 'lsa-eg-mediamtx' },
+  },
+  edgeDb: 'postgres://postgres@postgres:5432/tb_edge',
   camera: { onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 

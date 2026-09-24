@@ -71,6 +71,21 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
     for (const t of this.timers) clearInterval(t)
   }
 
+  /** 到子站的探测：最近一次时延、近 1 分钟失败率 */
+  uplinkProbe(): { host: string; port: number; latMs: number | null; lossPct: number | null } {
+    const ok = this.probes.filter((x): x is number => x !== null)
+    return {
+      host: this.cfg.sp.host,
+      port: PROBE_PORT,
+      latMs: this.probes.length && this.probes.at(-1) !== null ? Math.round(this.probes.at(-1)!) : null,
+      lossPct: this.probes.length ? round((1 - ok.length / this.probes.length) * 100) : null,
+    }
+  }
+
+  clock(): { server: string; offsetMs: number | null; measuredAt: number | null } {
+    return { server: this.ntpServer(), offsetMs: this.clkOffset, measuredAt: this.clkAt || null }
+  }
+
   ntpServer(): string {
     return this.cfg.local.ntp.server || this.cfg.sp.host
   }

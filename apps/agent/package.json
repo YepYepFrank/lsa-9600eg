@@ -8,7 +8,8 @@
     "gateway:render": "node --import @swc-node/register/esm-register src/gateway/cli.ts",
     "typecheck": "tsc --noEmit",
     "verify:g0": "node --import @swc-node/register/esm-register src/verify-g0.ts",
-    "verify:g1": "node --import @swc-node/register/esm-register src/verify-g1.ts"
+    "verify:g1": "node --import @swc-node/register/esm-register src/verify-g1.ts",
+    "verify:g2": "node --import @swc-node/register/esm-register src/verify-g2.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",
@@ -21,12 +22,14 @@
     "class-validator": "^0.14.1",
     "express": "^4.21.2",
     "mqtt": "^5.10.1",
+    "pg": "^8.13.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
   "devDependencies": {
     "@swc-node/register": "^1.10.9",
     "@swc/core": "^1.10.1",
-    "@types/express": "^5.0.0"
+    "@types/express": "^5.0.0",
+    "@types/pg": "^8.11.10"
   }
 }

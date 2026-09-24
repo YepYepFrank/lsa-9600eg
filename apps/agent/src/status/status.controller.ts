@@ -1,6 +1,6 @@
 /* GET /api/status —— 本机概况：柜、设备清单与各设备的数据新鲜度 / 质量码 / 南向统计、本机总线、进程内存。
  * GET /api/live/:device —— 某设备各 key 的最新值。
- * Edge / IoT Gateway 状态、诊断、配置在 G2。 */
+ * 都要登录（只读角色即可）；组件、诊断、配置、审计在 components / config 控制器。 */
 import { BadRequestException, Controller, ForbiddenException, Get, HttpCode, Inject, NotFoundException, Param, Post, Query } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
@@ -9,6 +9,7 @@ import { DeriveService } from '../derive/derive.service.js'
 import { QualityService } from '../quality/quality.service.js'
 import { SelfService } from '../self/self.service.js'
 import { SouthService } from '../south/south.service.js'
+import { Public } from '../auth/guard.js'
 
 const STARTED = Date.now()
 
@@ -70,6 +71,7 @@ export class StatusController {
   }
 
   /** 自检用：暂停发 EG 自身指标 s 秒，模拟 agent 停掉（看 IoT Gateway 的自定义连接器能否维持 EG 在线）。只在 EG_DEBUG=1 时开放 */
+  @Public()
   @Post('_debug/self-pause')
   @HttpCode(200)
   pauseSelf(@Query('s') s: string) {

@@ -1,5 +1,7 @@
 /* 自检共用：计数、子站 TB 的只读查询、控制面调用、docker。 */
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 export const env = (k: string, d: string) => process.env[k] ?? d
 export const TB = env('TB_URL', 'http://localhost:8080')
@@ -127,4 +129,37 @@ export function maxGap(points: Point[]): number {
   let g = 0
   for (let i = 1; i < points.length; i++) g = Math.max(g, points[i]!.ts - points[i - 1]!.ts)
   return g
+}
+
+/* ---------- eg-agent 的本地 API（要登录） ---------- */
+
+let agentToken: string | null = null
+
+/** 本地维护账号的口令：EG_ADMIN_PASSWORD，或首次启动生成的 initial-password.txt */
+export function localPassword(dir: string): string {
+  if (process.env['EG_ADMIN_PASSWORD']) return process.env['EG_ADMIN_PASSWORD']
+  try {
+    return readFileSync(resolve(dir, 'initial-password.txt'), 'utf8').trim()
+  } catch {
+    throw new Error('不知道本地维护账号的口令：设 EG_ADMIN_PASSWORD，或保留 run/initial-password.txt')
+  }
+}
+
+export async function agentLogin(dir: string): Promise<string> {
+  const r = await fetch(`${AGENT}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ user: 'maint', password: localPassword(dir) }),
+  })
+  if (!r.ok) throw new Error(`eg-agent 登录失败：${r.status} ${await r.text()}`)
+  agentToken = ((await r.json()) as { token: string }).token
+  return agentToken
+}
+
+/** 带本地会话调 eg-agent；没登录先登录 */
+export async function agent<T>(dir: string, path: string, init: RequestInit = {}): Promise<T> {
+  if (!agentToken) await agentLogin(dir)
+  const r = await fetch(`${AGENT}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(init.headers ?? {}), Authorization: `Bearer ${agentToken}` } })
+  if (!r.ok) throw new Error(`${path} → ${r.status} ${(await r.text()).slice(0, 200)}`)
+  return (await r.json()) as T
 }

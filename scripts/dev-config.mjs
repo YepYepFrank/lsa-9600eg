@@ -5,7 +5,7 @@
 //
 // eg.yaml 从子站后端仓库拷（那边先 pnpm eg:config -- --only <柜号>）；
 // local.yaml 写开发环境的地址：总线是本仓库 compose 里的 mosquitto，Edge 是子站开发环境里本柜的 Edge 容器。
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -22,6 +22,15 @@ const run = resolve(ROOT, 'run')
 mkdirSync(run, { recursive: true })
 copyFileSync(src, resolve(run, 'eg.yaml'))
 
+// 开发环境里各柜 Edge 的本地库建在子站的 PostgreSQL 里（tb_edge_<柜号>），口令在后端 docker/.env
+const pgPass = (() => {
+  try {
+    return /^PG_PASSWORD=(.*)$/m.exec(readFileSync(resolve(BACKEND, 'docker/.env'), 'utf8'))?.[1]?.trim() ?? ''
+  } catch {
+    return ''
+  }
+})()
+
 const local = `# 开发机的 EG 本地配置（scripts/dev-config.mjs 生成）。地址是容器网络里的名字，给 IoT Gateway 用；
 # 宿主机上的 eg-agent、emu 由 scripts/dev.mjs 用环境变量改连 127.0.0.1:11883
 mqtt:
@@ -34,6 +43,14 @@ ntp:
   server: ntp.aliyun.com
 net:
   uplink: ''
+docker:
+  api: npipe:////./pipe/docker_engine
+  containers:
+    edge: lsa-edge-${code.toLowerCase()}
+    gateway: lsa-eg-gateway
+    mosquitto: lsa-eg-mosquitto
+    mediamtx: lsa-eg-mediamtx
+edgeDb: postgres://postgres:${encodeURIComponent(pgPass)}@127.0.0.1:5432/tb_edge_${code.toLowerCase()}
 camera:
   onvif: ''
   user: admin

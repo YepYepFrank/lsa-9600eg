@@ -35,6 +35,16 @@ export interface Entry {
   values: Record<string, unknown>
 }
 
+/** 总线上某台设备最近的原始消息（本地页「原始消息」给同事排错用） */
+export interface RawMessage {
+  at: number
+  topic: string
+  own: boolean
+  payload: string
+}
+const RAW_KEEP = 20
+const RAW_MAX_CHARS = 4000
+
 export type TelemetryListener = (device: string, entries: Entry[], own: boolean) => void
 
 @Injectable()
@@ -44,6 +54,7 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
   private readonly listeners: TelemetryListener[] = []
   private readonly connectListeners: (() => void)[] = []
   readonly live = new Map<string, DeviceLive>()
+  readonly raw = new Map<string, RawMessage[]>()
   msgs = 0
   /** 不在 eg.yaml 设备清单里的设备名（同事发错名字时本地页要能看出来） */
   readonly unknown = new Map<string, number>()
@@ -85,6 +96,10 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
       if (!t) return
       const own = packet.properties?.userProperties?.['src'] === SELF_SRC
       if (!own) this.msgs++
+      const ring = this.raw.get(t.device) ?? []
+      ring.push({ at: Date.now(), topic, own, payload: buf.toString('utf8').slice(0, RAW_MAX_CHARS) })
+      if (ring.length > RAW_KEEP) ring.shift()
+      this.raw.set(t.device, ring)
       if (!known.has(t.device)) {
         this.unknown.set(t.device, Date.now())
         return

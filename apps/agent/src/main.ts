@@ -15,13 +15,18 @@ import { repoRoot } from '@lsa-eg/config'
 import { AppModule } from './app.module.js'
 import { egConfig } from './config.js'
 import { renderGatewayConfig } from './gateway/render.js'
+import { RingLogger } from './logging/ring-logger.js'
 
 async function bootstrap() {
   const cfg = egConfig()
   // IoT Gateway 的配置每次启动按 eg.yaml / local.yaml 重新生成，保证只有一个来源
   const gw = renderGatewayConfig(cfg)
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['log', 'warn', 'error'] })
+  const logger = new RingLogger()
+  logger.setLogLevels(['log', 'warn', 'error'])
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger })
+  // 经子站反代进来时取真实客户端地址（审计用）
+  app.set('trust proxy', true)
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }))
 
   // 本地管理页：构建产物由 agent 直出（EG_WEB_DIR 或仓库里 apps/admin-web/dist）

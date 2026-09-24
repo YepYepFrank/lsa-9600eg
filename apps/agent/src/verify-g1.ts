@@ -10,7 +10,7 @@ import { resolve } from 'node:path'
 import mqtt from 'mqtt'
 import { pointsOf } from '@lsa/points'
 import { BUS_TOPIC, loadConfig, repoRoot } from '@lsa-eg/config'
-import { AGENT, BUS, check, containerMemMb, docker, done, EMU, getJson, maxGap, post, SIM, sleep, Tb, until, type Point } from './verify/lib.js'
+import { agent, AGENT, BUS, check, containerMemMb, docker, done, EMU, maxGap, post, SIM, sleep, Tb, until, type Point } from './verify/lib.js'
 
 const argv = process.argv.slice(2)
 const FAST = argv.includes('--fast')
@@ -30,7 +30,8 @@ interface Status {
   state: string
   devices: Dev[]
 }
-const status = () => getJson<Status>(`${AGENT}/api/status`)
+let cfgDir = ''
+const status = () => agent<Status>(cfgDir, '/api/status')
 const parseQ = (v: string | undefined) => {
   try {
     return (v ? JSON.parse(v) : null) as Record<string, string> | null
@@ -42,6 +43,7 @@ const parseQ = (v: string | undefined) => {
 async function main() {
   console.log(`G1 自检：数据链路${FAST ? '（--fast）' : ''}\n`)
   const cfg = loadConfig()
+  cfgDir = cfg.dir
   const tb = await new Tb().login()
   const sam = cfg.devices.filter(d => d.kind === 'sam')
   const samA = sam[0]!.name

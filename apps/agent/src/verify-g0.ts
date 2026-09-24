@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import mqtt from 'mqtt'
 import { BUS_TOPIC, loadConfig } from '@lsa-eg/config'
+import { agent } from './verify/lib.js'
 
 const env = (k: string, d: string) => process.env[k] ?? d
 const TB = env('TB_URL', 'http://localhost:8080')
@@ -100,9 +101,10 @@ async function main() {
   check(/Import LsaSelfConnector/.test(gwLog), 'IoT Gateway 加载了 EG 自身连接器（LsaSelfConnector）')
 
   // 3. eg-agent
-  const st = await fetch(`${AGENT}/api/status`)
-    .then(r => r.json() as Promise<{ bus: { connected: boolean }; devices: { name: string; kind: string; ageSec: number | null; keys: number }[]; unknownDevices: string[] }>)
-    .catch(() => null)
+  const st = await agent<{ bus: { connected: boolean }; devices: { name: string; kind: string; ageSec: number | null; keys: number }[]; unknownDevices: string[] }>(
+    cfg.dir,
+    '/api/status',
+  ).catch(() => null)
   check(!!st, 'eg-agent 可达', AGENT)
   if (st) {
     check(st.bus.connected, 'eg-agent 已连本机总线')
