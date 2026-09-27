@@ -41,20 +41,41 @@ export interface Point {
   value: string
 }
 
-/** 子站 TB 的只读客户端（租户管理员） */
+/** TB 的只读客户端：默认子站 TB 的租户管理员；传参可连 EG 本地 TB（I 阶段） */
 export class Tb {
   private h: Record<string, string> = {}
   private ids = new Map<string, string>()
 
+  constructor(
+    readonly base = TB,
+    private readonly user = env('TB_TENANT_USER', 'admin@lsa9600sp.local'),
+    private readonly password = env('TB_TENANT_PASSWORD', 'lsa9600sp'),
+  ) {}
+
   async login(): Promise<this> {
-    const r = await fetch(`${TB}/api/auth/login`, {
+    const r = await fetch(`${this.base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: env('TB_TENANT_USER', 'admin@lsa9600sp.local'), password: env('TB_TENANT_PASSWORD', 'lsa9600sp') }),
+      body: JSON.stringify({ username: this.user, password: this.password }),
     })
+    if (!r.ok) throw new Error(`${this.base} 登录 ${this.user} 失败：${r.status}`)
     const { token } = (await r.json()) as { token: string }
     this.h = { 'X-Authorization': `Bearer ${token}` }
     return this
+  }
+
+  async get<T>(path: string): Promise<T> {
+    const r = await fetch(`${this.base}${path}`, { headers: this.h })
+    if (!r.ok) throw new Error(`${path} → ${r.status}`)
+    return (await r.json()) as T
+  }
+
+  /** 某设备最近的告警（新的在前） */
+  async alarms(device: string, limit = 20): Promise<{ id: { id: string }; type: string; severity: string; status: string; createdTime: number; clearTs?: number; cleared?: boolean }[]> {
+    const r = await this.get<{ data: never[] }>(
+      `/api/alarm/DEVICE/${await this.id(device)}?searchStatus=ANY&pageSize=${limit}&page=0&sortProperty=createdTime&sortOrder=DESC`,
+    )
+    return r.data
   }
 
   get headers(): Record<string, string> {
@@ -64,7 +85,7 @@ export class Tb {
   async id(device: string): Promise<string> {
     let id = this.ids.get(device)
     if (!id) {
-      const d = (await (await fetch(`${TB}/api/tenant/devices?deviceName=${encodeURIComponent(device)}`, { headers: this.h })).json()) as { id: { id: string } }
+      const d = (await (await fetch(`${this.base}/api/tenant/devices?deviceName=${encodeURIComponent(device)}`, { headers: this.h })).json()) as { id: { id: string } }
       this.ids.set(device, (id = d.id.id))
     }
     return id
@@ -72,7 +93,7 @@ export class Tb {
 
   async latest(device: string, keys: string[]): Promise<Record<string, Point | undefined>> {
     const r = (await (
-      await fetch(`${TB}/api/plugins/telemetry/DEVICE/${await this.id(device)}/values/timeseries?keys=${keys.join(',')}`, { headers: this.h })
+      await fetch(`${this.base}/api/plugins/telemetry/DEVICE/${await this.id(device)}/values/timeseries?keys=${keys.join(',')}`, { headers: this.h })
     ).json()) as Record<string, Point[]>
     return Object.fromEntries(keys.map(k => [k, r[k]?.[0]]))
   }
@@ -80,7 +101,7 @@ export class Tb {
   async history(device: string, key: string, startTs: number, endTs: number): Promise<Point[]> {
     const r = (await (
       await fetch(
-        `${TB}/api/plugins/telemetry/DEVICE/${await this.id(device)}/values/timeseries?keys=${key}&startTs=${startTs}&endTs=${endTs}&limit=50000&orderBy=ASC`,
+        `${this.base}/api/plugins/telemetry/DEVICE/${await this.id(device)}/values/timeseries?keys=${key}&startTs=${startTs}&endTs=${endTs}&limit=50000&orderBy=ASC`,
         { headers: this.h },
       )
     ).json()) as Record<string, Point[]>
@@ -89,7 +110,7 @@ export class Tb {
 
   async attr(device: string, scope: 'CLIENT_SCOPE' | 'SERVER_SCOPE', key: string): Promise<unknown> {
     const r = (await (
-      await fetch(`${TB}/api/plugins/telemetry/DEVICE/${await this.id(device)}/values/attributes/${scope}?keys=${key}`, { headers: this.h })
+      await fetch(`${this.base}/api/plugins/telemetry/DEVICE/${await this.id(device)}/values/attributes/${scope}?keys=${key}`, { headers: this.h })
     ).json()) as { key: string; value: unknown }[]
     return r.find(a => a.key === key)?.value
   }

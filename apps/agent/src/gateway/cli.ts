@@ -4,5 +4,5 @@ import { renderGatewayConfig } from './render.js'
 
 const cfg = loadConfig()
 const r = renderGatewayConfig(cfg)
-console.log(`${cfg.eg.name} 的 IoT Gateway 配置 → ${r.dir}（${r.files.join('、')}）`)
-console.log(`  连本机 Edge ${cfg.local.mqtt.edge}，订阅本机总线 ${cfg.local.mqtt.bus}`)
+console.log(`${cfg.eg.name} 的 IoT Gateway 配置 → ${r.dir}（${r.changed.length ? `改了 ${r.changed.join("、")}` : "没有变化，没重写"}）`)
+console.log(`  连本地 TB ${cfg.local.mqtt.tb}，订阅本机总线 ${cfg.local.mqtt.bus}`)

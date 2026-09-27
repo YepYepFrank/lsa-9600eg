@@ -31,7 +31,7 @@ export interface Status {
 }
 
 export interface Comp {
-  key: 'agent' | 'edge' | 'gateway' | 'mosquitto' | 'mediamtx'
+  key: 'agent' | 'tb' | 'gateway' | 'mosquitto' | 'mediamtx'
   label: string
   container: string | null
   state: string
@@ -48,8 +48,15 @@ export interface Diag {
   bus: { url: string; connected: boolean }
   sp: { host: string; port: number; latMs: number | null; lossPct: number | null }
   clock: { server: string; offsetMs: number | null; measuredAt: number | null }
-  edge: { tsKv?: number; events?: number; edgeVersion?: string | null; lastAdvanceAt?: number | null; ratePerSec?: number | null; error?: string }
-  uplink: { state: 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'unknown'; text: string }
+  /** 上送子站（I 阶段：eg-agent 的 outbox；I1 还没接上时 state = none） */
+  uplink: {
+    state: 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'none' | 'unknown'
+    text: string
+    depth: number | null
+    oldestUnsent: number | null
+    lastAckAt: number | null
+    target: string | null
+  }
   host: { uptimeSec: number; memUsedPct: number; disk: { usedPct: number; freeGb: number } | null }
   devices: { dead: string[]; unknown: string[] }
 }
@@ -100,14 +107,16 @@ export interface Config {
     cabinet: { code: string; name: string; group: string; kind: string; rated: number; riseLimit: number; rooms: string[]; index: number }
     eg: { name: string; token: string; attrs: Record<string, unknown> }
     devices: DeviceConf[]
+    stationUplink: { mqtt: string | null; token: string }
+    tb: { user: string; password: string } | null
   }
   local: {
-    mqtt: { bus: string; edge: string }
+    mqtt: { bus: string; tb: string }
+    tb: { http: string }
     http: { port: number }
     ntp: { server: string }
     net: { uplink: string }
     docker: { api: string; containers: Record<string, string> }
-    edgeDb: string
     camera: { onvif: string; user: string; password: string; rtsp: { visible: string; thermal: string; visibleSub: string; thermalSub: string } }
   }
 }

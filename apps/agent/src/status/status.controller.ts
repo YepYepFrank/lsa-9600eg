@@ -11,6 +11,7 @@ import { SelfService } from '../self/self.service.js'
 import { SouthService } from '../south/south.service.js'
 import { Public } from '../auth/guard.js'
 import { AGENT_VERSION } from '../attrs/attrs.service.js'
+import { UplinkService } from '../uplink/uplink.service.js'
 
 const STARTED = Date.now()
 
@@ -23,6 +24,7 @@ export class StatusController {
     private readonly south: SouthService,
     private readonly self: SelfService,
     private readonly derive: DeriveService,
+    private readonly uplink: UplinkService,
   ) {}
 
   @Get('status')
@@ -32,7 +34,7 @@ export class StatusController {
     return {
       eg: this.cfg.eg.name,
       cabinet: this.cfg.cabinet,
-      station: this.cfg.station,
+      station: { name: this.cfg.station.name, label: this.cfg.station.label },
       sp: this.cfg.sp,
       version: AGENT_VERSION,
       uptimeSec: Math.round((now - STARTED) / 1000),
@@ -73,6 +75,16 @@ export class StatusController {
   }
 
   /** 自检用：暂停发 EG 自身指标 s 秒，模拟 agent 停掉（看 IoT Gateway 的自定义连接器能否维持 EG 在线）。只在 EG_DEBUG=1 时开放 */
+  /** 自检用：断开 / 恢复到子站的上送（模拟断网，I2）。只在 EG_DEBUG=1 时开放 */
+  @Public()
+  @Post('_debug/uplink')
+  @HttpCode(200)
+  uplinkDebug(@Query('down') down: string) {
+    if (process.env['EG_DEBUG'] !== '1') throw new ForbiddenException('只在调试模式（EG_DEBUG=1）开放')
+    this.uplink.setForcedDown(down === '1')
+    return this.uplink.status()
+  }
+
   @Public()
   @Post('_debug/self-pause')
   @HttpCode(200)

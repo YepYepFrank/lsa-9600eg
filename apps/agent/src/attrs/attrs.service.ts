@@ -21,7 +21,8 @@ export class AttrsService implements OnModuleInit {
   onModuleInit(): void {
     this.bus.onConnect(() => {
       for (const d of this.cfg.devices) this.bus.publishAttributes(d.name, d.attrs)
-      this.bus.publishAttributes(this.cfg.eg.name, { ...this.cfg.eg.attrs, agent: AGENT_VERSION })
+      // egAgentVersion：§8.1 约定的名字；agent 是 G1 时起的旧名，留着给本地页
+      this.bus.publishAttributes(this.cfg.eg.name, { ...this.cfg.eg.attrs, agent: AGENT_VERSION, egAgentVersion: AGENT_VERSION })
     })
   }
 }

@@ -87,7 +87,9 @@ onMounted(async () => {
             <dt>访问令牌</dt><dd>{{ cfg.eg.eg.token }}</dd>
             <dt>子站配置生成于</dt><dd>{{ dt(Date.parse(cfg.eg.generatedAt)) }}</dd>
             <dt>eg-agent</dt><dd>{{ store.status?.version }}</dd>
-            <dt>TB Edge</dt><dd class="mono">{{ comp('edge')?.image ?? '—' }}（{{ store.diag?.edge.edgeVersion ?? '—' }}）</dd>
+            <dt>EG 本地 TB</dt><dd class="mono">{{ comp('tb')?.image ?? '—' }}</dd>
+            <dt>本地 TB 账号</dt><dd>{{ cfg.eg.tb?.user ?? '—（provision:eg 还没建）' }}</dd>
+            <dt>上送子站</dt><dd class="mono">{{ cfg.eg.stationUplink.mqtt ?? '—' }}（令牌{{ cfg.eg.stationUplink.token || '未设置' }}）</dd>
             <dt>TB IoT Gateway</dt><dd class="mono">{{ comp('gateway')?.image ?? '—' }}</dd>
             <dt>本机总线</dt><dd class="mono">{{ comp('mosquitto')?.image ?? '—' }}</dd>
           </dl>
@@ -95,7 +97,7 @@ onMounted(async () => {
       </div>
 
       <div class="panel" style="margin-top: 0">
-        <div class="panel-h">本地设置<span class="t2">设备清单、额定电流在子站改；总线与 Edge 地址、容器名要到 EG 上改 local.yaml</span></div>
+        <div class="panel-h">本地设置<span class="t2">设备清单、额定电流在子站改；总线与本地 TB 地址、容器名要到 EG 上改 local.yaml</span></div>
         <div class="panel-b">
           <el-form label-width="110px" size="small" :disabled="!canMaint" @submit.prevent="saveLocal">
             <el-form-item label="对时服务器"><el-input v-model="local.ntpServer" :placeholder="`留空 = 子站主机 ${cfg?.eg.sp.host ?? ''}`" /><div class="note">只用来测对时偏差；EG 自己的对时由系统 chrony 做</div></el-form-item>

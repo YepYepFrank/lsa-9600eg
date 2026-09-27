@@ -6,7 +6,7 @@ import { api, session } from '../session'
 const COMPS = [
   ['agent', 'eg-agent'],
   ['gateway', 'TB IoT Gateway'],
-  ['edge', 'TB Edge'],
+  ['tb', 'EG 本地 TB'],
   ['mosquitto', 'Mosquitto'],
 ] as const
 const key = ref<(typeof COMPS)[number][0]>('agent')

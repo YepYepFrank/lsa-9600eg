@@ -27,7 +27,8 @@ const UP: Record<string, [string, string]> = {
   backfill: ['info', '补传中'],
   paused: ['minor', '上送暂停'],
   offline: ['crit', '连不上子站'],
-  stuck: ['crit', 'Edge 可能卡住'],
+  stuck: ['crit', '上送卡住'],
+  none: ['', '上送未接'],
   unknown: ['minor', '上送状态未知'],
 }
 const up = computed(() => UP[store.diag?.uplink.state ?? 'unknown']!)
@@ -35,8 +36,10 @@ const up = computed(() => UP[store.diag?.uplink.state ?? 'unknown']!)
 const diagIssues = computed(() => {
   const d = store.diag
   if (!d) return 0
-  return [d.uplink.state !== 'ok', !d.bus.connected, (d.sp.lossPct ?? 0) >= 50, Math.abs(d.clock.offsetMs ?? 0) > 1000, d.devices.dead.length > 0, d.devices.unknown.length > 0].filter(Boolean).length
+  return [!['ok', 'none'].includes(d.uplink.state), !d.bus.connected, (d.sp.lossPct ?? 0) >= 50, Math.abs(d.clock.offsetMs ?? 0) > 1000, d.devices.dead.length > 0, d.devices.unknown.length > 0].filter(Boolean).length
 })
+/** 本地 TB 版本：取镜像标签（thingsboard/tb-node:4.2.2.5 → 4.2.2.5） */
+const tbVer = computed(() => store.comps.find(c => c.key === 'tb')?.image?.split(':')[1] ?? '')
 const devIssues = computed(() => store.status?.devices.filter(d => d.dead || Object.keys(d.q).length).length ?? 0)
 const clockText = computed(() => new Date(now.value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))
 
@@ -61,7 +64,7 @@ async function bye() {
         </button>
       </nav>
       <div class="side-foot">
-        <template v-if="store.status">eg-agent {{ store.status.version }}<br />{{ store.diag?.edge.edgeVersion ? 'TB Edge ' + store.diag.edge.edgeVersion.replace(/^V_/, '').replace(/_/g, '.') : '' }}</template>
+        <template v-if="store.status">eg-agent {{ store.status.version }}<br />{{ tbVer ? '本地 TB ' + tbVer : '' }}</template>
       </div>
     </aside>
     <div class="main">

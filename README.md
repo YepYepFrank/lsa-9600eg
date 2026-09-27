@@ -21,19 +21,25 @@ LSA-9600SP 态势感知系统的边缘网关（每面柜一台，硬件拟用新
 
 ## 开发机上跑起来
 
-前提：子站后端仓库在 `../lsa-9600sp-backend`，其开发环境（TB、各柜 Edge 容器）在跑。
+前提：子站后端仓库在 `../lsa-9600sp-backend`，其开发环境（子站 TB、扩展服务、模拟器）在跑。
+I 阶段起 EG 跑独立 ThingsBoard CE（后端库 `docs/EG独立TB调整方案.md`），样机的本地 TB 在本仓库 compose 里（127.0.0.1:18080）。
 
 ```bash
-# 子站后端仓库：生成这面柜的 eg.yaml，模拟器让出这面柜
-pnpm eg:config -- --only AH03 --sp host.docker.internal
+# 本仓库：起样机（首次自动给本地 TB 建库，约 1.5 分钟）
+pnpm install
+pnpm dev:config          # 拷 eg.yaml、写开发用 local.yaml
+pnpm dev:up              # 起本地 TB + PostgreSQL + Mosquitto + IoT Gateway 容器
+
+# 子站后端仓库：对本地 TB 建实体（租户、设备、7 类告警规则），并把本地 TB 账号写回 eg.yaml；模拟器让出这面柜
+pnpm provision:eg -- --cabinet AH03 --url http://127.0.0.1:18080
 pnpm sim -- --except AH03
 
 # 本仓库
-pnpm install
-pnpm dev:config          # 拷 eg.yaml、写开发用 local.yaml
-pnpm dev:up              # 起 Mosquitto + IoT Gateway 容器
+pnpm dev:config          # 再拷一次（带上本地 TB 账号）
 pnpm dev:emu             # 仿真器（扮同事的程序）
-pnpm dev:agent           # eg-agent，管理页 http://localhost:9100/（先 pnpm -F @lsa-eg/admin-web build）
+pnpm dev:agent           # eg-agent，管理页 http://localhost:9100/（先 pnpm -F @lsa-eg/admin-web build）；只验本地 TB 时 EG_UPLINK=off 关上送
+pnpm i1:verify           # I1 自检：本地 TB 的实体、数据、本地告警、连接器稳定、内存
+pnpm i2:verify           # I2 自检：上送子站、断网 10 分钟补齐、重启不丢（-- --fast 断 2 分钟）
 pnpm g0:verify           # G0 自检：链路
 pnpm g1:verify           # G1 自检：派生量、质量码、EG 自身指标、南向统计、韧性（约 8 分钟；-- --fast 约 3 分钟）
 pnpm g2:verify           # G2 自检：访问控制、子站单点登录与反代、组件、诊断、审计（约 4 分钟；子站扩展服务要带 EXT_EG_URLS=AH03=http://127.0.0.1:9100）

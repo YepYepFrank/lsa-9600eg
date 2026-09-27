@@ -53,6 +53,7 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
   private client: MqttClient | null = null
   private readonly listeners: TelemetryListener[] = []
   private readonly connectListeners: (() => void)[] = []
+  private readonly attrListeners: ((device: string, attrs: Record<string, unknown>, own: boolean) => void)[] = []
   readonly live = new Map<string, DeviceLive>()
   readonly raw = new Map<string, RawMessage[]>()
   msgs = 0
@@ -70,6 +71,11 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
     this.listeners.push(fn)
   }
 
+  /** 订阅每条属性（上送 outbox 用） */
+  onAttributes(fn: (device: string, attrs: Record<string, unknown>, own: boolean) => void): void {
+    this.attrListeners.push(fn)
+  }
+
   /** 每次连上（含重连）本机总线时调用 */
   onConnect(fn: () => void): void {
     this.connectListeners.push(fn)
@@ -78,9 +84,13 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     const known = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
+    // 持久会话（固定 clientId、不清会话、会话保留 1 天）：agent 或 Mosquitto 重启那一会儿同事发的数据由 Mosquitto 排着，
+    // 重连后补给 agent —— 上送 outbox 的数据就是从这里来的，不能丢（I2，EG独立TB调整方案 §2.2）
     this.client = mqtt.connect(this.cfg.conn.bus, {
-      clientId: `eg-agent-${this.cfg.cabinet.code}-${Math.random().toString(16).slice(2, 6)}`,
+      clientId: `eg-agent-${this.cfg.cabinet.code}`,
       protocolVersion: 5,
+      clean: false,
+      properties: { sessionExpiryInterval: 86_400 },
       reconnectPeriod: 3000,
       connectTimeout: 5000,
       keepalive: 30,
@@ -117,7 +127,10 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
         d.lastAt = Date.now()
       }
       if (t.kind === 'attributes') {
-        if (body && typeof body === 'object') Object.assign(d.attributes, body)
+        if (body && typeof body === 'object' && !Array.isArray(body)) {
+          Object.assign(d.attributes, body)
+          for (const fn of this.attrListeners) fn(t.device, body as Record<string, unknown>, own)
+        }
         return
       }
       const entries = (Array.isArray(body) ? body : [body]).map(normalize).filter((e): e is Entry => !!e)

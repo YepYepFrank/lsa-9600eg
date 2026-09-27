@@ -2,7 +2,7 @@
  *
  *   本机总线 lsa/<设备名>/telemetry  {"ts":毫秒,"values":{...}}  或其数组
  *   本机总线 lsa/<设备名>/attributes {...}
- *     ──► IoT Gateway 的 MQTT 连接器（内置 JSON 转换器，"*" 原样转发）──► 本机 TB Edge（用 EG 的访问令牌）
+ *     ──► IoT Gateway 的 MQTT 连接器（内置 JSON 转换器，"*" 原样转发）──► EG 本地 TB（用 eg.token；I 阶段起是独立 TB CE，E 阶段是 TB Edge）
  *
  * 用 "*" 而不是逐个 key 映射：key 名本身就是接入规范 §6 的名字，网关不做换算；
  * 载荷是 {ts, values} 时 IoT Gateway 保留设备侧时间戳（3.8.5 的 TelemetryEntry，实测源码）。
@@ -14,7 +14,7 @@
  *     交给自定义连接器 LsaSelfConnector 经网关自己的会话发（deploy/tb-gateway/extensions/lsa）。
  *
  * 配置由 agent 按 eg.yaml / local.yaml 生成，IoT Gateway 的远程配置关掉（配置只有一个来源）。 */
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { BUS_TOPIC, type EgConfig } from '@lsa-eg/config'
 
@@ -24,17 +24,27 @@ export const SESSION_EXPIRY_S = 86_400
 export interface RenderResult {
   dir: string
   files: string[]
+  /** 内容真变了、重写了的文件 */
+  changed: string[]
+}
+
+/** 内容没变就不写：IoT Gateway 按文件的 stat 判配置变没变，一写就重载全部连接器
+ *  （agent 每次启动都生成一遍；I1 发现重载带出过 LsaSelfConnector 的重复实例） */
+function writeIfChanged(file: string, text: string): boolean {
+  if (existsSync(file) && readFileSync(file, 'utf8') === text) return false
+  writeFileSync(file, text, 'utf8')
+  return true
 }
 
 export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'gateway/config')): RenderResult {
   mkdirSync(outDir, { recursive: true })
-  const edge = new URL(cfg.local.mqtt.edge)
+  const tb = new URL(cfg.local.mqtt.tb)
   const bus = new URL(cfg.local.mqtt.bus)
 
   const gateway = {
     thingsboard: {
-      host: edge.hostname,
-      port: Number(edge.port || 1883),
+      host: tb.hostname,
+      port: Number(tb.port || 1883),
       remoteShell: false,
       remoteConfiguration: false,
       latencyDebugMode: false,
@@ -52,7 +62,7 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
       reportStrategy: { type: 'ON_RECEIVED' },
       checkingDeviceActivity: { checkDeviceInactivity: false, inactivityTimeoutSeconds: 300, inactivityCheckPeriodSeconds: 10 },
     },
-    // Edge 就在本机，断的只会是 Edge 重启那一会儿；内存队列够用，不落盘（EG 的 SSD 省着用）
+    // 本地 TB 就在本机，断的只会是它重启那一会儿（实测 Edge 重启 43 s 无断档）；内存队列够用，不落盘（EG 的 SSD 省着用）
     storage: { type: 'memory', read_records_count: 100, max_records_count: 100000 },
     grpc: { enabled: false },
     connectors: [
@@ -118,10 +128,11 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
     'lsa_self.json': selfConnector,
     'logs.json': logsConfig(),
   }
-  for (const [name, body] of Object.entries(files)) writeFileSync(resolve(outDir, name), JSON.stringify(body, null, 2) + '\n', 'utf8')
+  const changed: string[] = []
+  for (const [name, body] of Object.entries(files)) if (writeIfChanged(resolve(outDir, name), JSON.stringify(body, null, 2) + '\n')) changed.push(name)
   // 镜像的启动脚本见不到这个文件就会拿默认配置覆盖整个目录
-  writeFileSync(resolve(outDir, '.firstlaunch'), '# 配置由 eg-agent 生成（lsa-9600eg apps/agent/src/gateway/render.ts），不要让镜像覆盖\n', 'utf8')
-  return { dir: outDir, files: [...Object.keys(files), '.firstlaunch'] }
+  writeIfChanged(resolve(outDir, '.firstlaunch'), '# 配置由 eg-agent 生成（lsa-9600eg apps/agent/src/gateway/render.ts），不要让镜像覆盖\n')
+  return { dir: outDir, files: [...Object.keys(files), '.firstlaunch'], changed }
 }
 
 /** 日志：只打控制台（docker 收），级别 WARNING；连接与连接器 INFO，排障够用又不刷屏 */

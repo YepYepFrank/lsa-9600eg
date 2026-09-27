@@ -156,19 +156,23 @@ async function main() {
 
   console.log('\n6. 组件、诊断、日志、配置')
   const comps = (await req(AGENT, '/api/components', { token: lt })).json as unknown as { key: string; state: string; memMb: number | null }[]
-  for (const k of ['edge', 'gateway', 'mosquitto']) {
+  for (const k of ['tb', 'gateway', 'mosquitto']) {
     const c = comps.find(x => x.key === k)
     check(c?.state === 'running' && (c.memMb ?? 0) > 0, `组件 ${k} 运行中、有内存数`, c ? `${c.memMb} MB` : '没有')
   }
-  const diag = (await req(AGENT, '/api/diag', { token: lt })).json as { uplink: { state: string }; edge: { tsKv?: number; edgeVersion?: string } }
-  check(typeof diag.edge.tsKv === 'number' && !!diag.edge.edgeVersion, '读到 Edge 本地排队数与版本', `排队 ${diag.edge.tsKv}，${diag.edge.edgeVersion}`)
-  check(diag.uplink.state === 'ok', '上送正常', diag.uplink.state)
+  const diag = (await req(AGENT, '/api/diag', { token: lt })).json as { uplink: { state: string; text: string } }
+  // I1：本地 TB 模式、上送在 I2 接上 —— 状态如实给「未接上」；I2 起应为「正常」
+  check(['ok', 'none'].includes(diag.uplink.state), '诊断给出上送状态', `${diag.uplink.state}：${diag.uplink.text}`)
   const logs = (await req(AGENT, '/api/logs/gateway?tail=50', { token: lt })).json as { lines: string[] }
   check(logs.lines.length > 0, '取到 IoT Gateway 日志', `${logs.lines.length} 行`)
   const agentLogs = (await req(AGENT, '/api/logs/agent?tail=50', { token: lt })).json as { lines: string[] }
   check(agentLogs.lines.some(l => l.includes('已启动')), '取到 eg-agent 自己的日志')
   const conf = await req(AGENT, '/api/config', { token: lt })
-  check(conf.status === 200 && !conf.text.includes(cfg.eg.token), '配置页不回访问令牌原文')
+  const secrets = [cfg.eg.token, cfg.station.token, cfg.tb?.password].filter((x): x is string => !!x)
+  const stText = (await req(AGENT, '/api/status', { token: lt })).text
+  // 按完整的 JSON 字符串值找（开发环境的本地 TB 口令 lsa9600eg 恰好是账号 admin@lsa9600eg.local 的一部分）
+  const leak = (text: string) => secrets.some(t => text.includes(JSON.stringify(t)))
+  check(conf.status === 200 && !leak(conf.text) && !leak(stText),'配置页、状态接口都不回令牌 / 口令原文（本地与子站令牌、本地 TB 口令）')
   const oldNtp = cfg.local.ntp.server
   const put = await req(AGENT, '/api/config/local', { method: 'PUT', token: lt, body: { ntpServer: 'ntp.g2-verify.invalid' } })
   const saved = readFileSync(resolve(cfg.dir, 'local.yaml'), 'utf8')
@@ -195,21 +199,7 @@ async function main() {
     const after = docker('inspect', '-f', '{{.State.StartedAt}}', 'lsa-eg-gateway').trim()
     check(rs.status === 200 && before !== after, '经 API 重启了 IoT Gateway 容器')
 
-    console.log('\n9. 断上行：本地排队涨起来、恢复后清零（子站看不到、只有 EG 本机能看的数）')
-    await post(`${SIM}/sim/eg/${code}/offline`)
-    const grew = await until(async () => {
-      const d = (await req(AGENT, '/api/diag', { token: lt })).json as { edge: { tsKv?: number }; uplink: { state: string } }
-      return (d.edge.tsKv ?? 0) >= 100 && d.uplink.state !== 'ok' ? d : null
-    }, 120_000, 5000)
-    check(!!grew, '断网后本地排队 ≥ 100 条、上送状态不再是「正常」', grew ? `排队 ${grew.edge.tsKv}，${grew.uplink.state}` : '2 分钟内没涨')
-    // 开发机剪的是 Edge 的上行链路、EG 到子站的探测还通，应判「暂停」；现场整条网断时判「离线」。不能是「补传中」（G2 初版的误判）
-    check(!!grew && ['paused', 'offline'].includes(grew.uplink.state), '断着的时候判「暂停 / 离线」，不误判成「补传中」', grew?.uplink.state)
-    await post(`${SIM}/sim/eg/${code}/online`)
-    const drained = await until(async () => {
-      const d = (await req(AGENT, '/api/diag', { token: lt })).json as { edge: { tsKv?: number } }
-      return (d.edge.tsKv ?? 1e9) < 100 ? d : null
-    }, 300_000, 5000)
-    check(!!drained, '恢复后排队清到 100 条以下（补传完）', drained ? `排队 ${drained.edge.tsKv}` : '5 分钟内没清')
+    // 断上行时本地排队涨落：E 阶段读 TB Edge 的队列，I 阶段改为 eg-agent 的 outbox，在 i2:verify 里测
   }
 
   console.log('\n10. 审计')

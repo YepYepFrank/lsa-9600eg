@@ -32,25 +32,25 @@ const items = computed<Item[]>(() => {
     hint: loss >= 100 ? '上行口（LAN2）网线、交换机、子站主机是否正常；子站的 7070 端口要对 EG 开放' : loss > 0 ? '偶有失败：看交换机端口是否有错包' : '',
   })
   const u = d.uplink
-  const backlog = (d.edge.tsKv ?? 0) + (d.edge.events ?? 0)
   out.push({
-    name: '数据上送（TB Edge → 子站）',
-    level: u.state === 'ok' ? 'good' : u.state === 'backfill' ? 'info' : u.state === 'paused' || u.state === 'unknown' ? 'minor' : 'crit',
+    name: '数据上送（eg-agent → 子站）',
+    level: u.state === 'ok' ? 'good' : u.state === 'backfill' ? 'info' : u.state === 'none' ? '' : u.state === 'paused' || u.state === 'unknown' ? 'minor' : 'crit',
     result: u.text,
     hint:
-      u.state === 'stuck'
-        ? '在「本机组件」里重启 TB Edge；排着的数据不丢，重启后自动补传'
-        : u.state === 'offline'
-          ? '网络恢复后 Edge 自动按原时间补传，不用手工处理；本地最多留 7 天'
-          : u.state === 'unknown'
-            ? `读不了 Edge 本地库：${d.edge.error ?? ''}`
-            : '',
+      u.state === 'offline'
+        ? '网络恢复后自动按原时间补传，不用手工处理；本地最多留 7 天'
+        : u.state === 'none'
+          ? '数据先进本地 TB（本地告警、本地页面照常）；上送子站在 I2 接上'
+          : '',
   })
   out.push({
-    name: 'Edge 本地排队',
-    level: backlog < 100 ? 'good' : 'info',
-    result: d.edge.error ? '读不到' : `遥测 ${d.edge.tsKv} 条、其他事件 ${d.edge.events} 条；上送速度 ${d.edge.ratePerSec ?? '—'} 条/秒；最近推进 ${d.edge.lastAdvanceAt ? ago(d.now - d.edge.lastAdvanceAt) : '—'}`,
-    hint: '子站看不到这个数（排着的数据送不上去），只有 EG 本机能看',
+    name: '上送队列',
+    level: u.depth === null ? '' : u.depth < 100 ? 'good' : 'info',
+    result:
+      u.depth === null
+        ? '—'
+        : `待发 ${u.depth} 条；最早未发 ${u.oldestUnsent ? ago(d.now - u.oldestUnsent) : '—'}；最近子站确认 ${u.lastAckAt ? ago(d.now - u.lastAckAt) : '—'}`,
+    hint: '子站看得到这几个数（eg.buf_depth 等随 EG 自身指标上报）；断网时这里看积压了多少',
   })
   const off = d.clock.offsetMs
   out.push({
@@ -78,7 +78,7 @@ const items = computed<Item[]>(() => {
     name: '主机资源',
     level: (disk?.usedPct ?? 0) > 85 || d.host.memUsedPct > 90 ? 'minor' : 'good',
     result: `运行 ${dur(d.host.uptimeSec)} · 内存 ${d.host.memUsedPct} % · 数据盘 ${disk ? `${disk.usedPct} %（剩 ${disk.freeGb} GB）` : '—'}`,
-    hint: (disk?.usedPct ?? 0) > 85 ? '数据盘快满：Edge 本地留 7 天，断网太久会越积越多' : '',
+    hint: (disk?.usedPct ?? 0) > 85 ? '数据盘快满：本地 TB 与上送队列各留 7 天，断网太久会越积越多' : '',
   })
   for (const c of store.comps) {
     if (c.key === 'agent') continue
@@ -93,7 +93,7 @@ const items = computed<Item[]>(() => {
 })
 
 const canMaint = computed(() => session.me?.role === 'maint')
-async function restart(key: 'edge' | 'gateway', label: string) {
+async function restart(key: 'tb' | 'gateway', label: string) {
   try {
     await ElMessageBox.confirm(`重启 ${label}？`, '重启组件', { confirmButtonText: '重启', cancelButtonText: '取消', type: 'warning' })
   } catch {
@@ -116,7 +116,7 @@ async function restart(key: 'edge' | 'gateway', label: string) {
       <span class="t2">每 5 秒刷新</span>
       <span class="sp" />
       <el-button size="small" :disabled="!canMaint" @click="restart('gateway', 'TB IoT Gateway')">重启 IoT Gateway</el-button>
-      <el-button size="small" :disabled="!canMaint" @click="restart('edge', 'TB Edge')">重启 TB Edge</el-button>
+      <el-button size="small" :disabled="!canMaint" @click="restart('tb', 'EG 本地 TB')">重启本地 TB</el-button>
     </div>
     <div class="panel" style="margin-top: 0">
       <div v-for="it in items" :key="it.name" class="row">

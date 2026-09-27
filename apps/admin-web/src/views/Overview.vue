@@ -12,8 +12,8 @@ const router = useRouter()
 const st = computed(() => store.status)
 const d = computed(() => store.diag)
 
-const UPCLS: Record<string, string> = { ok: 'good', backfill: 'info', paused: 'minor', offline: 'crit', stuck: 'crit', unknown: 'minor' }
-const backlog = computed(() => (d.value?.edge.tsKv ?? 0) + (d.value?.edge.events ?? 0))
+const UPCLS: Record<string, string> = { ok: 'good', backfill: 'info', paused: 'minor', offline: 'crit', stuck: 'crit', none: '', unknown: 'minor' }
+const UPTXT: Record<string, string> = { ok: '正常', backfill: '补传中', paused: '暂停', offline: '离线', stuck: '卡住', none: '未接上', unknown: '未知' }
 const clk = computed(() => d.value?.clock.offsetMs ?? null)
 const clkBad = computed(() => clk.value !== null && Math.abs(clk.value) > 1000)
 
@@ -36,7 +36,7 @@ function devState(x: Dev): [string, string] {
 async function restart(c: Comp) {
   try {
     await ElMessageBox.confirm(
-      `重启 ${c.label}？${c.key === 'edge' ? '约 40 s；期间数据由 IoT Gateway 排着，不丢。' : '几秒；期间数据由本机总线排着，不丢。'}`,
+      `重启 ${c.label}？${c.key === 'tb' ? '约 1 分钟；期间数据由 IoT Gateway 排着，不丢。' : '几秒；期间数据由本机总线排着，不丢。'}`,
       '重启组件',
       { confirmButtonText: '重启', cancelButtonText: '取消', type: 'warning' },
     )
@@ -63,9 +63,9 @@ const canMaint = computed(() => session.me?.role === 'maint')
         <div class="s">{{ st.state === 'online' ? `下挂 ${st.devices.length} 台设备都有数据` : `整台无数据：${d?.devices.dead.join('、') || '—'}` }}</div>
       </div>
       <div class="card">
-        <div class="k">上送子站（TB Edge）</div>
-        <div class="v" :class="UPCLS[d?.uplink.state ?? 'unknown']">{{ d ? { ok: '正常', backfill: '补传中', paused: '暂停', offline: '离线', stuck: '卡住', unknown: '未知' }[d.uplink.state] : '…' }}</div>
-        <div class="s">{{ d?.uplink.text ?? '…' }}<br />本地排队 {{ d?.edge.error ? '读不到' : backlog + ' 条' }}</div>
+        <div class="k">上送子站</div>
+        <div class="v" :class="UPCLS[d?.uplink.state ?? 'unknown']">{{ d ? UPTXT[d.uplink.state] : '…' }}</div>
+        <div class="s">{{ d?.uplink.text ?? '…' }}<br />待发 {{ d?.uplink.depth ?? '—' }} 条</div>
       </div>
       <div class="card">
         <div class="k">到子站 {{ d?.sp.host }}</div>
@@ -106,7 +106,7 @@ const canMaint = computed(() => session.me?.role === 'maint')
     </div>
 
     <div class="panel">
-      <div class="panel-h">本机组件<span class="t2">重启只开放 TB Edge 与 IoT Gateway</span></div>
+      <div class="panel-h">本机组件<span class="t2">重启只开放本地 TB 与 IoT Gateway</span></div>
       <el-table :data="store.comps" size="small">
         <el-table-column prop="label" label="组件" min-width="170" />
         <el-table-column label="状态" width="110">

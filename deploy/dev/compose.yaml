@@ -1,14 +1,97 @@
-# 开发用的 EG 样机（G0）：只起 EG 上除 TB Edge 以外的容器，Edge 借用子站开发环境里本柜的 Edge 容器（如 lsa-edge-ah03）。
+# 开发用的 EG 样机（I1 起：EG 跑独立 ThingsBoard CE，后端库 docs/EG独立TB调整方案.md）。
 #
 #   pnpm dev:config   从子站后端仓库拷 eg.yaml、写开发用 local.yaml（默认 AH03）
-#   pnpm dev:up       生成 IoT Gateway 配置并起容器；pnpm dev:down 停
+#   pnpm dev:up       生成 IoT Gateway 配置、首次先建本地 TB 的库，再起全部容器；pnpm dev:down 停
 #
-# 链路：emu（扮演同事的转换程序，宿主机）─► mosquitto ─► tb-gateway ─► lsa-edge-<柜号>（子站开发环境）─► 子站 TB
-#       eg-agent（宿主机）也连 mosquitto
-# 要加入子站开发环境的 docker 网络才能找到 Edge 容器，所以网络是 external 的 lsa9600sp_default。
+# 链路：emu（扮演同事的转换程序，宿主机）─► mosquitto ─► tb-gateway ─► eg-tb（EG 本地 TB：存数、本地 7 类告警、本地页面）
+#       eg-agent（宿主机）也连 mosquitto，上送子站走它（I2）
+# 本地 TB 的设备、设备配置（含告警规则）、规则链由后端库 provision:eg 按 eg.yaml 建（它连 127.0.0.1:18080）。
+# 与子站开发环境不共用任何容器、库和网络：本地 TB 用自己的 PostgreSQL（与 EG 上一样），子站那边停了也照样跑。
 name: lsa-eg-dev
 
+x-tb-env: &tb-env
+  TB_SERVICE_ID: lsa-eg-tb
+  TB_SERVICE_TYPE: monolith
+  TB_QUEUE_TYPE: in-memory
+  DATABASE_TS_TYPE: sql
+  SPRING_DATASOURCE_URL: jdbc:postgresql://eg-postgres:5432/thingsboard
+  SPRING_DATASOURCE_USERNAME: postgres
+  SPRING_DATASOURCE_PASSWORD: ${EG_PG_PASSWORD:-lsa-eg-dev}
+  SPRING_DATASOURCE_MAXIMUM_POOL_SIZE: '5'
+  # 本项目只用 MQTT 接 IoT Gateway
+  COAP_ENABLED: 'false'
+  LWM2M_ENABLED: 'false'
+  SNMP_ENABLED: 'false'
+  # EG 本地只留 7 天（≥ 2 年由子站保存）
+  SQL_TTL_TS_ENABLED: 'true'
+  SQL_TTL_TS_TS_KEY_VALUE_TTL: ${EG_TS_TTL_S:-604800}
+  # E 阶段给 TB Edge 调出来的瘦身参数（Edge 实测约 730 MB）；TB CE 单体比 Edge 多几个模块，I1 实测后再定
+  JAVA_OPTS: ${EG_TB_JAVA_OPTS:--Xms192m -Xmx384m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=96m -Xss512k -XX:MaxDirectMemorySize=64m -XX:TieredStopAtLevel=1}
+  TZ: Asia/Shanghai
+
 services:
+  eg-postgres:
+    image: postgres:16
+    container_name: lsa-eg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${EG_PG_PASSWORD:-lsa-eg-dev}
+      POSTGRES_DB: thingsboard
+      TZ: Asia/Shanghai
+    # 本地库不对外（EG 上也一样）
+    volumes:
+      - eg-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d thingsboard']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [eg]
+
+  # 一次性建库（首次启动）。scripts/dev.mjs up 检测到库是空的就先跑它
+  eg-tb-install:
+    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.5}
+    container_name: lsa-eg-tb-install
+    profiles: ['install']
+    depends_on:
+      eg-postgres:
+        condition: service_healthy
+    environment:
+      <<: *tb-env
+      INSTALL_TB: 'true'
+      LOAD_DEMO: 'false'
+    volumes:
+      - eg-tb-data:/data
+    restart: 'no'
+    networks: [eg]
+
+  eg-tb:
+    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.5}
+    container_name: lsa-eg-tb
+    restart: unless-stopped
+    depends_on:
+      eg-postgres:
+        condition: service_healthy
+    environment:
+      <<: *tb-env
+    ports:
+      # 本地页面、provision:eg、eg-agent 读本地告警与写设备配置（EG 上只给本机）
+      - '127.0.0.1:18080:8080'
+      # 排障用；IoT Gateway 在容器网络里直接连 eg-tb:1883
+      - '127.0.0.1:11884:1883'
+    volumes:
+      - eg-tb-data:/data
+      - eg-tb-logs:/var/log/thingsboard
+    healthcheck:
+      # tb-node 镜像里没有 wget / curl / nc，只能用 bash 的 /dev/tcp（子站 B0 踩过）
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /login HTTP/1.0\r\n\r\n" >&3 && head -1 <&3 | grep -q " 200"']
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+    networks: [eg]
+
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: lsa-eg-mosquitto
@@ -19,13 +102,13 @@ services:
     ports:
       # 宿主机上的 eg-agent、emu 连这里（EG 上是 127.0.0.1:1884）
       - '127.0.0.1:11883:1883'
-    networks: [sp]
+    networks: [eg]
 
   tb-gateway:
     image: thingsboard/tb-gateway:${TB_GATEWAY_VERSION:-latest}
     container_name: lsa-eg-gateway
     restart: unless-stopped
-    depends_on: [mosquitto]
+    depends_on: [mosquitto, eg-tb]
     environment:
       TZ: Asia/Shanghai
     volumes:
@@ -34,13 +117,15 @@ services:
       # 自定义连接器：EG 自身数据经网关自己的会话上送（extensions/lsa/lsa_self_connector.py）
       - ../tb-gateway/extensions/lsa:/thingsboard_gateway/extensions/lsa:ro
       - gw-logs:/thingsboard_gateway/logs
-    networks: [sp]
+    networks: [eg]
 
 volumes:
+  eg-pg:
+  eg-tb-data:
+  eg-tb-logs:
   gw-logs:
   mq-data:
 
 networks:
-  sp:
-    name: lsa9600sp_default
-    external: true
+  eg:
+    name: lsa-eg-dev

@@ -1,11 +1,11 @@
 /* EG 自身指标 eg.*（接入规范 §6.5），每 5 s 发到本机总线 lsa/EG-<柜号>/telemetry，
  * 由 IoT Gateway 的自定义连接器 LsaSelfConnector 经网关自己的会话上送（deploy/tb-gateway/extensions/lsa）。
  *
- * 子站靠 EG 设备的数据判「在线」、判 Edge 是否卡住，所以这一路不能停；
+ * 子站靠 EG 设备的数据判「在线」，所以这一路不能停（I 阶段起由上送服务送到子站；本地也照发，本地 TB 与本地页用）；
  * agent 停了时 LsaSelfConnector 自己补发 eg.state=degraded 维持在线（评审记录 G0-4）。
  *
  *   eg.state        online / degraded（有下挂设备整台失效，来自质量码看护）
- *   eg.lat eg.loss  到子站的 TCP 建连时延 / 失败率（连子站的 Edge 同步口 7070；ICMP 要 root，不用）
+ *   eg.lat eg.loss  到子站的 TCP 建连时延 / 失败率（连子站 TB 的 MQTT 口，即上送走的口；ICMP 要 root，不用）
  *   eg.clk_offset   本机时钟 − 时钟源，SNTP 每分钟测一次（local.yaml ntp.server，空 = 子站主机）
  *   eg.cpu eg.mem eg.ssd       CPU、内存、数据分区占用
  *   eg.temp         机内温度：/sys/class/thermal 与 hwmon 里最高的一个
@@ -20,11 +20,12 @@ import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { QualityService } from '../quality/quality.service.js'
+import { UplinkService } from '../uplink/uplink.service.js'
 
 /** 规范的 EG 档：5 s */
 const PERIOD_MS = 5_000
-/** 到子站的探测：连 Edge 同步口；留最近 12 次（1 分钟）算失败率 */
-const PROBE_PORT = 7070
+/** 到子站的探测：连上送用的子站 MQTT 口（eg.yaml station.mqtt，没配按 1883）；留最近 12 次（1 分钟）算失败率 */
+const DEFAULT_PROBE_PORT = 1883
 const PROBE_WINDOW = 12
 const NTP_EVERY_MS = 60_000
 
@@ -44,6 +45,7 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
     private readonly quality: QualityService,
+    private readonly uplink: UplinkService,
   ) {}
 
   onModuleInit(): void {
@@ -75,8 +77,7 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
   uplinkProbe(): { host: string; port: number; latMs: number | null; lossPct: number | null } {
     const ok = this.probes.filter((x): x is number => x !== null)
     return {
-      host: this.cfg.sp.host,
-      port: PROBE_PORT,
+      ...this.probeTarget(),
       latMs: this.probes.length && this.probes.at(-1) !== null ? Math.round(this.probes.at(-1)!) : null,
       lossPct: this.probes.length ? round((1 - ok.length / this.probes.length) * 100) : null,
     }
@@ -84,6 +85,19 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
 
   clock(): { server: string; offsetMs: number | null; measuredAt: number | null } {
     return { server: this.ntpServer(), offsetMs: this.clkOffset, measuredAt: this.clkAt || null }
+  }
+
+  /** 探测目标：子站上送口（station.mqtt），没配就是子站主机的 1883 */
+  probeTarget(): { host: string; port: number } {
+    try {
+      if (this.cfg.station.mqtt) {
+        const u = new URL(this.cfg.station.mqtt)
+        return { host: u.hostname, port: Number(u.port || (u.protocol === 'mqtts:' ? 8883 : 1883)) }
+      }
+    } catch {
+      /* 地址写错时退回子站主机 */
+    }
+    return { host: this.cfg.sp.host, port: DEFAULT_PROBE_PORT }
   }
 
   ntpServer(): string {
@@ -106,6 +120,8 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
       'eg.ssd': diskUsedPct(this.cfg.dir),
       'eg.temp': boardTemp(),
       'eg.up_kbps': this.upKbps(),
+      // 上送状态（I2，EG独立TB调整方案 §8.1）：子站判补传中、积压、丢失都靠这几个
+      ...this.uplink.metrics(),
     }
   }
 
@@ -113,7 +129,7 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
   private async probe(): Promise<void> {
     const t0 = performance.now()
     const r = await new Promise<number | null>(res => {
-      const s = connect({ host: this.cfg.sp.host, port: PROBE_PORT, timeout: 2000 })
+      const s = connect({ ...this.probeTarget(), timeout: 2000 })
       s.once('connect', () => {
         res(performance.now() - t0)
         s.destroy()

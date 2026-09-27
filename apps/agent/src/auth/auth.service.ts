@@ -12,7 +12,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Inject, Injectable, Logger } from '@nestjs/common'
-import type { EgConfig } from '@lsa-eg/config'
+import { stationToken, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
 import { verifyTicket, type TicketRole } from './ticket.js'
@@ -96,7 +96,8 @@ export class AuthService {
   sso(ticket: string, ip: string): Session {
     const now = Date.now()
     for (const [j, exp] of this.usedTickets) if (exp < now - 120_000) this.usedTickets.delete(j)
-    const c = verifyTicket(this.cfg.eg.token, ticket, this.cfg.cabinet.code, now)
+    // 票据由子站用它那边 EG 网关设备的令牌派生密钥签（I 阶段起本地 TB 的令牌可以不同，见 @lsa-eg/config stationToken）
+    const c = verifyTicket(stationToken(this.cfg), ticket, this.cfg.cabinet.code, now)
     if ('error' in c) {
       this.audit.write({ user: '?', name: '?', via: 'sp', ip, action: '子站单点登录', target: 'EG', ok: false, detail: c.error })
       throw new AuthError('bad_ticket', c.error)

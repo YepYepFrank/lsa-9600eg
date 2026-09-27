@@ -29,6 +29,13 @@ from thingsboard_gateway.tb_utility.tb_logger import init_logger
 HOLD_S = 12
 KEEP_S = 5
 
+# 每台 EG 设备只能有一个活着的实例（I1 连通性测试发现）：IoT Gateway 发现配置文件变了会重载连接器、新建一个实例，
+# 旧实例没停干净时两个用同一个固定 clientId 的客户端在 Mosquitto 上互相「session taken over」，
+# 各自都收不全 agent 的数据，于是轮流代发 eg.state=degraded，EG 状态在 online / degraded 之间来回跳。
+# 新实例 open() 时先把同设备的旧实例关掉，不依赖 IoT Gateway 有没有调 close()。
+_LIVE = {}
+_LIVE_LOCK = threading.Lock()
+
 
 class LsaSelfConnector(Connector):
     def __init__(self, gateway, config, connector_type):
@@ -66,7 +73,15 @@ class LsaSelfConnector(Connector):
         self.__keeper = threading.Thread(target=self.__keep, name='lsa-self-keeper', daemon=True)
 
     def open(self):
+        with _LIVE_LOCK:
+            old = _LIVE.get(self.__device)
+            if old is not None and old is not self:
+                self.__log.warning('%s: 上一个实例还在，先关掉它', self.name)
+                old.close()
+            _LIVE[self.__device] = self
         self.__stopped = False
+        # 看门从开始订阅算起（构造到 open 之间可能隔几秒，从构造算会一上来就误代发）
+        self.__last_self = monotonic()
         props = Properties(PacketTypes.CONNECT)
         props.SessionExpiryInterval = self.__session_expiry
         self.__client.connect_async(self.__host, self.__port, keepalive=30, clean_start=False, properties=props)
@@ -75,13 +90,23 @@ class LsaSelfConnector(Connector):
         self.__log.info('%s: 订阅本机总线 %s:%s 的 %s', self.name, self.__host, self.__port, ', '.join(self.__topics))
 
     def close(self):
+        if self.__stopped and self.__stop_event.is_set():
+            return
         self.__stopped = True
         self.__stop_event.set()
         try:
             self.__client.disconnect()
+        except Exception:
+            pass
+        try:
+            # loop_stop 会等网络线程退出；它退出后 paho 不会再自动重连
             self.__client.loop_stop()
         except Exception:
             pass
+        with _LIVE_LOCK:
+            if _LIVE.get(self.__device) is self:
+                del _LIVE[self.__device]
+        self.__log.info('%s: 已停', self.name)
 
     def get_id(self):
         return self.__id

@@ -1,7 +1,7 @@
 /* 配置查看与本地配置修改（开发计划 §6.2 配置归属）：
  *   eg.yaml（子站下发）只读看，访问令牌打码；
  *   local.yaml 能在页面上改的只有：对时服务器、上行网口、摄像机（地址、账号、各路 RTSP）。
- *   总线 / Edge 地址、容器名、管理页端口改错了本地页自己就打不开或失联，不给页面改，要改到 EG 上改文件。 */
+ *   总线 / 本地 TB 地址、容器名、管理页端口改错了本地页自己就打不开或失联，不给页面改，要改到 EG 上改文件。 */
 import { Body, Controller, Get, Inject, Put } from '@nestjs/common'
 import { Type } from 'class-transformer'
 import { IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator'
@@ -45,15 +45,16 @@ export class ConfigController {
     return {
       eg: {
         generatedAt: c.generatedAt,
-        station: c.station,
+        station: { name: c.station.name, label: c.station.label },
         sp: c.sp,
         cabinet: c.cabinet,
         eg: { name: c.eg.name, token: mask(c.eg.token), attrs: c.eg.attrs },
+        stationUplink: { mqtt: c.station.mqtt ?? null, token: mask(c.station.token ?? '') },
+        tb: c.tb ? { user: c.tb.user, password: mask(c.tb.password) } : null,
         devices: c.devices,
       },
       local: {
         ...c.local,
-        edgeDb: c.local.edgeDb.replace(/:\/\/([^:@]+):[^@]*@/, '://$1:***@'),
         camera: { ...c.local.camera, password: c.local.camera.password ? '已设置' : '' },
       },
       editable: ['ntpServer', 'uplinkIface', 'camera'],

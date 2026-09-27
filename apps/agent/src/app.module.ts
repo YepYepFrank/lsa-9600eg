@@ -9,7 +9,6 @@ import { AuthGuard } from './auth/guard.js'
 import { BusService } from './bus/bus.service.js'
 import { ComponentsController } from './components/components.controller.js'
 import { ComponentsService } from './components/components.service.js'
-import { EdgeDbService } from './components/edge-db.service.js'
 import { CatalogController } from './catalog/catalog.controller.js'
 import { ConfigController } from './config/config.controller.js'
 import { DeriveService } from './derive/derive.service.js'
@@ -17,6 +16,7 @@ import { QualityService } from './quality/quality.service.js'
 import { SelfService } from './self/self.service.js'
 import { SouthService } from './south/south.service.js'
 import { StatusController } from './status/status.controller.js'
+import { UplinkService } from './uplink/uplink.service.js'
 
 @Module({
   controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController],
@@ -32,7 +32,7 @@ import { StatusController } from './status/status.controller.js'
     SouthService,
     SelfService,
     ComponentsService,
-    EdgeDbService,
+    UplinkService,
   ],
 })
 export class AppModule {}

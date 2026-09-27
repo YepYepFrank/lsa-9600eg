@@ -11,19 +11,14 @@ import type { Session } from '../auth/auth.service.js'
 import { QualityService } from '../quality/quality.service.js'
 import { SelfService } from '../self/self.service.js'
 import { COMPONENTS, ComponentsService, RESTARTABLE, type ComponentKey } from './components.service.js'
-import { EdgeDbService } from './edge-db.service.js'
-
-/** 排队超过这么多条算有积压；上送偏移这么久没前进算「停了」；连得上子站却停了这么久才算 Edge 卡住 */
-const BACKLOG = 100
-const IDLE_MS = 15_000
-const STUCK_MS = 3 * 60_000
+import { UplinkService } from '../uplink/uplink.service.js'
 
 @Controller('api')
 export class ComponentsController {
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly comps: ComponentsService,
-    private readonly edgeDb: EdgeDbService,
+    private readonly uplinkSvc: UplinkService,
     private readonly self: SelfService,
     private readonly bus: BusService,
     private readonly quality: QualityService,
@@ -63,29 +58,12 @@ export class ComponentsController {
     }
   }
 
-  /** 诊断汇总：本机总线、到子站、对时、Edge 上送、资源、下挂设备 */
+  /** 诊断汇总：本机总线、到子站、对时、上送子站、资源、下挂设备 */
   @Get('diag')
   async diag() {
     const now = Date.now()
-    const q = this.edgeDb.queue()
     const probe = this.self.uplinkProbe()
-    let uplink: { state: string; text: string }
-    if ('error' in q) uplink = { state: 'unknown', text: `读不了 Edge 本地库：${q.error}` }
-    else {
-      const backlog = q.tsKv + q.events
-      const idle = q.lastAdvanceAt ? now - q.lastAdvanceAt : Infinity
-      if (backlog < BACKLOG) uplink = { state: 'ok', text: '正常，无积压' }
-      else if (idle < IDLE_MS) {
-        const eta = q.ratePerSec ? Math.ceil(backlog / q.ratePerSec) : null
-        uplink = { state: 'backfill', text: `补传中，积压 ${backlog} 条${eta ? `，约 ${eta < 120 ? `${eta} 秒` : `${Math.ceil(eta / 60)} 分钟`}补完` : ''}` }
-      } else if (probe.lossPct === 100) uplink = { state: 'offline', text: `连不上子站 ${probe.host}:${probe.port}，积压 ${backlog} 条，恢复后自动补传` }
-      else if (idle < STUCK_MS) uplink = { state: 'paused', text: `上送暂停（Edge 在重连子站），积压 ${backlog} 条` }
-      else
-        uplink = {
-          state: 'stuck',
-          text: `子站连得上但 ${Math.round(idle / 60_000)} 分钟没上送，积压 ${backlog} 条 —— Edge 可能卡住（首次同步期间断过网？），可重启 Edge`,
-        }
-    }
+    const uplink = this.uplinkSvc.status()
     let disk: { usedPct: number; freeGb: number } | null = null
     try {
       const s = statfsSync(this.cfg.dir)
@@ -98,7 +76,6 @@ export class ComponentsController {
       bus: { url: this.cfg.conn.bus, connected: this.bus.connected },
       sp: probe,
       clock: this.self.clock(),
-      edge: 'error' in q ? { error: q.error } : q,
       uplink,
       host: { uptimeSec: Math.round(uptime()), memUsedPct: Math.round((1 - freemem() / totalmem()) * 1000) / 10, disk },
       devices: { dead: this.quality.deadDevices(now), unknown: [...this.bus.unknown.keys()] },

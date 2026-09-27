@@ -1,5 +1,5 @@
 /* 全页共用的轮询数据：外壳（Shell）起停，各页只读。
- *   状态 2 s；诊断、组件、EG 自身指标 5 s（要调 Docker / Edge 库）；点表目录、配置进来取一次
+ *   状态 2 s；诊断、组件、EG 自身指标 5 s（要调 Docker）；点表目录、配置进来取一次
  * 浏览器标签页在后台时暂停（document.hidden），回到前台立即刷一次。 */
 import { reactive } from 'vue'
 import { api } from './session'
