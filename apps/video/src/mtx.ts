@@ -102,14 +102,17 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
       { user: 'any', pass: '', ips: readFrom, permissions: [{ action: 'read' }] },
       { user: 'any', pass: '', ips: apiFrom, permissions: [{ action: 'api' }, { action: 'playback' }] },
     ],
-    // 循环录像（G5）：只有 record: true 的两路子码流会录
-    recordPath: `${RECORD_DIR}/%path/%Y-%m-%d_%H-%M-%S-%f`,
-    recordFormat: 'fmp4',
-    recordPartDuration: '1s',
-    recordSegmentDuration: '60s',
-    recordDeleteAfter: `${cfg.local.evidence.ringHours}h`,
     // 清单外的路径一律不收（不许推流进来冒充）
-    pathDefaults: { source: 'publisher', overridePublisher: false },
+    pathDefaults: {
+      source: 'publisher',
+      overridePublisher: false,
+      // 循环录像（G5）：只有 record: true 的两路子码流会录（mediamtx 1.21 起这几项要放在 pathDefaults 里）
+      recordPath: `${RECORD_DIR}/%path/%Y-%m-%d_%H-%M-%S-%f`,
+      recordFormat: 'fmp4',
+      recordPartDuration: '1s',
+      recordSegmentDuration: '60s',
+      recordDeleteAfter: `${cfg.local.evidence.ringHours}h`,
+    },
     paths,
   }
   const head = `# EG ${cfg.cabinet.code} 的 mediamtx 配置 —— eg-video 按 local.yaml 的摄像机与 ONVIF 查询结果生成（apps/video/src/mtx.ts），不要手改\n`

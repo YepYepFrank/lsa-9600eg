@@ -47,7 +47,10 @@ async function main() {
   check(s0.channels.every(c => c.from), '四路都有地址', s0.channels.map(c => `${c.path}:${c.from ?? '无'}`).join(' '))
   check(s0.channels.map(c => c.path).join(',') === [code, `${code}-sub`, `${code}-ir`, `${code}-ir-sub`].join(','), '路径按柜号：<柜号>、-sub、-ir、-ir-sub')
   const yml = readFileSync(resolve(cfg.dir, 'mediamtx/mediamtx.yml'), 'utf8')
-  check((yml.match(/sourceOnDemand: true/g) ?? []).length === 4 && /rtspTransport: tcp/.test(yml) && /webrtc: false/.test(yml), 'EG mediamtx 配置：四路按需拉、TCP、只开 RTSP')
+  check(
+    (yml.match(/sourceOnDemand: true/g) ?? []).length === 2 && (yml.match(/record: true/g) ?? []).length === 2 && /rtspTransport: tcp/.test(yml) && /webrtc: false/.test(yml),
+    'EG mediamtx 配置：主码流两路按需拉、子码流两路常录（G5 修订）、TCP、只开 RTSP',
+  )
   check(!s0.mediamtx.error, 'EG mediamtx API 可达', s0.mediamtx.error ?? '')
 
   console.log('\n2. 探测与 cam.*')
@@ -62,10 +65,13 @@ async function main() {
   }, 70_000, 3000)
   check(!!cam1, `${camDev} 的 cam.online = 4（本机总线）`)
 
-  console.log('\n3. 按需拉：没人看不拉，看完 20 s 内断到摄像机')
+  console.log('\n3. 按需拉（主码流）：没人看不拉，看完 20 s 内断到摄像机；子码流常拉常录（G5 修订 §8.5）')
   // 测试源对 DESCRIBE 也要先出画面才答得上（真摄像机不会），上一节的探测会让它亮 10 s：等它歇下来再看
-  const idle = await until(async () => ((await egPaths()).every(p => !p.ready) && (await camPaths()).every(p => !p.ready) ? true : null), 30_000, 1000)
-  check(!!idle, '没人看时 EG 与摄像机两级都不拉流')
+  const main = (ps: { name: string; ready: boolean }[]) => ps.filter(p => !p.name.endsWith('-sub'))
+  const idle = await until(async () => (main(await egPaths()).every(p => !p.ready) && main(await camPaths()).every(p => !p.ready) ? true : null), 30_000, 1000)
+  check(!!idle, '没人看时 EG 与摄像机两级都不拉主码流')
+  const subs = (await egPaths()).filter(p => p.name.endsWith('-sub'))
+  check(subs.length === 2 && subs.every(p => p.ready), '两路子码流在 EG 上一直拉着（循环录像）', subs.map(p => `${p.name}:${p.ready}`).join(' '))
   const t0 = Date.now()
   const ff = spawn(process.env['FFMPEG'] || 'ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rtsp_transport', 'tcp', '-i', `rtsp://127.0.0.1:${s0.mediamtx.rtspPort}/${code}`, '-t', '6', '-f', 'null', '-'])
   const ffDone = new Promise<number | null>(r => ff.on('close', code => r(code)))

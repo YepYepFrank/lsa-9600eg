@@ -78,7 +78,8 @@ export class Recording {
   async clip(channel: 'visible' | 'ir', start: number, end: number): Promise<{ mp4: Buffer; actualStart: number; actualEnd: number; gap: boolean }> {
     const segs = (await this.segments(channel, start, end)).filter(s => s.start + s.duration > start && s.start < end).sort((a, b) => a.start - b.start)
     if (!segs.length) throw new MissingError('stream_down', `${channel === 'ir' ? '热像' : '可见光'}子码流在 ${iso(start)}–${iso(end)} 没有录像`)
-    const actualStart = Math.max(start, segs[0]!.start)
+    // 段起点是微秒级（如 …25.316273），毫秒时间戳截到 .316 反而落在段前一点，/get 会说「没有段」：贴着段起点时往后挪 1 ms
+    const actualStart = start > segs[0]!.start ? start : segs[0]!.start + 1
     const last = segs[segs.length - 1]!
     const actualEnd = Math.min(end, last.start + last.duration)
     let gap = actualStart - start > 2000 || end - actualEnd > 2000
