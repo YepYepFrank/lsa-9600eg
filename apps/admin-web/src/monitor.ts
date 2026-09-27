@@ -159,7 +159,8 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
       every(loadLive, 3000)
       every(loadHist, 60_000)
     }
-    if (tab.value === 'overview') every(loadRegions, 30_000)
+    // 测温区定义：总览画框，各页的告警条也要用部位名
+    every(loadRegions, 30_000)
     // 总览顶上的事件条也要用活动告警
     every(loadEvents, 10_000)
   }

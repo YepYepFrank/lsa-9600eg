@@ -29,11 +29,18 @@ async function fullscreen() {
 
 const { m, cam, sams, meter, pm, labelOf, num, text, series, has } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
 const cab = computed(() => store.status?.cabinet.code)
-const catalogUnit = (kind: string, key: string, fallback = '') => store.catalog?.devices[kind]?.find(p => p.key === key)?.unit || fallback
+/** 页面上的单位一律取点表；局放幅值按子站与现场口径写 dBμV（点表目前写的是 dB，已报后端统一） */
+const UNIT_FIX: Record<string, string> = { 'us.amp': 'dBμV', 'uv.int': 'a.u.' }
+const catalogUnit = (kind: string, key: string, fallback = '') => UNIT_FIX[key] ?? (store.catalog?.devices[kind]?.find(p => p.key === key)?.unit || fallback)
 
 /* ---------- 总览：双光与测温区 ---------- */
 const streams = computed(() => (cam.value ? streamsOf(cab.value) : null))
-const hotId = computed(() => text(cam.value, 'ir.hot'))
+const hotId = computed(() => {
+  const h = text(cam.value, 'ir.hot')
+  return h === null ? null : /^\d+$/.test(h) ? `R${h}` : h
+})
+/** 测温区的部位名（eg.yaml CAM regions.R<n>.label，经 eg-video 的区域定义带来） */
+const regionLabel = (id: string) => m.regions.find(r => r.id === id)?.label ?? ''
 const rois = computed(() =>
   m.regions
     .map(r => {
@@ -41,13 +48,15 @@ const rois = computed(() =>
       const H = r.frame?.h || 512
       const c = r.coords
       const temp = r.type === 'point' ? num(cam.value, `ir.${r.id}.pt`) : num(cam.value, `ir.${r.id}.max`)
-      if (r.type === 'point') return { label: r.id, temp, hot: r.id === hotId.value, x: c.x! / W - 0.015, y: c.y! / H - 0.02, w: 0.03, h: 0.04, point: true }
-      if (c.width !== undefined) return { label: r.id, temp, hot: r.id === hotId.value, x: c.x! / W, y: c.y! / H, w: c.width / W, h: c.height! / H }
+      const label = r.id
+      const name = r.label
+      if (r.type === 'point') return { label, name, temp, hot: r.id === hotId.value, x: c.x! / W - 0.015, y: c.y! / H - 0.02, w: 0.03, h: 0.04, point: true }
+      if (c.width !== undefined) return { label, name, temp, hot: r.id === hotId.value, x: c.x! / W, y: c.y! / H, w: c.width / W, h: c.height! / H }
       // 线 / 多边形：画外接框
       const xs = Object.entries(c).filter(([k]) => /^x\d*$/.test(k)).map(([, v]) => v)
       const ys = Object.entries(c).filter(([k]) => /^y\d*$/.test(k)).map(([, v]) => v)
       if (!xs.length || !ys.length) return null
-      return { label: r.id, temp, hot: r.id === hotId.value, x: Math.min(...xs) / W, y: Math.min(...ys) / H, w: (Math.max(...xs) - Math.min(...xs)) / W || 0.01, h: (Math.max(...ys) - Math.min(...ys)) / H || 0.01 }
+      return { label, name, temp, hot: r.id === hotId.value, x: Math.min(...xs) / W, y: Math.min(...ys) / H, w: (Math.max(...xs) - Math.min(...xs)) / W || 0.01, h: (Math.max(...ys) - Math.min(...ys)) / H || 0.01 }
     })
     .filter((x): x is NonNullable<typeof x> => !!x),
 )
@@ -69,7 +78,7 @@ const realClimate = computed<UnitSeries[]>(() => [
 const climate = computed(() => (props.demo ? climateSeries : realClimate.value))
 
 /* ---------- 总览：超声局放（各 SAM 取大） ---------- */
-const ampUnit = computed(() => catalogUnit('sam', 'us.amp', 'dB'))
+const ampUnit = computed(() => catalogUnit('sam', 'us.amp', 'dBμV'))
 const cntUnit = computed(() => catalogUnit('sam', 'us.cnt', '次/min'))
 const maxOver = (key: string) => {
   const vs = sams.value.map(s => ({ s, v: num(s, key) })).filter((x): x is { s: string; v: number } => x.v !== null)
@@ -91,14 +100,14 @@ const dischargeScales = computed(() => {
 const pdAxisColors = computed(() => ({ [dischargeUnits.value[0]!]: 'var(--s1)', [dischargeUnits.value[1]!]: 'var(--s2)' }))
 const hasPd = computed(() => sams.value.some(s => has(s, 'us.amp')))
 
-/* ---------- 总览：烟雾 / 气体（点表 pm 设备：≥1.0 μm 颗粒数、PM2.5、PM10） ---------- */
+/* ---------- 总览：烟雾 / 气体（点表 pm 设备：PM1.0（点表单位 个/L）、PM2.5、PM10（μg/m³）） ---------- */
 const PM_KEYS = [
-  { key: 'pm.1.0', name: '≥1.0 μm', color: 'var(--s3)' },
+  { key: 'pm.1.0', name: 'PM1.0', color: 'var(--s3)' },
   { key: 'pm.2.5', name: 'PM2.5', color: 'var(--s1)' },
   { key: 'pm.10', name: 'PM10', color: 'var(--s4)' },
 ]
 const pmReadings = computed(() => PM_KEYS.map(p => ({ ...p, unit: catalogUnit('pm', p.key), v: num(pm.value, p.key) })))
-// 趋势只画质量浓度（μg/m³）两路；颗粒数（个/L）量级不同，只给读数
+// 趋势只画质量浓度（μg/m³）两路；PM1.0 点表是颗粒数（个/L），量级不同，只给读数
 const pmSeries = computed<UnitSeries[]>(() => PM_KEYS.slice(1).map(p => ({ name: p.name, unit: catalogUnit('pm', p.key, 'μg/m³'), color: p.color, data: series(pm.value, p.key) })))
 
 /* ---------- 总览：UV 弧光（各 SAM 的 uv.pulse 近 24 h） ---------- */
@@ -119,14 +128,14 @@ const hasArc = computed(() => sams.value.some(s => has(s, 'uv.int')))
 
 /* ---------- 电气量（多功能电表 el.*） ---------- */
 const eu = (key: string, fb = '') => catalogUnit('meter', key, fb)
-const eRow = (label: string, key: string, digits = 1) => {
+const eRow = (label: string, key: string, digits = 1, unit?: string) => {
   const v = num(meter.value, key)
-  const u = eu(key)
+  const u = unit ?? eu(key)
   return [label, v === null ? '—' : `${v.toFixed(digits)}${u ? ' ' + u : ''}`] as [string, string]
 }
 const electricDemo = [
-  { label: '相电压', unit: 'V', items: [['Ua', '229.9'], ['Ub', '230.7'], ['Uc', '230.2']] },
-  { label: '三相电流', unit: 'A', items: [['Ia', '216.4'], ['Ib', '210.8'], ['Ic', '213.6']] },
+  { label: '相电压', unit: 'V', items: [['Ua', '229.9 V'], ['Ub', '230.7 V'], ['Uc', '230.2 V']] },
+  { label: '三相电流', unit: 'A', items: [['Ia', '216.4 A'], ['Ib', '210.8 A'], ['Ic', '213.6 A']] },
   { label: '功率', unit: '', items: [['有功', '142.6 kW'], ['无功', '28.4 kvar'], ['视在', '145.4 kVA']] },
   { label: '其他测量', unit: '', items: [['功率因数', '0.981'], ['频率', '50.00 Hz'], ['正向有功电能', '125680.4 kWh'], ['负荷率', '54.1 %']] },
 ]
@@ -134,10 +143,10 @@ const electric = computed(() =>
   props.demo
     ? electricDemo
     : [
-        { label: '相电压', unit: 'V', items: [['Ua', f1(num(meter.value, 'el.Ua'))], ['Ub', f1(num(meter.value, 'el.Ub'))], ['Uc', f1(num(meter.value, 'el.Uc'))]] },
-        { label: '三相电流', unit: 'A', items: [['Ia', f1(num(meter.value, 'el.Ia'))], ['Ib', f1(num(meter.value, 'el.Ib'))], ['Ic', f1(num(meter.value, 'el.Ic'))]] },
-        { label: '功率', unit: '', items: [eRow('有功', 'el.P'), eRow('无功', 'el.Q'), eRow('视在', 'el.S')] },
-        { label: '其他测量', unit: '', items: [eRow('功率因数', 'el.PF', 3), eRow('频率', 'el.F', 2), eRow('正向有功电能', 'el.Ep', 1), eRow('负荷率', 'el.load_pct', 1)] },
+        { label: '相电压', unit: 'V', items: [eRow('Ua', 'el.Ua', 1, 'V'), eRow('Ub', 'el.Ub', 1, 'V'), eRow('Uc', 'el.Uc', 1, 'V')] },
+        { label: '三相电流', unit: 'A', items: [eRow('Ia', 'el.Ia', 1, 'A'), eRow('Ib', 'el.Ib', 1, 'A'), eRow('Ic', 'el.Ic', 1, 'A')] },
+        { label: '功率', unit: '', items: [eRow('有功', 'el.P', 1, 'kW'), eRow('无功', 'el.Q', 1, 'kvar'), eRow('视在', 'el.S', 1, 'kVA')] },
+        { label: '其他测量', unit: '', items: [eRow('功率因数', 'el.PF', 3, ''), eRow('频率', 'el.F', 2, 'Hz'), eRow('正向有功电能', 'el.Ep', 1, 'kWh'), eRow('负荷率', 'el.load_pct', 1, '%')] },
       ],
 )
 const realCurrent = computed<UnitSeries[]>(() => ['a', 'b', 'c'].map((p, i) => ({ name: `${p.toUpperCase()} 相电流`, unit: 'A', color: ['var(--s4)', 'var(--s3)', 'var(--s6)'][i], data: series(meter.value, `el.I${p}`) })))
@@ -146,12 +155,34 @@ const current = computed(() => (props.demo ? currentSeries : realCurrent.value))
 /* ---------- 事件与录像 ---------- */
 const SEV: Record<string, [string, string]> = { CRITICAL: ['紧急', 'var(--crit)'], MAJOR: ['重要', 'var(--major)'], MINOR: ['次要', 'var(--minor)'], WARNING: ['提示', 'var(--info)'], INDETERMINATE: ['记录', 'var(--muted)'] }
 const SEV_ORDER = ['CRITICAL', 'MAJOR', 'MINOR', 'WARNING', 'INDETERMINATE']
+/** 量的简称（告警描述用）；没列的取点表标签 */
+const QTY: Record<string, string> = {
+  'ir.rise': '温升', 'ir.rmax': '最高温', 'ir.max': '最高温', 'ir.dmax': '区域温差', 'uv.int': '弧光强度', 'us.amp': '局放幅值', 'us.cnt': '局放次数',
+  'env.t': '环境温度', 'env.rh': '相对湿度', 'el.load_pct': '负荷率', 'dev.link': '通信',
+}
+function qtyOf(dev: string, key: string): string {
+  if (QTY[key]) return QTY[key]!
+  if (/^ir\.R\d+\.(max|pt)$/.test(key)) return '温度'
+  const kind = store.status?.devices.find(d => d.name === dev)?.kind ?? ''
+  return store.catalog?.devices[kind]?.find(p => p.key === key)?.label ?? key
+}
+/** 与子站同一口径：「部位 — 量 值 单位，阈值 x 单位」。摄像机告警的部位用热点区（details.hot，或键里的 R<n>） */
 function detailOf(a: AlarmRow): string {
   const d = a.details
+  const key = typeof d['key'] === 'string' ? d['key'] : ''
+  const kind = store.status?.devices.find(x => x.name === a.device)?.kind ?? ''
+  const unit = UNIT_FIX[key] ?? (typeof d['unit'] === 'string' ? d['unit'] : '')
+  const u = (x: unknown) => `${x}${unit ? ' ' + unit : ''}`
+  let place = labelOf(a.device)
+  if (kind === 'camera') {
+    const rn = typeof d['hot'] === 'number' ? `R${d['hot']}` : /^ir\.(R\d+)\./.exec(key)?.[1]
+    if (rn) place = `${regionLabel(rn) || '测温区'}（${rn}）`
+  }
+  if (key === 'dev.link') return `${place} — 通信中断`
   const v = d['value'] ?? d['val']
-  const k = typeof d['key'] === 'string' ? d['key'] : ''
-  const u = typeof d['unit'] === 'string' ? d['unit'] : ''
-  return `${labelOf(a.device)}${k ? ` · ${k}` : ''}${v !== undefined && v !== null ? ` = ${v}${u ? ' ' + u : ''}` : ''}`
+  const th = d['threshold']
+  const val = v !== undefined && v !== null ? `${qtyOf(a.device, key)} ${u(v)}` : typeof d['rule'] === 'string' ? d['rule'] : ''
+  return `${place}${val ? ' — ' + val : ''}${th !== undefined && th !== null ? `，阈值 ${u(th)}` : ''}`
 }
 interface EvRow { id: string; time: number; level: string; color: string; type: string; detail: string; state: string; ev: EvidenceItem[] }
 const evByEvent = computed(() => {
@@ -245,7 +276,7 @@ async function download(id: string, label: string) {
           <SensorPreviewTrend :series="smokeSeries" />
         </template>
         <template v-else-if="pm">
-          <div class="preview-readings smoke-readings"><div v-for="s in pmReadings" :key="s.key"><span><i :style="{ background: s.color }"/>{{ s.name }}</span><b>{{ f1(s.v, s.key === 'pm.1.0' ? 0 : 1) }}</b><small>{{ s.unit }}</small></div></div>
+          <div class="preview-readings smoke-readings"><div v-for="s in pmReadings" :key="s.key" :title="s.unit"><span><i :style="{ background: s.color }"/>{{ s.name }}</span><b>{{ f1(s.v, s.key === 'pm.1.0' ? 0 : 1) }}</b><small>{{ s.unit }}</small></div></div>
           <SensorPreviewTrend :series="pmSeries" />
         </template>
         <div v-else class="monitor-empty"><span class="empty-symbol">◌</span><strong>传感器待确认</strong><span>确定型号与接口后接入</span></div>

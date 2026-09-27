@@ -29,7 +29,7 @@ const props = withDefaults(defineProps<{
   /** 抓拍图（已取成 object URL，见 useAuthImage）；给了就整幅显示这张图 */
   image?: string | null
   /** EG：按摄像机坐标画的测温区（热像画面上的 0–1 比例坐标），温度取不到为 null；hot = 最热的（标黄） */
-  rois?: { label: string; temp: number | null; hot: boolean; x: number; y: number; w: number; h: number; point?: boolean }[]
+  rois?: { label: string; name?: string; temp: number | null; hot: boolean; x: number; y: number; w: number; h: number; point?: boolean }[]
   /** 测温区坐标所在画面的宽高比（如 640 / 512） */
   frameAspect?: number
 }>(), { hot: 1, thermalCap: '红外热成像', mode: 'side', palette: 'iron', phases: 3, envT: null, streams: null, image: null, frameAspect: 1.25 })
@@ -161,8 +161,9 @@ defineExpose({ capture })
           <div v-else class="nost">热像流未接入</div>
           <!-- EG：测温区按摄像机坐标画在热像画面上（画面按 contain 缩放，框跟着实际画面区域走），最热的标黄 -->
           <div v-if="showBoxes && rois?.length" class="roi-layer" :style="roiRect">
-            <div v-for="r in rois" :key="r.label" class="roi" :class="{ hot: r.hot, point: r.point }" :style="{ left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%' }">
+            <div v-for="r in rois" :key="r.label" class="roi" :class="{ hot: r.hot, point: r.point }" :style="{ left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%' }" :title="[r.label, r.name, (r.temp ?? '--') + '℃'].filter(Boolean).join(' ')">
               <span>{{ r.label }} {{ r.temp ?? '--' }}℃</span>
+              <em v-if="r.name && !r.point">{{ r.name }}</em>
             </div>
           </div>
           <!-- 没有区域定义时，框温列成标签条 -->
@@ -207,7 +208,9 @@ defineExpose({ capture })
 .roi-layer { position: absolute; pointer-events: none; }
 .roi { position: absolute; border: 1.5px solid #fff; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); }
 .roi.point { border-radius: 50%; }
-.roi.hot { border-color: #ffe08a; }
+.roi.hot { border-color: #ffe08a; border-width: 2px; }
+.roi em { position: absolute; left: 3px; top: 2px; right: 3px; font-style: normal; font-size: 10px; color: rgba(255, 255, 255, .85); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 0 2px #000; }
+.roi.hot em { color: #ffe08a; }
 .roi span { position: absolute; left: 0; top: -17px; font-size: 10.5px; color: #fff; background: rgba(0, 0, 0, .6); padding: 0 4px; border-radius: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .roi.hot span { color: #ffe08a; }
 .strip { position: absolute; left: 6px; top: 5px; display: flex; gap: 4px; flex-wrap: wrap; max-width: calc(100% - 90px); }
