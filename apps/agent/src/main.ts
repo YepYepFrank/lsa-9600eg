@@ -17,6 +17,8 @@ import { egConfig } from './config.js'
 import { renderGatewayConfig } from './gateway/render.js'
 import { RingLogger } from './logging/ring-logger.js'
 import { denyOnIfaces } from './net/deny.js'
+import { AuthService } from './auth/auth.service.js'
+import { streamProxy } from './stream/stream.proxy.js'
 
 async function bootstrap() {
   const cfg = egConfig()
@@ -31,6 +33,8 @@ async function bootstrap() {
   // 管理页只对 LAN2 开：LAN1（摄像机网）进来的一律 403（local.yaml http.denyOn；EG 编排经 EG_HTTP_DENY_ON 给）
   const deny = denyOnIfaces([...(cfg.local.http.denyOn ?? []), ...(process.env['EG_HTTP_DENY_ON'] ?? '').split(',').map(x => x.trim()).filter(Boolean)])
   if (deny) app.use(deny)
+  // 实时画面（WHEP / HLS）带会话鉴权反代到本机 mediamtx（eg-ui-v2）；请求体（SDP）要原样转，放在 Nest 的 body parser 之前
+  app.use('/api/stream', streamProxy(cfg, app.get(AuthService)))
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }))
 
   // 本地管理页：构建产物由 agent 直出（EG_WEB_DIR 或仓库里 apps/admin-web/dist）

@@ -9,8 +9,12 @@ const rtcBroken = { v: false }
  *   · WebRTC 首帧 8 s 内出不来就换 HLS（HLS 起播要攒几个分片，给 20 s）；都不行显示「无视频信号」，按 5 → 10 → 20 → 30 s 退避重连
  *   · 本页已经有一路 WebRTC 因 ICE 不通失败过，后续窗口直接走 HLS，免得 16 分屏每格都白等 8 s
  *   · 滚出视野 / 页面切到后台 5 s 后断流，回来再连 —— 列表页、监视墙翻页不白占带宽和解码
- * 地址是同源相对路径（/stream/<路径>/whep、/hls/<路径>/index.m3u8），开发机 vite、子站 Nginx 转给 mediamtx。 */
+ * 地址是同源相对路径；EG 本地管理页上是 api/stream/<路径>/whep、…/index.m3u8，由 agent 带会话鉴权反代到本机 mediamtx，
+ * 所以 WHEP 与 HLS 的每个请求都带 Authorization（HLS 经 hls.js 的 xhrSetup；没法带头的原生 HLS 不用）。 */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { session } from '@/session'
+
+const authHeaders = (): Record<string, string> => (session.token ? { Authorization: `Bearer ${session.token}` } : {})
 
 const props = defineProps<{ whep: string; hls?: string }>()
 const emit = defineEmits<{ state: [s: StreamState, via: 'webrtc' | 'hls' | null] }>()
@@ -27,7 +31,7 @@ const FIRST_FRAME_HLS_MS = 20000
 const BACKOFF = [5000, 10000, 20000, 30000]
 
 let pc: RTCPeerConnection | null = null
-let session: string | null = null
+let whepSession: string | null = null
 let hls: { destroy(): void } | null = null
 let timer: ReturnType<typeof setTimeout> | undefined
 let tries = 0
@@ -50,8 +54,8 @@ function teardown() {
     pc = null
   }
   // WHEP 会话显式结束，mediamtx 那边立刻释放（按需生成的测试流也就能及时停）
-  if (session) void fetch(session, { method: 'DELETE' }).catch(() => {})
-  session = null
+  if (whepSession) void fetch(whepSession, { method: 'DELETE', headers: authHeaders() }).catch(() => {})
+  whepSession = null
   hls?.destroy()
   hls = null
   const v = video.value
@@ -113,11 +117,11 @@ async function tryWebrtc(my: number): Promise<boolean> {
       const t = setTimeout(res, 2000)
       c.onicegatheringstatechange = () => c.iceGatheringState === 'complete' && (clearTimeout(t), res())
     })
-    const r = await fetch(props.whep, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: c.localDescription!.sdp })
+    const r = await fetch(props.whep, { method: 'POST', headers: { 'Content-Type': 'application/sdp', ...authHeaders() }, body: c.localDescription!.sdp })
     // 路径没有推流（SAM 没接、测试流没起来）：mediamtx 回 404，这不是 WebRTC 不通，不改走 HLS 的判断
     if (!r.ok) return false
     const loc = r.headers.get('Location')
-    session = loc ? new URL(loc, new URL(props.whep, location.href)).href : null
+    whepSession = loc ? new URL(loc, new URL(props.whep, location.href)).href : null
     await c.setRemoteDescription({ type: 'answer', sdp: await r.text() })
     if (my !== gen) return false
     const ok = await firstFrame(my)
@@ -142,14 +146,22 @@ async function tryHls(my: number): Promise<boolean> {
     const { default: Hls } = await import('hls.js')
     if (my !== gen) return false
     if (Hls.isSupported()) {
-      const h = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 })
+      const h = new Hls({
+        lowLatencyMode: true,
+        liveSyncDurationCount: 2,
+        xhrSetup: xhr => {
+          const a = authHeaders().Authorization
+          if (a) xhr.setRequestHeader('Authorization', a)
+        },
+      })
       hls = h
       h.on(Hls.Events.ERROR, (_e, d) => {
         if (d.fatal && my === gen) void start()
       })
       h.loadSource(props.hls!)
       h.attachMedia(v)
-    } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+    } else if (!session.token && v.canPlayType('application/vnd.apple.mpegurl')) {
+      // 原生 HLS 带不了 Authorization：只在不需要会话的场合用
       v.src = props.hls!
     } else return false
     void v.play().catch(() => {})

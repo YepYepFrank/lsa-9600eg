@@ -7,6 +7,8 @@ const user = ref('maint')
 const password = ref('')
 const busy = ref(false)
 const err = ref('')
+const canPreview = import.meta.env.DEV
+function preview() { location.assign(`${location.pathname}?demo=1`) }
 
 async function submit() {
   if (!password.value) return
@@ -35,6 +37,7 @@ async function submit() {
       <el-input v-model="password" type="password" show-password autocomplete="current-password" />
       <el-alert v-if="err" :title="err" type="error" :closable="false" show-icon />
       <el-button type="primary" native-type="submit" :loading="busy" :disabled="!password">登录</el-button>
+      <el-button v-if="canPreview" native-type="button" @click="preview">本地演示预览（无需登录）</el-button>
       <p class="hint">从子站「边缘网关 → 该网关 → EG 管理页」进来不用登录。连续 5 次口令错误锁定 15 分钟；操作都记本地审计。</p>
     </form>
   </div>

@@ -3,6 +3,7 @@
  *   只开 RTSP（子站拉）与本机 API；读权限只给子站主机与本机，任何地址都不许推流。
  * G5 修订（docs/G5证据约定.md §1）：两路**子码流一直拉、一直录**（循环录像要覆盖故障前，边缘不能「没人看就不拉」），
  *   主码流仍按需；录像 fMP4、每段 60 s、按 evidence.ringHours 自动删最旧的；回放服务（裁证据片段）只给本机。
+ * eg-ui-v2：本地管理页看实时画面 —— WebRTC（WHEP）与 HLS 的 HTTP 只听本机，由 agent 带会话鉴权反代；读权限仍只给子站主机与本机。
  * 写配置文件时内容不变就不写（mediamtx 监视配置文件、一变就重载）。 */
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -80,13 +81,20 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
   }
   const conf = {
     logLevel: 'warn',
-    // 只开 RTSP 与本机 API：子站 mediamtx 从这里拉，浏览器不直连 EG
+    // RTSP 给子站 mediamtx 拉；WebRTC / HLS 的 HTTP 只听本机（本地管理页经 agent 反代，浏览器不直连 mediamtx 的信令）
     rtsp: true,
     rtspAddress: `:${v.rtspPort}`,
     rtspTransports: ['tcp'],
     rtmp: false,
-    hls: false,
-    webrtc: false,
+    hls: true,
+    hlsAddress: v.hlsListen,
+    hlsVariant: 'fmp4',
+    hlsSegmentDuration: '1s',
+    webrtc: true,
+    webrtcAddress: v.webrtcListen,
+    webrtcLocalUDPAddress: `:${v.webrtcUdp}`,
+    webrtcLocalTCPAddress: '',
+    webrtcAdditionalHosts: v.webrtcHosts,
     srt: false,
     // mediamtx 1.21 起缺省还开 MoQ（QUIC / HTTP/3，:8892 / :8893）：EG 用不上，关掉，免得多开端口
     moq: false,

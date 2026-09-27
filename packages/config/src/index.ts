@@ -84,6 +84,14 @@ export interface LocalFile {
     /** mediamtx 回放服务（裁证据片段，G5）：eg-video 访问的地址 / 监听地址（EG 上只听本机） */
     playback: string
     playbackListen: string
+    /** 本地管理页看实时画面（eg-ui-v2）：mediamtx 的 WebRTC（WHEP）与 HLS 只听本机，由 agent 带会话鉴权反代（/api/stream/…）。
+     *  webrtcUdp：WebRTC 媒体的 UDP 端口（ICE 靠会话里协商的凭据，信令只经 agent）；webrtcHosts：额外通告给浏览器的地址（开发样机容器里填 127.0.0.1） */
+    webrtc: string
+    webrtcListen: string
+    webrtcUdp: number
+    webrtcHosts: string[]
+    hls: string
+    hlsListen: string
   }
   /** 循环录像与证据（G5，docs/G5证据约定.md §6；都待确认） */
   evidence: {
@@ -126,7 +134,7 @@ export interface EgConfig extends EgFile {
   /** local.yaml 原样（写给同一 compose 网络里的容器看的地址，IoT Gateway 配置按它生成） */
   local: LocalFile
   /** 本进程自己连的地址：local.yaml 的值，开发时可被环境变量覆盖（进程跑在宿主机、总线在容器里） */
-  conn: { bus: string; tb: string; tbHttp: string; httpPort: number; stationHttp: string; mtxApi: string; camHost: string }
+  conn: { bus: string; tb: string; tbHttp: string; httpPort: number; stationHttp: string; mtxApi: string; camHost: string; mtxWebrtc: string; mtxHls: string }
   dir: string
 }
 
@@ -143,7 +151,7 @@ export const LOCAL_DEFAULTS: LocalFile = {
     api: 'unix:///var/run/docker.sock',
     containers: { tb: 'lsa-eg-tb', gateway: 'lsa-eg-gateway', mosquitto: 'lsa-eg-mosquitto', mediamtx: 'lsa-eg-mediamtx' },
   },
-  video: { rtspPort: 8554, api: 'http://127.0.0.1:9997', apiListen: '127.0.0.1:9997', readFrom: [], apiFrom: [], closeAfter: '10s', playback: 'http://127.0.0.1:9996', playbackListen: '127.0.0.1:9996' },
+  video: { rtspPort: 8554, api: 'http://127.0.0.1:9997', apiListen: '127.0.0.1:9997', readFrom: [], apiFrom: [], closeAfter: '10s', playback: 'http://127.0.0.1:9996', playbackListen: '127.0.0.1:9996', webrtc: 'http://127.0.0.1:8889', webrtcListen: '127.0.0.1:8889', webrtcUdp: 8189, webrtcHosts: [], hls: 'http://127.0.0.1:8888', hlsListen: '127.0.0.1:8888' },
   evidence: {
     ringHours: 24,
     preS: 30,
@@ -202,6 +210,8 @@ export function loadConfig(dir = configDir()): EgConfig {
     mtxApi: (env['EG_MTX_API'] || local.video.api).replace(/\/$/, ''),
     // eg-video 自己直连摄像机（探测、抓图）时把流地址里的「主机:端口」换成它 —— 开发时摄像机测试源在容器里，宿主机上的 eg-video 走映射端口
     camHost: env['EG_CAM_HOST'] || '',
+    mtxWebrtc: (env['EG_MTX_WEBRTC'] || local.video.webrtc).replace(/\/$/, ''),
+    mtxHls: (env['EG_MTX_HLS'] || local.video.hls).replace(/\/$/, ''),
   }
   return { ...eg, local, conn, dir }
 }

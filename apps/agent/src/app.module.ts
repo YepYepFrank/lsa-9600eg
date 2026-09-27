@@ -25,9 +25,10 @@ import { UplinkService } from './uplink/uplink.service.js'
 import { VideoClient, VideoController } from './video/video.controller.js'
 import { EvidenceController } from './evidence/evidence.controller.js'
 import { EvidenceService } from './evidence/evidence.service.js'
+import { HistoryController } from './history/history.controller.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController, HistoryController],
   providers: [
     configProvider,
     AuditService,

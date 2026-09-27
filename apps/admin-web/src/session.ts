@@ -5,6 +5,9 @@
  * 接口一律相对路径（api/...），挂在哪个路径下都对。 */
 import { reactive } from 'vue'
 
+// 仅开发服务器允许显式预览（领导 80e01ad）；生产构建始终使用真实登录和接口。
+export const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === '1'
+
 export interface Me {
   user: string
   name: string
@@ -43,6 +46,10 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  if (demoMode) {
+    const { demoApi } = await import('./demo')
+    return demoApi(path, init.method ?? 'GET') as T
+  }
   const r = await fetch(`api/${path}`, {
     method: init.method ?? 'GET',
     headers: { 'content-type': 'application/json', ...(session.token ? { Authorization: `Bearer ${session.token}` } : {}) },
@@ -67,6 +74,10 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
 
 /** 启动：带 ?sso= 的先换会话（换完从地址栏去掉票据），再取当前用户 */
 export async function boot(): Promise<void> {
+  if (demoMode) {
+    session.me = { user: 'demo', name: '演示访客', role: 'view', via: 'local' }
+    return
+  }
   const url = new URL(location.href)
   const ticket = url.searchParams.get('sso')
   if (ticket) {
@@ -96,6 +107,10 @@ export async function login(user: string, password: string): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
+  if (demoMode) {
+    location.assign(location.pathname)
+    return
+  }
   try {
     await api('auth/logout', { method: 'POST' })
   } catch {

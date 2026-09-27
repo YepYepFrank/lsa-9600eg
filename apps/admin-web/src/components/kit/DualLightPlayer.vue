@@ -7,7 +7,7 @@
    画面上的数字一律来自调用方传入的实测值：框温只认 boxes（VideoChannel.boxes），最高温只认 tmax，色标下限只认 envT。
    实时流上各框在画面里的位置要 SAM 的分框定义（属性 ir.boxes，硬件接入时给），现在框温以标签条列出，不在画面上画框。
    点温要 SAM 的热像温度矩阵，接口未接入前不提供取点。 */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DualStreams } from '@/utils/video'
 import StreamVideo from './StreamVideo.vue'
 
@@ -28,7 +28,31 @@ const props = withDefaults(defineProps<{
   streams?: DualStreams | null
   /** 抓拍图（已取成 object URL，见 useAuthImage）；给了就整幅显示这张图 */
   image?: string | null
-}>(), { hot: 1, thermalCap: '红外热成像', mode: 'side', palette: 'iron', phases: 3, envT: null, streams: null, image: null })
+  /** EG：按摄像机坐标画的测温区（热像画面上的 0–1 比例坐标），温度取不到为 null；hot = 最热的（标黄） */
+  rois?: { label: string; temp: number | null; hot: boolean; x: number; y: number; w: number; h: number; point?: boolean }[]
+  /** 测温区坐标所在画面的宽高比（如 640 / 512） */
+  frameAspect?: number
+}>(), { hot: 1, thermalCap: '红外热成像', mode: 'side', palette: 'iron', phases: 3, envT: null, streams: null, image: null, frameAspect: 1.25 })
+
+/* 热像实况按 object-fit: contain 显示：测温区图层要贴着实际画面区域（去掉上下 / 左右黑边） */
+const thmPane = ref<HTMLDivElement>()
+const paneSize = ref({ w: 0, h: 0 })
+let paneRo: ResizeObserver | undefined
+watch(thmPane, el => {
+  paneRo?.disconnect()
+  if (!el) return
+  paneRo = new ResizeObserver(() => (paneSize.value = { w: el.clientWidth, h: el.clientHeight }))
+  paneRo.observe(el)
+})
+onBeforeUnmount(() => paneRo?.disconnect())
+const roiRect = computed(() => {
+  const { w, h } = paneSize.value
+  if (!w || !h) return { inset: '0' }
+  const a = props.frameAspect
+  const cw = w / h > a ? h * a : w
+  const ch = w / h > a ? h : w / a
+  return { left: `${(w - cw) / 2}px`, top: `${(h - ch) / 2}px`, width: `${cw}px`, height: `${ch}px` }
+})
 
 const live = computed(() => !props.offline && !props.image && !!props.streams)
 
@@ -131,12 +155,18 @@ defineExpose({ capture })
         </template>
         <span v-if="mode !== 'fusion'" class="cap">可见光</span>
       </div>
-      <div v-if="showThm" class="pane thm">
+      <div v-if="showThm" ref="thmPane" class="pane thm">
         <template v-if="live">
           <StreamVideo v-if="streams!.ir" ref="irV" :whep="streams!.ir.whep" :hls="streams!.ir.hls" />
           <div v-else class="nost">热像流未接入</div>
-          <!-- 实况上不知道各框在画面里的位置（待 SAM 分框定义），框温列成标签条 -->
-          <div v-if="showBoxes" class="strip">
+          <!-- EG：测温区按摄像机坐标画在热像画面上（画面按 contain 缩放，框跟着实际画面区域走），最热的标黄 -->
+          <div v-if="showBoxes && rois?.length" class="roi-layer" :style="roiRect">
+            <div v-for="r in rois" :key="r.label" class="roi" :class="{ hot: r.hot, point: r.point }" :style="{ left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%' }">
+              <span>{{ r.label }} {{ r.temp ?? '--' }}℃</span>
+            </div>
+          </div>
+          <!-- 没有区域定义时，框温列成标签条 -->
+          <div v-else-if="showBoxes" class="strip">
             <span v-for="(l, i) in labels" :key="l" :class="{ hot: i === hot % labels.length }">{{ boxText(i) }}</span>
           </div>
         </template>
@@ -174,6 +204,12 @@ defineExpose({ capture })
 .box { position: absolute; top: 47.5%; width: 11.2%; height: 15.8%; border: 1.5px solid #fff; border-radius: 2px; }
 .box.hot { border-color: #ffe08a; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); }
 .box span { position: absolute; left: 50%; top: -17px; transform: translateX(-50%); font-size: 10.5px; color: #fff; background: rgba(0, 0, 0, .55); padding: 0 4px; border-radius: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.roi-layer { position: absolute; pointer-events: none; }
+.roi { position: absolute; border: 1.5px solid #fff; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); }
+.roi.point { border-radius: 50%; }
+.roi.hot { border-color: #ffe08a; }
+.roi span { position: absolute; left: 0; top: -17px; font-size: 10.5px; color: #fff; background: rgba(0, 0, 0, .6); padding: 0 4px; border-radius: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.roi.hot span { color: #ffe08a; }
 .strip { position: absolute; left: 6px; top: 5px; display: flex; gap: 4px; flex-wrap: wrap; max-width: calc(100% - 90px); }
 .strip span { font-size: 10.5px; color: #fff; background: rgba(0, 0, 0, .55); padding: 0 4px; border-radius: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; border: 1px solid transparent; }
 .strip span.hot { border-color: #ffe08a; color: #ffe08a; }

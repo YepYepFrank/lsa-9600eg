@@ -53,7 +53,7 @@ function copy(t: string) {
           <span class="t2">{{ r.conf.label }}</span>
           <span class="sp" />
           <span class="tag">{{ KIND[r.conf.kind] ?? r.conf.kind }}</span>
-          <el-button size="small" text @click="router.push('/live/' + r.conf.name)">实时数据 ›</el-button>
+          <el-button size="small" text @click="router.push('/manage/live/' + r.conf.name)">实时数据 ›</el-button>
         </div>
         <dl class="kv">
           <template v-for="k in MAIN_ATTRS.filter(k => r.conf.attrs[k] !== undefined)" :key="k">

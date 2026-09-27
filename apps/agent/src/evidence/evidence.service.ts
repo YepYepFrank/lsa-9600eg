@@ -110,6 +110,7 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
   /** 本地告警发生（告警事件第 1 版） */
   onAlarm(e: { eventId: string; occurredAt: number; severity: string; type: string; device: string }): void {
     if (Date.now() - e.occurredAt > 10 * 60_000) return // 对账补上来的陈年告警不补证据
+    if (process.env['EG_PASSIVE'] === '1') return // 旁观实例（开发机并排验接口）不做证据，免得与正在跑的 agent 重复
     if (this.store.where('event_id = ?', e.eventId).length) return
     void this.createGroup({
       eventId: e.eventId,
