@@ -11,6 +11,7 @@ rtmp: no
 hls: no
 webrtc: no
 srt: no
+moq: no
 api: yes
 apiAddress: :9997
 

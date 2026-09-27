@@ -77,6 +77,8 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
     hls: false,
     webrtc: false,
     srt: false,
+    // mediamtx 1.21 起缺省还开 MoQ（QUIC / HTTP/3，:8892 / :8893）：EG 用不上，关掉，免得多开端口
+    moq: false,
     api: true,
     apiAddress: v.apiListen,
     metrics: false,
