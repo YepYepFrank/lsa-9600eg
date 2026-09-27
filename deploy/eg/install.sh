@@ -66,9 +66,18 @@ fi
 if ! command -v docker >/dev/null || ! command -v chronyd >/dev/null; then
   ls debs/*.deb >/dev/null 2>&1 || { echo '没有 docker / chrony，发布件里也没有离线包 debs/（pack:eg -- --debs）' >&2; exit 1; }
   echo '装离线包（Docker、chrony）...'
-  # apt 装本地 .deb：自己排依赖顺序、顺手卸掉与 chrony 冲突的 systemd-timesyncd；不联网
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --no-download \
-    -o Dir::Etc::SourceList=/dev/null -o Dir::Etc::SourceParts=/dev/null ./debs/*.deb
+  # 与 chrony 冲突的 systemd-timesyncd 先卸（卸载不用联网）；再 dpkg 一次装全部（同一批里自己排依赖顺序）。
+  # 不用 apt-get install ./debs/*.deb：机器上留着装系统时的软件源索引时，apt 会拿索引里的记录去找包（虚拟样机上报「Pathname to install is not absolute」）
+  installed() { dpkg-query -W -f '${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
+  if installed systemd-timesyncd; then DEBIAN_FRONTEND=noninteractive apt-get remove -y systemd-timesyncd; fi
+  # 只装本机没有、或比本机新的（debs/ 是在干净容器里下的，比服务器版多出的那些不重装、不降级）
+  todo=()
+  for d in debs/*.deb; do
+    pkg="$(dpkg-deb -f "$d" Package)"; ver="$(dpkg-deb -f "$d" Version)"
+    cur="$(dpkg-query -W -f '${Status} ${Version}' "$pkg" 2>/dev/null | awk '$3=="installed"{print $4}' || true)"
+    if [ -z "$cur" ] || dpkg --compare-versions "$ver" gt "$cur"; then todo+=("$d"); fi
+  done
+  [ ${#todo[@]} -eq 0 ] || DEBIAN_FRONTEND=noninteractive dpkg -i "${todo[@]}"
 fi
 systemctl enable --now docker >/dev/null 2>&1 || true
 $DC version >/dev/null 2>&1 || { echo '没有 docker compose 插件' >&2; exit 1; }

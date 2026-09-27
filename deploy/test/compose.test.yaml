@@ -1,0 +1,46 @@
+# 测试件（只在虚拟样机 / 实验台上用，**现场不装**）：代替「同事的采集程序」与「双目摄像机」，让正式编排整条链路有数据可跑（G6 验收）。
+#
+#   emu      packages/emu：按 config/eg.yaml 的设备清单往本机总线（127.0.0.1:1884）发 SAM / 电表 / 颗粒物数据，
+#            并扮摄像机的测温接口（http://127.0.0.1:3190/emu/cam，eg-video 的 sim 驱动取它）
+#   camera   RTSP 测试源（mediamtx + ffmpeg）扮摄像机的四路视频：127.0.0.1:8555（账号 admin / lsa-cam），API 127.0.0.1:9998（emu 断流用）
+#
+# 放在部署目录的 test/ 下，由 test/test.sh 起停；与正式编排（../compose.yaml）不共用任何容器。
+name: lsa-eg-test
+
+services:
+  emu:
+    image: ${EG_EMU_IMAGE:?test.sh 设}
+    container_name: lsa-eg-test-emu
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app/apps/agent
+    command: ['node', '--import', '@swc-node/register/esm-register', '../../packages/emu/src/index.ts']
+    environment:
+      TZ: Asia/Shanghai
+      EG_CONFIG_DIR: /config
+      EG_BUS_MQTT: mqtt://127.0.0.1:1884
+      EMU_CTL_PORT: '3190'
+      # 摄像机流地址（给 EG mediamtx 拉，宿主机网络上走映射端口）与测试源 API
+      EMU_CAM_RTSP: rtsp://admin:lsa-cam@127.0.0.1:8555
+      EMU_CAM_API: http://127.0.0.1:9998
+    volumes:
+      - ../config:/config
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '2' }
+
+  camera:
+    image: bluenviron/mediamtx:${MEDIAMTX_VERSION:-1.21.1}-ffmpeg
+    container_name: lsa-eg-test-camera
+    restart: unless-stopped
+    command: ['/cfg/camera.yml']
+    volumes:
+      - ./camera.yml:/cfg/camera.yml:ro
+    ports:
+      - '127.0.0.1:8555:8554'
+      - '127.0.0.1:9998:9997'
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '2' }

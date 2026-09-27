@@ -4,6 +4,7 @@
 //   pnpm pack:eg -- --images     连同全部镜像（构建 lsa-eg-app 镜像、拉其余镜像，导出 images-amd64.tar.gz；要联网、几分钟）
 //   pnpm pack:eg -- --debs       连同 Docker 与 chrony 的离线 deb（Ubuntu 24.04 amd64，在一次性 ubuntu:24.04 容器里下；要联网）
 //   pnpm pack:eg -- --images --debs   离线全量（G6：装到裸 Ubuntu 上不联网）
+//   pnpm pack:eg -- --test       另出测试件 dist/eg-<版本>-test/（仿真器 + RTSP 测试源，虚拟样机验收用，现场不装；不进 IMAGES.txt）
 //
 // 镜像只出 amd64（X26A 是 x86_64，开发计划 §1）。
 import { execFileSync } from 'node:child_process'
@@ -15,6 +16,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BACKEND = process.env.LSA_BACKEND ?? resolve(ROOT, '../lsa-9600sp-backend')
 const IMAGES = process.argv.includes('--images')
 const DEBS = process.argv.includes('--debs')
+const TEST = process.argv.includes('--test')
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit', cwd: ROOT, ...opts })
 const out = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8' }).trim()
 
@@ -139,5 +141,35 @@ if (DEBS) {
   ].join(' && ')
   run('docker', ['run', '--rm', '--platform', 'linux/amd64', '-v', `${debs}:/out`, 'ubuntu:24.04', 'bash', '-c', sh])
   console.log(`  → ${debs}`)
+}
+// 6. 测试件：emu 镜像（应用镜像的构建上下文 + packages/emu）、RTSP 测试源镜像、compose.test.yaml、test.sh
+if (TEST) {
+  console.log('\n6. 测试件（现场不装）')
+  const stageT = resolve(ROOT, 'dist', '.stage-test')
+  const distT = resolve(ROOT, 'dist', `eg-${VERSION}-test`)
+  rmSync(stageT, { recursive: true, force: true })
+  rmSync(distT, { recursive: true, force: true })
+  cpSync(STAGE, stageT, { recursive: true })
+  cpSync(resolve(ROOT, 'packages/emu'), resolve(stageT, 'packages/emu'), { recursive: true, filter: skip })
+  const emuPkg = JSON.parse(readFileSync(resolve(stageT, 'packages/emu/package.json'), 'utf8'))
+  for (const k of ['@lsa/model', '@lsa/points']) emuPkg.dependencies[k] = 'workspace:*'
+  writeFileSync(resolve(stageT, 'packages/emu/package.json'), JSON.stringify(emuPkg, null, 2) + '\n')
+  const emuImg = `lsa-eg-emu:${VERSION}`
+  const camImg = 'bluenviron/mediamtx:1.21.1-ffmpeg'
+  run('docker', ['build', '--platform', 'linux/amd64', '-t', emuImg, stageT])
+  try {
+    out('docker', ['image', 'inspect', camImg])
+  } catch {
+    run('docker', ['pull', '-q', '--platform', 'linux/amd64', camImg])
+  }
+  mkdirSync(distT, { recursive: true })
+  const tar = resolve(distT, 'images-test-amd64.tar')
+  run('docker', ['save', '-o', tar, emuImg, camImg])
+  run('gzip', ['-1', '-f', tar])
+  for (const [from, to] of [['deploy/test/compose.test.yaml', 'compose.test.yaml'], ['deploy/test/test.sh', 'test.sh'], ['deploy/dev/camera.yml', 'camera.yml']]) {
+    writeFileSync(resolve(distT, to), readFileSync(resolve(ROOT, from), 'utf8').replace(/\r\n/g, '\n'))
+  }
+  writeFileSync(resolve(distT, 'VERSION'), VERSION + '\n')
+  console.log(`  → ${distT}（拷到 EG 的 /opt/lsa-eg/test/，sudo bash test/test.sh up）`)
 }
 console.log('\n完成。')
