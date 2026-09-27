@@ -47,6 +47,8 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string }> = {
   'EG-rh': { type: '环境' },
   'EG-ol': { type: '过载' },
   'EG-pm': { type: '烟气' },
+  // G4：摄像机区域温差（ir.dmax > dphase 持续 5 min，设备配置 cam_*）
+  'EG-dphase': { type: '区域温差' },
 }
 
 /** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用 */

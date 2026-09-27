@@ -1,12 +1,11 @@
 /* 仿真摄像机（G4 摄像机测温约定 §6）：本柜那台双目摄像机的「区域测温 + 四路视频 + 原生报警」。
  *
  *   视频：RTSP 测试源（deploy/dev 的 camera 容器，mediamtx + ffmpeg 按需出画面）；断流经它的 API 把那一路的 runOnDemand 摘掉。
- *   测温：R1–R3 与全画面，用与子站模拟器同一套发生器（@lsa/points 的 samTmax / envT，温升随负荷与日波动变；
+ *   测温：R1–R3 与全画面，用与子站模拟器同一个发生器（@lsa/points 的 camTemps，温升随负荷与日波动变；
  *        AH03 的「6 小时内爬升到越限」照样出现在热点隔室对应的区域上）。
  *   eg-video 的 sim 驱动每 2 s 取 GET /emu/cam/state。
- *
- * 区域温度的算法先放在这里；子站模拟器也要按区域出（后端），到时挪进 @lsa/points 共用。 */
-import { gen as g, type CabPlan } from '@lsa/points'
+ */
+import { camTemps, DEFAULT_REGIONS as SHARED_REGIONS, FRAME as SHARED_FRAME, type CabPlan } from '@lsa/points'
 
 export interface RegionDef {
   name: string
@@ -28,17 +27,11 @@ export interface CamState {
   alarm: string
 }
 
-const FRAME = { w: 640, h: 512 }
-const DEFAULT_REGIONS: RegionDef[] = [
-  { name: 'R1', type: 'region', enabled: true, coords: { x: 50, y: 90, width: 160, height: 150 } },
-  { name: 'R2', type: 'region', enabled: true, coords: { x: 240, y: 90, width: 160, height: 150 } },
-  { name: 'R3', type: 'region', enabled: true, coords: { x: 430, y: 90, width: 160, height: 150 } },
-]
+const FRAME = { ...SHARED_FRAME }
+const DEFAULT_REGIONS: RegionDef[] = structuredClone(SHARED_REGIONS)
 const PATHS = { visible: 'visible', visibleSub: 'visible-sub', thermal: 'thermal', thermalSub: 'thermal-sub' } as const
 type Ch = keyof typeof PATHS
 
-const frac = (x: number) => x - Math.floor(x)
-const r1 = (v: number) => Math.round(v * 10) / 10
 
 export class CameraSim {
   private regions: RegionDef[] = structuredClone(DEFAULT_REGIONS)
@@ -65,48 +58,14 @@ export class CameraSim {
     return { online: !this.dead, frame: FRAME, streams, regions: this.regions, temps: this.dead ? null : this.temps(ts), alarm: this.alarm }
   }
 
+  /** 温度：与子站模拟器同一个发生器（@lsa/points camTemps）；注入的过温在有效期内覆盖区域最高温 */
   private temps(ts: number): NonNullable<CamState['temps']> {
-    const p = this.plan.params
-    const env = g.envT(p, ts)
-    const out: NonNullable<CamState['temps']>['regions'] = []
-    let gmax = -Infinity
-    let gmin = Infinity
-    let gx = 0
-    let gy = 0
-    this.regions.forEach((r, i) => {
-      if (!r.enabled) return
-      const seed = g.hash(`${p.code}|R${i + 1}`)
-      // hash 是整数，frac(整数 × k) 恒为 0：先归一到 0–1
-      const u = (seed >>> 0) / 4294967296
-      // 区域 i 对着第 i 个隔室（隔室少于 3 个时轮流）；同一隔室的第二个区域温升再打个折
-      const room = i % Math.max(1, this.rooms)
-      const base = g.samTmax(p, room, ts)
-      const factor = i < this.rooms ? 1 : 0.85 + 0.1 * u
-      let max = r1(env + (base - g.ENV_T) * factor + g.noise(seed, Math.floor(ts / 2000)) * 0.15)
-      const inj = this.hot.get(r.name)
-      if (inj && inj.until > ts) max = inj.max
-      else if (inj) this.hot.delete(r.name)
-      const min = r1(Math.max(env - 1, max - 6 - 4 * frac(u * 7)))
-      const c = r.coords as Record<string, number>
-      if (r.type === 'point') {
-        out.push({ name: r.name, pt: max })
-      } else {
-        const [x0, y0, w, h] =
-          r.type === 'line'
-            ? [Math.min(c['startX']!, c['endX']!), Math.min(c['startY']!, c['endY']!), Math.abs(c['endX']! - c['startX']!) || 1, Math.abs(c['endY']! - c['startY']!) || 1]
-            : r.type === 'polygon'
-              ? bbox((c['points'] as unknown as { x: number; y: number }[]) ?? [])
-              : [c['x']!, c['y']!, c['width']!, c['height']!]
-        const maxX = Math.round(x0! + w! * (0.3 + 0.4 * frac(u * 3 + ts / 600_000)))
-        const maxY = Math.round(y0! + h! * (0.3 + 0.4 * frac(u * 5 + ts / 900_000)))
-        out.push({ name: r.name, max, min, maxX, maxY })
-        if (max > gmax) [gmax, gx, gy] = [max, maxX, maxY]
-      }
-      gmin = Math.min(gmin, min)
+    return camTemps(this.plan.params, this.rooms, this.regions, ts, name => {
+      const inj = this.hot.get(name)
+      if (inj && inj.until > ts) return inj.max
+      if (inj) this.hot.delete(name)
+      return undefined
     })
-    if (!Number.isFinite(gmax)) [gmax, gx, gy] = [r1(env + 2), FRAME.w / 2, FRAME.h / 2]
-    // 全画面：热点常在某个区域里，偶尔在区域外略高一点；最低温是柜体背景
-    return { ts, glob: { max: r1(gmax + 0.6), min: r1(Math.min(gmin, env) - 1.5), maxX: gx + 3, maxY: gy - 2 }, regions: out }
   }
 
   overtemp(region: string, max: number, s: number): void {
@@ -155,9 +114,3 @@ export class CameraSim {
   }
 }
 
-function bbox(pts: { x: number; y: number }[]): [number, number, number, number] {
-  if (!pts.length) return [0, 0, 1, 1]
-  const xs = pts.map(p => p.x)
-  const ys = pts.map(p => p.y)
-  return [Math.min(...xs), Math.min(...ys), Math.max(1, Math.max(...xs) - Math.min(...xs)), Math.max(1, Math.max(...ys) - Math.min(...ys))]
-}
