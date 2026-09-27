@@ -45,6 +45,8 @@ cpSync(resolve(BACKEND, 'packages/model'), resolve(STAGE, 'packages/lsa-model'),
 cpSync(resolve(BACKEND, 'packages/points'), resolve(STAGE, 'packages/lsa-points'), { recursive: true, filter: skip })
 cpSync(resolve(ROOT, 'apps/admin-web/dist'), resolve(STAGE, 'web'), { recursive: true })
 cpSync(resolve(ROOT, 'pnpm-lock.yaml'), resolve(STAGE, 'pnpm-lock.yaml'))
+// 各包的 tsconfig 都 extends ../../tsconfig.base.json，运行时 swc 按它编译（缺了 agent 起不来，I5 冒烟测试发现）
+cpSync(resolve(ROOT, 'tsconfig.base.json'), resolve(STAGE, 'tsconfig.base.json'))
 cpSync(resolve(ROOT, 'deploy/eg/agent.Dockerfile'), resolve(STAGE, 'Dockerfile'))
 const agentPkg = JSON.parse(readFileSync(resolve(STAGE, 'apps/agent/package.json'), 'utf8'))
 for (const k of ['@lsa/model', '@lsa/points']) agentPkg.dependencies[k] = 'workspace:*'
