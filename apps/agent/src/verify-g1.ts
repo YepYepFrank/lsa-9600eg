@@ -133,7 +133,7 @@ async function main() {
       const qp = parseQ((await tb.latest(pm, ['q']))['q']?.value)
       const egs = (await tb.latest(cfg.eg.name, ['eg.state']))['eg.state']?.value
       const pmKeys = pointsOf('pm', cfg.cabinet.group).map(p => p.key)
-      return qa?.['env.t'] === 'invalid' && qa['env.rh'] === 'invalid' && !qa['ir.t_max'] && pmKeys.every(k => qp?.[k] === 'invalid') && egs === 'degraded'
+      return qa?.['env.t'] === 'invalid' && qa['env.rh'] === 'invalid' && !qa['us.amp'] && pmKeys.every(k => qp?.[k] === 'invalid') && egs === 'degraded'
         ? { qa, qp, s }
         : null
     },
@@ -189,22 +189,22 @@ async function main() {
       const t0 = Date.now()
       docker('restart', c)
       const ok = await until(async () => {
-        const p = (await tb.latest(samB, ['ir.t_max']))['ir.t_max']
+        const p = (await tb.latest(samB, ['us.amp']))['us.amp']
         return p && p.ts > t0 + 5_000 && Date.now() - p.ts < 8_000
       }, label.includes('TB') ? 240_000 : 90_000)
       const took = Math.round((Date.now() - t0) / 1000)
       check(!!ok, `重启 ${label} 后数据恢复`, ok ? `${took} s` : '超时')
       // 断档：重启期间同事发的数据有没有丢（Mosquitto 持久会话 / IoT Gateway 内存队列替它排着）
       await sleep(10_000)
-      const pts = await tb.history(samB, 'ir.t_max', t0 - 10_000, Date.now() - 5_000)
+      const pts = await tb.history(samB, 'us.amp', t0 - 10_000, Date.now() - 5_000)
       const gap = maxGap(pts)
-      check(gap <= 4_500, `重启 ${label} 期间 ${samB} 的数据没有断档`, `最大间隔 ${(gap / 1000).toFixed(1)} s，${pts.length} 点`)
+      check(pts.length > 10 && gap <= 4_500, `重启 ${label} 期间 ${samB} 的数据没有断档`, `最大间隔 ${(gap / 1000).toFixed(1)} s，${pts.length} 点`)
     }
   }
 
   console.log('\n11. 资源')
   st = await status()
-  check(st.rssMb <= 200, `eg-agent 内存 ≤ 200 MB`, `${st.rssMb} MB（开发机宿主进程）`)
+  check(st.rssMb <= 256, `eg-agent 内存 ≤ 256 MB（EG 编排上限 384 MB；G5 起带证据与录波缓冲）`, `${st.rssMb} MB（开发机宿主进程）`)
   const gw = containerMemMb('lsa-eg-gateway')
   check(gw !== null && gw <= 250, 'IoT Gateway 内存 ≤ 250 MB', `${gw?.toFixed(0)} MB`)
   const mq = containerMemMb('lsa-eg-mosquitto')

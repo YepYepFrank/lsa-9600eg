@@ -31,7 +31,10 @@ async function main() {
   const cfg = loadConfig()
   const code = cfg.cabinet.code
   const camDev = cfg.devices.find(d => d.kind === 'camera')!.name
-  const firstSam = cfg.devices.find(d => d.kind === 'sam')!.name
+  const sams = cfg.devices.filter(d => d.kind === 'sam').map(d => d.name)
+  // R1 的温升对哪台 SAM 的 env.t（eg.yaml CAM 的 regions.R<n>.env；没配时对第一台）
+  const camAttrs = (cfg.devices.find(d => d.kind === 'camera')?.attrs ?? {}) as { regions?: Record<string, { env?: string }> }
+  const r1Sam = camAttrs.regions?.['R1']?.env ?? sams[0]!
   const vs = () => agent<VideoStatus>(cfg.dir, '/api/video/status')
   const live = (dev: string) => agent<Live>(cfg.dir, `/api/live/${dev}`)
   // 两级的即时状态直接问各自的 mediamtx API（eg-video 状态里的每 60 s 才刷新一次）
@@ -107,7 +110,7 @@ async function main() {
     const ver = await tbA.attr(camDev, 'CLIENT_SCOPE', 'ir.regionsVer')
     check(Array.isArray(regions) && regions.length === 3 && regions[0]!.frame.w > 0 && !!ver, '区域配置作属性 ir.regions / ir.regionsVer（本地 TB）', regions?.map(r => `${r.id}:${r.label}`).join(' '))
     // 温升 = max − env.t
-    const sam = await live(firstSam)
+    const sam = await live(r1Sam)
     const env1 = sam.telemetry['env.t']
     const r = await until(async () => {
       const l = await live(camDev)
@@ -145,14 +148,15 @@ async function main() {
   if (hot) check(n(hot.telemetry['ir.max']?.v) >= 95, '全画面最高温跟着 ≥ 95 ℃', String(hot.telemetry['ir.max']?.v))
 
   console.log('\n7. 温升算不出来时标质量码')
-  await post(`${EMU}/emu/dev/${firstSam}/drop?keys=env.t`)
+  // 各区域可能对不同的 SAM：全停，汇总 ir.rise 才算不出来
+  for (const d of sams) await post(`${EMU}/emu/dev/${d}/drop?keys=env.t`)
   const qd = await until(async () => {
     const q = (await live(camDev)).telemetry['q']
     const o = q ? (JSON.parse(String(q.v)) as Record<string, string>) : {}
     return o['ir.R1.rise'] ? o : null
   }, 60_000, 2000)
   check(!!qd && !!qd['ir.rise'], '柜内空气温度停发 → CAM 质量码标 ir.R<n>.rise 与汇总 ir.rise', qd ? JSON.stringify(qd) : '60 s 内没标')
-  await post(`${EMU}/emu/dev/${firstSam}/drop?keys=`)
+  for (const d of sams) await post(`${EMU}/emu/dev/${d}/drop?keys=`)
   const qok = await until(async () => {
     const q = (await live(camDev)).telemetry['q']
     const o = q ? (JSON.parse(String(q.v)) as Record<string, string>) : {}
