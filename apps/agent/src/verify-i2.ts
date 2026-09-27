@@ -61,22 +61,21 @@ async function main() {
   console.log('\n3. 恢复：实时优先、补传限速、按原时间补齐')
   const restored = Date.now()
   await debug(false)
+  // 补传按 backfillRate 限速（缺省 2000 条/s），10 分钟的积压（一千多条）一秒就送完，本地「补传中」一闪而过；
+  // 所以「实时优先」看子站：恢复后多久出现恢复之后产生的新数据（实时排在补传后面的话要等补传完）
   let sawBackfill = false
-  let realtimeDuringBackfill: number | null = null
+  let firstRealtime: number | null = null
   const drained = await until(async () => {
     const u = await uplink()
-    if (u.state === 'backfill') {
-      sawBackfill = true
-      if (realtimeDuringBackfill === null) {
-        const p = (await sp.latest(sam, ['ir.t_max']))['ir.t_max']
-        if (p) realtimeDuringBackfill = Date.now() - p.ts
-      }
+    if (u.state === 'backfill') sawBackfill = true
+    if (firstRealtime === null) {
+      const p = (await sp.latest(sam, ['ir.t_max']))['ir.t_max']
+      if (p && p.ts >= restored) firstRealtime = Date.now() - restored
     }
-    return u.state === 'ok' && (u.depth ?? 1e9) < 100 ? u : null
-  }, 15 * 60_000, 2000)
-  check(sawBackfill, '经历了「补传中」')
-  check(realtimeDuringBackfill !== null && realtimeDuringBackfill < 10_000, '补传期间实时数据不排在补传后面', realtimeDuringBackfill === null ? '没赶上观察' : `最新数据距今 ${(realtimeDuringBackfill / 1000).toFixed(1)} s`)
-  check(!!drained, '补传完、积压清掉', drained ? `${Math.round((Date.now() - restored) / 1000)} s` : '15 分钟内没清')
+    return u.state === 'ok' && (u.depth ?? 1e9) < 100 && firstRealtime !== null ? u : null
+  }, 15 * 60_000, 200)
+  check(!!drained, '补传完、积压清掉', drained ? `${((Date.now() - restored) / 1000).toFixed(1)} s` : '15 分钟内没清')
+  check(firstRealtime !== null && firstRealtime < 5_000, '恢复后实时数据马上到子站（不排在补传后面）', firstRealtime === null ? '没到' : `恢复后 ${(firstRealtime / 1000).toFixed(1)} s`)
   await sleep(5000)
   const pts = await sp.history(sam, 'ir.t_max', cut - 10_000, restored + 10_000)
   const span = (restored + 10_000 - (cut - 10_000)) / 2000
@@ -85,7 +84,11 @@ async function main() {
   const selfPts = await sp.history(eg, 'eg.cpu', cut, restored)
   check(maxGap(selfPts) <= 10_000, 'EG 自身指标也补齐（子站能回看断网期间的 EG 状态）', `${selfPts.length} 点`)
   const bf = await sp.history(eg, 'eg.backfill_pct', restored - 5000, Date.now())
-  check(bf.length > 0, '子站收到补传进度 eg.backfill_pct', bf.map(p => p.value).slice(0, 6).join(' → '))
+  // 积压要送 5 s 以上（一个上报周期）才一定看得到「补传中」；更短的一闪而过，只记不判
+  const rate = cfg.local.outbox.backfillRate
+  const seen = bf.length ? `eg.backfill_pct ${bf.map(p => p.value).slice(0, 6).join(' → ')}` : sawBackfill ? '本地看到' : '没看到'
+  if ((before.depth ?? 0) > rate * 5) check(bf.length > 0 || sawBackfill, '经历了「补传中」（本地看到，或子站收到补传进度 eg.backfill_pct）', seen)
+  else console.log(`  · 积压 ${before.depth} 条、限速 ${rate} 条/s，不到 1 s 送完，「补传中」只一闪（${seen}），不判`)
 
   console.log('\n4. 重启本机组件不丢')
   for (const [c, label] of [
