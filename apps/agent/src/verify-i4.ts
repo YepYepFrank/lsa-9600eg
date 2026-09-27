@@ -97,13 +97,20 @@ async function main() {
   const a2 = await alarmsOf(samProfile)
   check(r2.body.status === 'APPLIED' && !a2.some(a => a.alarmType === '弧光异常') && limitOf(a2, '过温', 'MAJOR') !== undefined, '停用 EG-arc：弧光规则去掉，EG-rise 重新启用', JSON.stringify(r2.body))
 
+  console.log('\n4b. 不认识的规则（子站比 EG 新）：跳过、回执列出，其余照常')
+  const v3 = `i4-${Date.now().toString(36)}-3`
+  const r6 = await put({ version: v3, thresholds: rows({ arc: 600 }), rules: [...allOn, { id: 'EG-nope', on: true }] })
+  const ig = (r6.body as { ignored?: string[] }).ignored
+  check(r6.body.status === 'APPLIED' && JSON.stringify(ig) === '["EG-nope"]' && (await alarmsOf(samProfile)).some(a => a.alarmType === '弧光异常'), '带 EG-nope：APPLIED、ignored = ["EG-nope"]、其余规则照常生效（弧光规则回来）', JSON.stringify(r6.body))
+  const r7 = await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
+  check(r7.body.status === 'APPLIED' && !('ignored' in r7.body), '都认识时回执不带 ignored（回到 v2）', JSON.stringify(r7.body))
+
   console.log('\n5. 失败要回原因，且不改本机')
   const bad = async (what: string, body: Record<string, unknown>, want: RegExp) => {
     const r = await put({ version: `bad-${Date.now().toString(36)}`, thresholds: rows({ arc: 600 }), rules: allOn, ...body })
     check(r.body.status === 'FAILED' && want.test(r.body.error ?? ''), `${what} → FAILED`, r.body.error)
   }
   await bad('温升上上限不大于上限', { thresholds: rows({ rise: 80, rise2: 70 }) }, /上上限/)
-  await bad('不认识的规则', { rules: [{ id: 'EG-nope', on: true }] }, /不认识/)
   await bad('阈值表缺弧光限值', { thresholds: base.filter(r => r.key !== 'arc') }, /阈值表不全/)
   await bad('阈值是负数', { thresholds: rows({ arc: -1 }) }, /不小于 0/)
   await bad('设备清单与本机不同', { devices: [...cfg.devices, { name: 'SAM-X', kind: 'sam', label: '', attrs: {} }] }, /设备清单/)

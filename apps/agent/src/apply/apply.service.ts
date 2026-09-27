@@ -7,6 +7,7 @@
  *   EG-rise / EG-rise2 是「过温」的 MAJOR / CRITICAL 两级，停一级去掉一级，两级都停整条去掉；其余一条规则对应一类告警。
  * 只改本机本来就有的、带告警的设备配置（sam_* / meter / pm_sensor）。写到一半失败把已写的改回去。
  * 生效版本记在配置目录的 applied-config.json（重启后照旧上报；告警事件的 ruleVersion 也取它）。
+ * 不认识的规则 id（子站比这台 EG 新，滚动升级时常见）：跳过、记警告，其余照常应用，回执带 ignored:[…]（§8.3）。
  * 设备清单（devices）在线改暂不支持：与本机 eg.yaml 一致就忽略，不一致回 FAILED（要在子站重新生成 eg.yaml 部署）。 */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -25,6 +26,8 @@ export interface ApplyReceipt {
   error?: string
   /** 实际改了几个设备配置（0 = 与现状一致或重复下发） */
   changed?: number
+  /** 这台 EG 不认识、跳过了的规则 id（EG 版本比子站旧）；都认识时不带 */
+  ignored?: string[]
 }
 
 export interface Applied {
@@ -49,6 +52,8 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string }> = {
   'EG-pm': { type: '烟气' },
   // G4：摄像机区域温差（ir.dmax > dphase 持续 5 min，设备配置 cam_*）
   'EG-dphase': { type: '区域温差' },
+  // 下挂设备失联（dev.link == 0，通信类、重要；后端 provision:eg 加规则）
+  'EG-devlost': { type: '设备失联' },
 }
 
 /** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用 */
@@ -106,7 +111,7 @@ export class ApplyService {
       this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: '应用子站配置', target: version || '?', ok: false, detail: error })
       return { version, status: 'FAILED', error }
     }
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[] }
     try {
       input = this.parse(body)
     } catch (e) {
@@ -114,7 +119,9 @@ export class ApplyService {
       throw e
     }
     const hash = createHash('sha256').update(JSON.stringify([input.thresholds, input.rules, input.extras])).digest('hex').slice(0, 16)
-    if (this.applied?.version === input.version && this.applied.hash === hash) return { version, status: 'APPLIED', changed: 0 }
+    const ign = input.ignored.length ? { ignored: input.ignored } : {}
+    if (input.ignored.length) this.log.warn(`版本 ${input.version}：这台 EG 不认识规则 ${input.ignored.join('、')}（EG 版本比子站旧），跳过，其余照常应用`)
+    if (this.applied?.version === input.version && this.applied.hash === hash) return { version, status: 'APPLIED', changed: 0, ...ign }
     if (!this.tb.available) return fail('eg.yaml 里没有本地 TB 账号，写不了设备配置')
 
     // 生成新规则（先全部算好再写，阈值缺项等在这一步就报出来）
@@ -156,10 +163,10 @@ export class ApplyService {
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
     this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
     const off = input.rules.filter(r => !r.on).map(r => r.id)
-    const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}`
+    const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}`
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: '应用子站配置', target: input.version, ok: true, detail })
-    return { version: input.version, status: 'APPLIED', changed: plan.length }
+    return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign }
   }
 
   /** 校验请求体（§8.3）：{ version, thresholds: ThresholdRow[], rules: [{ id, on }], devices?, extras? } */
@@ -188,11 +195,16 @@ export class ApplyService {
     const rawRules = b['rules'] ?? []
     if (!Array.isArray(rawRules)) throw new Invalid('rules 要是数组')
     const rules: { id: string; on: boolean }[] = []
+    const ignored: string[] = []
     for (const r of rawRules) {
       if (!isObj(r) || typeof r['id'] !== 'string' || typeof r['on'] !== 'boolean') throw new Invalid('rules 每项要是 { id: 字符串, on: 布尔 }')
       // 子站执行的规则（SP-*）与 EG 无关，带了也不管
       if (!r['id'].startsWith('EG-')) continue
-      if (!RULE_ALARM[r['id']]) throw new Invalid(`不认识的规则 ${r['id']}（EG 上只有 ${Object.keys(RULE_ALARM).join('、')}）`)
+      // 不认识的（子站比这台 EG 新）：跳过，回执里列出来，不让整份配置失败
+      if (!RULE_ALARM[r['id']]) {
+        ignored.push(r['id'])
+        continue
+      }
       rules.push({ id: r['id'], on: r['on'] })
     }
 
@@ -215,7 +227,7 @@ export class ApplyService {
         throw new Invalid(`设备清单与本机不同（${[add.length ? `多 ${add.join('、')}` : '', del.length ? `少 ${del.join('、')}` : ''].filter(Boolean).join('，') || '类型不同'}）：设备清单变更要在子站重新生成 eg.yaml 部署到这台 EG，在线改暂不支持`)
       }
     }
-    return { version, thresholds, rules, extras }
+    return { version, thresholds, rules, extras, ignored }
   }
 }
 
