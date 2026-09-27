@@ -10,6 +10,7 @@ import { BusService } from './bus/bus.service.js'
 import { ComponentsController } from './components/components.controller.js'
 import { ComponentsService } from './components/components.service.js'
 import { EdgeDbService } from './components/edge-db.service.js'
+import { CatalogController } from './catalog/catalog.controller.js'
 import { ConfigController } from './config/config.controller.js'
 import { DeriveService } from './derive/derive.service.js'
 import { QualityService } from './quality/quality.service.js'
@@ -18,7 +19,7 @@ import { SouthService } from './south/south.service.js'
 import { StatusController } from './status/status.controller.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController],
   providers: [
     configProvider,
     AuditService,

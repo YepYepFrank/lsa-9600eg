@@ -1,0 +1,134 @@
+/* eg-agent 本地 API 的返回形状（apps/agent/src/*.controller.ts） */
+
+export interface Dev {
+  name: string
+  kind: 'sam' | 'meter' | 'pm' | 'camera' | 'eg'
+  label: string
+  keys: number
+  msgs: number
+  lastTs: number | null
+  ageSec: number | null
+  dead: boolean
+  q: Record<string, string>
+  south: { req: number; timeout: number; rate: number | null } | null
+  southBySource: boolean
+  rated: number | null
+  epBackwards: number
+}
+
+export interface Status {
+  eg: string
+  version: string
+  cabinet: { code: string; name: string; group: string; kind: string; rated: number; rooms: string[] }
+  station: { name: string; label: string }
+  sp: { host: string }
+  uptimeSec: number
+  rssMb: number
+  state: 'online' | 'degraded'
+  bus: { url: string; connected: boolean; msgs: number }
+  devices: Dev[]
+  unknownDevices: string[]
+}
+
+export interface Comp {
+  key: 'agent' | 'edge' | 'gateway' | 'mosquitto' | 'mediamtx'
+  label: string
+  container: string | null
+  state: string
+  startedAt: number | null
+  restarts: number | null
+  memMb: number | null
+  cpuPct: number | null
+  image: string | null
+  restartable: boolean
+}
+
+export interface Diag {
+  now: number
+  bus: { url: string; connected: boolean }
+  sp: { host: string; port: number; latMs: number | null; lossPct: number | null }
+  clock: { server: string; offsetMs: number | null; measuredAt: number | null }
+  edge: { tsKv?: number; events?: number; edgeVersion?: string | null; lastAdvanceAt?: number | null; ratePerSec?: number | null; error?: string }
+  uplink: { state: 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'unknown'; text: string }
+  host: { uptimeSec: number; memUsedPct: number; disk: { usedPct: number; freeGb: number } | null }
+  devices: { dead: string[]; unknown: string[] }
+}
+
+export interface Latest {
+  v: unknown
+  ts: number
+  at: number
+  own: boolean
+}
+
+export interface Live {
+  device: string
+  telemetry: Record<string, Latest>
+  attributes: Record<string, unknown>
+  msgs: number
+  lastAt: number
+  q: Record<string, string>
+}
+
+export interface PointDef {
+  key: string
+  label: string
+  unit: string
+  periodMs: number | null
+  optional: boolean
+  json: boolean
+}
+
+export interface Catalog {
+  devices: Record<string, PointDef[]>
+  common: PointDef[]
+  derived: string[]
+}
+
+export interface DeviceConf {
+  name: string
+  kind: string
+  label: string
+  attrs: Record<string, unknown>
+}
+
+export interface Config {
+  eg: {
+    generatedAt: string
+    station: { name: string; label: string }
+    sp: { host: string }
+    cabinet: { code: string; name: string; group: string; kind: string; rated: number; riseLimit: number; rooms: string[]; index: number }
+    eg: { name: string; token: string; attrs: Record<string, unknown> }
+    devices: DeviceConf[]
+  }
+  local: {
+    mqtt: { bus: string; edge: string }
+    http: { port: number }
+    ntp: { server: string }
+    net: { uplink: string }
+    docker: { api: string; containers: Record<string, string> }
+    edgeDb: string
+    camera: { onvif: string; user: string; password: string; rtsp: { visible: string; thermal: string; visibleSub: string; thermalSub: string } }
+  }
+}
+
+export interface AuditEntry {
+  ts: number
+  user: string
+  name: string
+  via: 'local' | 'sp' | 'system'
+  ip: string
+  action: string
+  target: string
+  ok: boolean
+  detail?: string
+}
+
+export interface RawMessage {
+  at: number
+  topic: string
+  own: boolean
+  payload: string
+}
+
+export const KIND: Record<string, string> = { sam: '感知模块', meter: '多功能电表', pm: '颗粒物传感器', camera: '双光视频', eg: '边缘网关' }

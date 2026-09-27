@@ -9,7 +9,7 @@ import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 
-const AGENT_VERSION = '0.1.0'
+export const AGENT_VERSION = '0.1.0'
 
 @Injectable()
 export class AttrsService implements OnModuleInit {

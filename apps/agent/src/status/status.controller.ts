@@ -10,6 +10,7 @@ import { QualityService } from '../quality/quality.service.js'
 import { SelfService } from '../self/self.service.js'
 import { SouthService } from '../south/south.service.js'
 import { Public } from '../auth/guard.js'
+import { AGENT_VERSION } from '../attrs/attrs.service.js'
 
 const STARTED = Date.now()
 
@@ -33,6 +34,7 @@ export class StatusController {
       cabinet: this.cfg.cabinet,
       station: this.cfg.station,
       sp: this.cfg.sp,
+      version: AGENT_VERSION,
       uptimeSec: Math.round((now - STARTED) / 1000),
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       bus: { url: this.cfg.conn.bus, connected: this.bus.connected, msgs: this.bus.msgs },

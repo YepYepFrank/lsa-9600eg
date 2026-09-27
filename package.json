@@ -22,7 +22,8 @@
     "dev:emu": "node scripts/dev.mjs emu",
     "dev:video": "node scripts/dev.mjs video",
     "g1:verify": "pnpm -F @lsa-eg/agent verify:g1",
-    "g2:verify": "pnpm -F @lsa-eg/agent verify:g2"
+    "g2:verify": "pnpm -F @lsa-eg/agent verify:g2",
+    "g3:shots": "node apps/admin-web/tools/shots.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

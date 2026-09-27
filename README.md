@@ -37,6 +37,7 @@ pnpm dev:agent           # eg-agent，管理页 http://localhost:9100/（先 pnp
 pnpm g0:verify           # G0 自检：链路
 pnpm g1:verify           # G1 自检：派生量、质量码、EG 自身指标、南向统计、韧性（约 8 分钟；-- --fast 约 3 分钟）
 pnpm g2:verify           # G2 自检：访问控制、子站单点登录与反代、组件、诊断、审计（约 4 分钟；子站扩展服务要带 EXT_EG_URLS=AH03=http://127.0.0.1:9100）
+pnpm g3:shots            # G3 验收截图：本地管理页两条进入路径 17 张 → docs/验收截图/G3/（先 pnpm -F @lsa-eg/admin-web build）
 ```
 
 仿真器控制面（开发 / 自检用）：`POST http://127.0.0.1:3190/emu/dev/<设备>/dead?on=1|0` 整台停发，`.../drop?keys=env.t,env.rh` 单个量停发，`/emu/arc` 打弧光。

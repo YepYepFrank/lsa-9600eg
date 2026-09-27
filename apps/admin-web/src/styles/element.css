@@ -1,0 +1,23 @@
+/* 与子站前端同一份（web/src/styles/element.css）：Element Plus 变量全部指向本系统 token。
+ * 选择器加 html.dark：EP 的暗色变量表挂在 html.dark 上、比 :root 优先，不加的话暗色下主色又变回 EP 的蓝（G3 看截图发现） */
+/* Element Plus 主题映射：EP 的变量全部指向本系统 token，明暗切换只改 token */
+:root,html.dark{
+  --el-color-primary:var(--brand);
+  --el-color-primary-light-3:var(--brand-l3);
+  --el-color-primary-light-5:var(--brand-l5);
+  --el-color-primary-light-7:var(--brand-l7);
+  --el-color-primary-light-8:var(--brand-l8);
+  --el-color-primary-light-9:var(--brand-l9);
+  --el-color-primary-dark-2:var(--brand-d2);
+  --el-color-danger:var(--crit); --el-color-warning:var(--major); --el-color-success:var(--good); --el-color-info:var(--off);
+  --el-bg-color:var(--surface); --el-bg-color-overlay:var(--surface); --el-bg-color-page:var(--bg);
+  --el-fill-color-blank:var(--surface2); --el-fill-color-light:var(--surface2); --el-fill-color:var(--surface2);
+  --el-text-color-primary:var(--text); --el-text-color-regular:var(--text); --el-text-color-secondary:var(--text2); --el-text-color-placeholder:var(--muted);
+  --el-border-color:var(--line2); --el-border-color-light:var(--line); --el-border-color-lighter:var(--line); --el-border-color-hover:var(--brand);
+  --el-font-family:var(--font); --el-font-size-base:12.5px; --el-border-radius-base:5px;
+  --el-mask-color:rgba(0,0,0,.55);
+}
+.el-button--small{height:28px;padding:0 12px;font-size:12px}
+.el-input--small .el-input__wrapper{height:28px}
+.el-dialog{--el-dialog-padding-primary:16px;border:1px solid var(--line2)}
+.el-dialog__title{font-size:14px;font-weight:600}

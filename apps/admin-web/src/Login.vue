@@ -26,8 +26,8 @@ async function submit() {
 <template>
   <div class="login">
     <form class="box" @submit.prevent="submit">
-      <div class="brand">LSA-9600EG 边缘网关</div>
-      <div class="sub">本地维护登录</div>
+      <div class="lg-brand">LSA-9600EG 边缘网关</div>
+      <div class="lg-sub">本地维护登录</div>
       <el-alert v-if="session.error" :title="session.error" type="warning" :closable="false" show-icon />
       <label>账号</label>
       <el-input v-model="user" autocomplete="username" />
@@ -43,8 +43,8 @@ async function submit() {
 <style scoped>
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 .box { width: 360px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 24px; display: flex; flex-direction: column; gap: 10px; }
-.brand { font-size: 18px; font-weight: 600; color: var(--brand-ink); }
-.sub { color: var(--text2); margin-bottom: 6px; }
+.lg-brand { font-size: 18px; font-weight: 600; color: var(--brand-ink); }
+.lg-sub { color: var(--text2); margin-bottom: 6px; }
 label { color: var(--muted); font-size: 12px; }
 .hint { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 4px 0 0; }
 </style>
