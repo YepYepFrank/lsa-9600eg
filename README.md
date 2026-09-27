@@ -41,6 +41,7 @@ pnpm dev:agent           # eg-agent，管理页 http://localhost:9100/（先 pnp
 pnpm i1:verify           # I1 自检：本地 TB 的实体、数据、本地告警、连接器稳定、内存
 pnpm i2:verify           # I2 自检：上送子站、断网 10 分钟补齐、重启不丢（-- --fast 断 2 分钟）
 pnpm i3:verify           # I3 自检：本地告警 → 告警事件 → 子站（缺省起假子站 3199；-- --real 查真子站）
+pnpm pack:eg             # EG 发布件（-- --images 连同镜像）；装法见 docs/EG部署手册.md
 pnpm i4:verify           # I4 自检：子站下发配置 → 本地 TB 规则 / 阈值 → 回执与 cfg 属性（最后恢复原样）
 pnpm g0:verify           # G0 自检：链路
 pnpm g1:verify           # G1 自检：派生量、质量码、EG 自身指标、南向统计、韧性（约 8 分钟；-- --fast 约 3 分钟）

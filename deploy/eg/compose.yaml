@@ -1,0 +1,162 @@
+# EG 上的正式编排（I5，后端库 docs/EG独立TB调整方案.md §3.1；部署步骤见本库 docs/EG部署手册.md）。
+#
+#   /opt/lsa-eg/                 部署目录（scripts/pack-eg.mjs 出的发布件解压在这里）
+#     compose.yaml  .env         本文件；.env 由 install.sh 首次生成（本地库口令等），只在这台 EG 上
+#     config/                    EG_CONFIG_DIR：eg.yaml（子站生成、每台一份）、local.yaml、IoT Gateway 配置、outbox / 事件库、审计
+#     mosquitto.conf  extensions/lsa/
+#
+# 链路：同事的采集程序（本机）─► mosquitto（127.0.0.1:1884）─► gateway ─► tb（EG 本地 TB：存数、本地 7 类告警）
+#       agent（宿主机网络）也连 mosquitto：派生量、质量码、上送子站（mqtts 8883）、告警事件与配置回执（https 443）、本地管理页（80）
+# 服务名 mosquitto / tb 与 local.yaml 的缺省地址一致（IoT Gateway 在容器网络里按服务名连），容器名与 local.yaml 的 docker.containers 一致。
+name: lsa-eg
+
+x-log: &log
+  driver: json-file
+  options: { max-size: '10m', max-file: '3' }
+
+x-tb-env: &tb-env
+  TB_SERVICE_ID: lsa-eg-tb
+  TB_SERVICE_TYPE: monolith
+  TB_QUEUE_TYPE: in-memory
+  DATABASE_TS_TYPE: sql
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/thingsboard
+  SPRING_DATASOURCE_USERNAME: postgres
+  SPRING_DATASOURCE_PASSWORD: ${EG_PG_PASSWORD:?install.sh 生成 .env}
+  SPRING_DATASOURCE_MAXIMUM_POOL_SIZE: '5'
+  COAP_ENABLED: 'false'
+  LWM2M_ENABLED: 'false'
+  SNMP_ENABLED: 'false'
+  # 本地只留 7 天（≥ 2 年由子站保存）
+  SQL_TTL_TS_ENABLED: 'true'
+  SQL_TTL_TS_TS_KEY_VALUE_TTL: ${EG_TS_TTL_S:-604800}
+  # I1 实测：空载 688 MB、带一面柜数据 846–904 MB（评审记录 I1、I1-1）
+  JAVA_OPTS: ${EG_TB_JAVA_OPTS:--Xms192m -Xmx384m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=96m -Xss512k -XX:MaxDirectMemorySize=64m -XX:TieredStopAtLevel=1}
+  TZ: Asia/Shanghai
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: lsa-eg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${EG_PG_PASSWORD:?install.sh 生成 .env}
+      POSTGRES_DB: thingsboard
+      TZ: Asia/Shanghai
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d thingsboard']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 256m
+    logging: *log
+    networks: [eg]
+
+  # 一次性建库：install.sh 检测到库是空的就先跑它（docker compose --profile install run --rm tb-install）
+  tb-install:
+    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.5}
+    profiles: ['install']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *tb-env
+      INSTALL_TB: 'true'
+      LOAD_DEMO: 'false'
+    volumes:
+      - tb-data:/data
+    restart: 'no'
+    networks: [eg]
+
+  tb:
+    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.5}
+    container_name: lsa-eg-tb
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *tb-env
+    ports:
+      # 只给本机：agent 读本地告警、写设备配置；部署时子站经 SSH 隧道跑 provision:eg（手册 §4）
+      - '127.0.0.1:18080:8080'
+    extra_hosts:
+      # 告警钩子推给宿主机网络上的 agent：provision:eg --hook http://host.docker.internal/hooks/alarm
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - tb-data:/data
+      - tb-logs:/var/log/thingsboard
+    healthcheck:
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /login HTTP/1.0\r\n\r\n" >&3 && head -1 <&3 | grep -q " 200"']
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+    mem_limit: 1400m
+    logging: *log
+    networks: [eg]
+
+  mosquitto:
+    image: eclipse-mosquitto:${MOSQUITTO_VERSION:-2.1.2}
+    container_name: lsa-eg-mosquitto
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mq-data:/mosquitto/data
+    ports:
+      # 同事的采集程序与 agent 都在本机，只绑 127.0.0.1（摄像机网 LAN1、上行网 LAN2 都连不到）
+      - '127.0.0.1:1884:1883'
+    mem_limit: 64m
+    logging: *log
+    networks: [eg]
+
+  gateway:
+    image: thingsboard/tb-gateway:${TB_GATEWAY_VERSION:-3.8.5}
+    container_name: lsa-eg-gateway
+    restart: unless-stopped
+    depends_on: [mosquitto, tb]
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      # agent 生成的配置（含 .firstlaunch，防止镜像用默认配置覆盖）
+      - ./config/gateway/config:/thingsboard_gateway/config
+      - ./extensions/lsa:/thingsboard_gateway/extensions/lsa:ro
+      - gw-logs:/thingsboard_gateway/logs
+    mem_limit: 256m
+    logging: *log
+    networks: [eg]
+
+  agent:
+    image: ${EG_AGENT_IMAGE:-lsa-eg-agent:latest}
+    container_name: lsa-eg-agent
+    restart: unless-stopped
+    # 宿主机网络：管理页听 80（LAN2 上直连、子站反代）；上行网口流量（eg.up_kbps）、对时、探测子站都要看宿主机的网卡
+    network_mode: host
+    depends_on: [mosquitto, tb]
+    environment:
+      TZ: Asia/Shanghai
+      EG_CONFIG_DIR: /config
+      # 本进程自己连的地址（容器网络外）；local.yaml 里的 mosquitto / tb 是写给 IoT Gateway 的
+      EG_BUS_MQTT: mqtt://127.0.0.1:1884
+      EG_TB_HTTP: http://127.0.0.1:18080
+      # 子站自签证书（上送 mqtts 8883、事件 https 443 都认它）：部署时拷到 config/sp-ca.pem（手册 §3）
+      NODE_EXTRA_CA_CERTS: /config/sp-ca.pem
+    volumes:
+      - ./config:/config
+      # 组件状态、日志、重启（只许本地 TB 与 IoT Gateway）
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 384m
+    logging: *log
+
+volumes:
+  pg:
+  tb-data:
+  tb-logs:
+  gw-logs:
+  mq-data:
+
+networks:
+  eg:
+    name: lsa-eg
