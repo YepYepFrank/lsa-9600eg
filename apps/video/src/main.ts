@@ -4,15 +4,18 @@
  *   GET  /api/video/status                   四路的来源、探测结果、mediamtx 状态、cam.* 指标、测温与区域
  *   POST /api/video/refresh                  重读 local.yaml、重取流地址、重写 mediamtx 配置（本地页改了摄像机后调）
  *   POST /api/video/snapshot?ch=visible|ir   抓一帧 JPEG（G5 告警抓拍用）；头 X-Snapshot-Ts、X-Snapshot-Via
+ *   GET  /api/video/recording               循环录像覆盖（两路子码流各自最旧 / 最新一段、是否在录）
+ *   GET  /api/video/clip?ch=visible|ir&start=&end=   裁一段 MP4（毫秒）；头 X-Actual-Start / End、X-Gap；没有录像回 404 + missingReason
  * 只听本机（127.0.0.1）：本地管理页经 eg-agent 转过来。
  *
  *   pnpm video                        开发：读仓库下 run/
  *   pnpm -F @lsa-eg/video video:render  只生成 mediamtx 配置（mediamtx 先于 eg-video 起时用） */
 import 'reflect-metadata'
-import { BadRequestException, Controller, Get, HttpCode, Inject, Logger, Module, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common'
+import { BadRequestException, Controller, Get, HttpCode, Inject, Logger, Module, NotFoundException, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { Response } from 'express'
 import { VideoService } from './video.service.js'
+import { MissingError } from './recording.js'
 
 const SVC = Symbol('VideoService')
 
@@ -45,6 +48,31 @@ class VideoController {
       res.end(s.jpeg)
     } catch (e) {
       throw new ServiceUnavailableException({ code: 'snapshot_failed', message: (e as Error).message })
+    }
+  }
+
+  @Get('recording')
+  async recording() {
+    const ring = await this.svc.recording.ring()
+    return { ok: ring.every(r => r.recording), ringHours: this.svc.cfg.local.evidence.ringHours, paths: ring }
+  }
+
+  @Get('clip')
+  async clip(@Query('ch') ch: string, @Query('start') start: string, @Query('end') end: string, @Res() res: Response) {
+    if (ch !== 'visible' && ch !== 'ir') throw new BadRequestException('ch 取 visible 或 ir')
+    const s = Number(start)
+    const e = Number(end)
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) throw new BadRequestException('start / end 要是毫秒、且 end > start')
+    try {
+      const c = await this.svc.recording.clip(ch, s, e)
+      res.setHeader('Content-Type', 'video/mp4')
+      res.setHeader('X-Actual-Start', String(c.actualStart))
+      res.setHeader('X-Actual-End', String(c.actualEnd))
+      res.setHeader('X-Gap', c.gap ? '1' : '0')
+      res.end(c.mp4)
+    } catch (err) {
+      if (err instanceof MissingError) throw new NotFoundException({ code: 'missing', missingReason: err.reason, message: err.message })
+      throw new ServiceUnavailableException({ code: 'clip_failed', message: (err as Error).message })
     }
   }
 }

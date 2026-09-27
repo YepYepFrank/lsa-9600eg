@@ -1,6 +1,8 @@
 /* EG 本机 mediamtx 的配置生成与 API（接口约定 §2、§3）。
  *   四路：<柜号>、<柜号>-sub、<柜号>-ir、<柜号>-ir-sub —— 每路 source 指向摄像机，sourceOnDemand：没有读者就不连摄像机；
  *   只开 RTSP（子站拉）与本机 API；读权限只给子站主机与本机，任何地址都不许推流。
+ * G5 修订（docs/G5证据约定.md §1）：两路**子码流一直拉、一直录**（循环录像要覆盖故障前，边缘不能「没人看就不拉」），
+ *   主码流仍按需；录像 fMP4、每段 60 s、按 evidence.ringHours 自动删最旧的；回放服务（裁证据片段）只给本机。
  * 写配置文件时内容不变就不写（mediamtx 监视配置文件、一变就重载）。 */
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -17,6 +19,13 @@ export const CHANNELS: { key: ChannelKey; suffix: string; label: string }[] = [
 ]
 
 export const pathOf = (cab: string, key: ChannelKey) => cab + CHANNELS.find(c => c.key === key)!.suffix
+
+/** 常录的两路（循环录像、证据片段）：证据的 channelId → 录像路径 */
+export const RECORDED: Record<'visible' | 'ir', ChannelKey> = { visible: 'visibleSub', ir: 'thermalSub' }
+const isRecorded = (k: ChannelKey) => k === 'visibleSub' || k === 'thermalSub'
+
+/** mediamtx 容器里录像放哪（EG 编排与开发 compose 都把数据卷挂到这里） */
+export const RECORD_DIR = '/recordings'
 
 export function mtxConfigFile(cfg: EgConfig): string {
   return resolve(cfg.dir, 'mediamtx', 'mediamtx.yml')
@@ -59,13 +68,15 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
   for (const c of CHANNELS) {
     const src = sources[c.key]
     if (!src) continue
-    paths[pathOf(cfg.cabinet.code, c.key)] = {
-      source: src,
-      sourceOnDemand: true,
-      sourceOnDemandStartTimeout: '10s',
-      sourceOnDemandCloseAfter: v.closeAfter,
-      rtspTransport: 'tcp',
-    }
+    paths[pathOf(cfg.cabinet.code, c.key)] = isRecorded(c.key)
+      ? { source: src, sourceOnDemand: false, rtspTransport: 'tcp', record: true }
+      : {
+          source: src,
+          sourceOnDemand: true,
+          sourceOnDemandStartTimeout: '10s',
+          sourceOnDemandCloseAfter: v.closeAfter,
+          rtspTransport: 'tcp',
+        }
   }
   const conf = {
     logLevel: 'warn',
@@ -83,12 +94,20 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
     apiAddress: v.apiListen,
     metrics: false,
     pprof: false,
-    playback: false,
+    // 回放服务：agent 裁证据片段（/get?path=&start=&duration=）、查录像覆盖（/list）
+    playback: true,
+    playbackAddress: v.playbackListen,
     authMethod: 'internal',
     authInternalUsers: [
       { user: 'any', pass: '', ips: readFrom, permissions: [{ action: 'read' }] },
-      { user: 'any', pass: '', ips: apiFrom, permissions: [{ action: 'api' }] },
+      { user: 'any', pass: '', ips: apiFrom, permissions: [{ action: 'api' }, { action: 'playback' }] },
     ],
+    // 循环录像（G5）：只有 record: true 的两路子码流会录
+    recordPath: `${RECORD_DIR}/%path/%Y-%m-%d_%H-%M-%S-%f`,
+    recordFormat: 'fmp4',
+    recordPartDuration: '1s',
+    recordSegmentDuration: '60s',
+    recordDeleteAfter: `${cfg.local.evidence.ringHours}h`,
     // 清单外的路径一律不收（不许推流进来冒充）
     pathDefaults: { source: 'publisher', overridePublisher: false },
     paths,

@@ -144,9 +144,13 @@ services:
     command: ['/cfg/mediamtx.yml']
     volumes:
       - ../../run/mediamtx:/cfg
+      # G5：循环录像（两路子码流常录，按 evidence.ringHours 自动删最旧的）
+      - ../../run/recordings:/recordings
     ports:
       - '127.0.0.1:18554:18554'
       - '127.0.0.1:19997:9997'
+      # G5：回放服务（agent 裁证据片段）
+      - '127.0.0.1:19996:9996'
     networks: [eg]
 
 volumes:

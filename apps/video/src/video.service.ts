@@ -15,6 +15,7 @@ import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from '
 import { CHANNELS, maskUri, mtxPaths, pathOf, renderMtxConfig, withCreds, type MtxPath } from './mtx.js'
 import type { ChannelKey } from './onvif.js'
 import { describe, type Probe } from './rtsp.js'
+import { Recording } from './recording.js'
 
 const PROBE_MS = 60_000
 const MEASURE_MS = 2_000
@@ -56,6 +57,8 @@ export class VideoService {
   private bus: MqttClient | null = null
   private timers: NodeJS.Timeout[] = []
   private measuring = false
+  /** 循环录像（G5）：覆盖、裁片段、水位 */
+  readonly recording = new Recording(() => this.cfg)
 
   constructor() {
     this.cfg = loadConfig()
@@ -74,6 +77,7 @@ export class VideoService {
     this.timers.push(setInterval(() => void this.refresh(), STREAMS_MS))
     this.timers.push(setInterval(() => void this.probe(), PROBE_MS))
     this.timers.push(setInterval(() => void this.measureOnce(), MEASURE_MS))
+    this.timers.push(setInterval(() => void this.recording.trimForDisk().catch(e => this.log.warn(`按水位清录像失败：${(e as Error).message}`)), 5 * 60_000))
     setTimeout(() => void this.probe(), 3000)
   }
 

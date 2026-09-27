@@ -80,6 +80,29 @@ export interface LocalFile {
     apiFrom: string[]
     /** 按需拉：没有读者后多久断开上一级（摄像机） */
     closeAfter: string
+    /** mediamtx 回放服务（裁证据片段，G5）：eg-video 访问的地址 / 监听地址（EG 上只听本机） */
+    playback: string
+    playbackListen: string
+  }
+  /** 循环录像与证据（G5，docs/G5证据约定.md §6；都待确认） */
+  evidence: {
+    /** 循环录像（两路子码流常录）留多久 */
+    ringHours: number
+    /** 视频证据前 / 后窗 */
+    preS: number
+    postS: number
+    /** 录波前 / 后窗 */
+    wavePreS: number
+    wavePostS: number
+    /** 锁定片段（未上传）在 EG 上留多久 */
+    lockedDays: number
+    /** 已上传的 EG 本地副本再留多久 */
+    uploadedKeepDays: number
+    /** 数据盘水位 %：超 highWater 提前删最旧的循环段；只剩锁定文件还超 fullWater 就报满、新锁定标缺证 */
+    highWater: number
+    fullWater: number
+    /** 重要证据（自动上传子站）：级别或类型命中其一 */
+    autoUpload: { severities: string[]; types: string[] }
   }
   camera: {
     /** 摄像机驱动（G4 摄像机测温约定 §1）：sim = 仿真摄像机（流、区域、温度、报警都从仿真器取）；
@@ -119,7 +142,19 @@ export const LOCAL_DEFAULTS: LocalFile = {
     api: 'unix:///var/run/docker.sock',
     containers: { tb: 'lsa-eg-tb', gateway: 'lsa-eg-gateway', mosquitto: 'lsa-eg-mosquitto', mediamtx: 'lsa-eg-mediamtx' },
   },
-  video: { rtspPort: 8554, api: 'http://127.0.0.1:9997', apiListen: '127.0.0.1:9997', readFrom: [], apiFrom: [], closeAfter: '10s' },
+  video: { rtspPort: 8554, api: 'http://127.0.0.1:9997', apiListen: '127.0.0.1:9997', readFrom: [], apiFrom: [], closeAfter: '10s', playback: 'http://127.0.0.1:9996', playbackListen: '127.0.0.1:9996' },
+  evidence: {
+    ringHours: 24,
+    preS: 30,
+    postS: 60,
+    wavePreS: 10,
+    wavePostS: 20,
+    lockedDays: 30,
+    uploadedKeepDays: 7,
+    highWater: 85,
+    fullWater: 95,
+    autoUpload: { severities: ['CRITICAL'], types: ['弧光异常', '过温'] },
+  },
   camera: { driver: 'rtsp', api: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 

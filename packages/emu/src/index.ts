@@ -48,6 +48,7 @@ function cabinetOf(cfg: EgConfig): CabinetSpec {
     egMode: 'standalone',
     assetType: '',
     samProfile: '',
+    camProfile: '',
     eg: { name: cfg.eg.name, kind: 'eg', profile: '', label: cfg.eg.name, attrs: cfg.eg.attrs },
     subs: cfg.devices.map(sub),
   }

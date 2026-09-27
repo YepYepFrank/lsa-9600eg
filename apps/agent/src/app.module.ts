@@ -23,9 +23,11 @@ import { StatusController } from './status/status.controller.js'
 import { LocalTbService } from './tb/local-tb.service.js'
 import { UplinkService } from './uplink/uplink.service.js'
 import { VideoClient, VideoController } from './video/video.controller.js'
+import { EvidenceController } from './evidence/evidence.controller.js'
+import { EvidenceService } from './evidence/evidence.service.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController],
   providers: [
     configProvider,
     AuditService,
@@ -43,6 +45,7 @@ import { VideoClient, VideoController } from './video/video.controller.js'
     AlarmsService,
     ApplyService,
     VideoClient,
+    EvidenceService,
   ],
 })
 export class AppModule {}

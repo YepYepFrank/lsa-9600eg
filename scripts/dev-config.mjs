@@ -53,6 +53,9 @@ video:
   readFrom: ['0.0.0.0/0']
   apiFrom: ['0.0.0.0/0']
   closeAfter: 10s
+  # G5：回放服务（裁证据片段）在容器里听 :9996、映射到 127.0.0.1:19996
+  playback: http://127.0.0.1:19996
+  playbackListen: ':9996'
 # 摄像机用仿真器（packages/emu 的 /emu/cam）+ RTSP 测试源（deploy/dev 的 camera 容器，账号 admin / lsa-cam）
 camera:
   driver: sim

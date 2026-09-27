@@ -6,6 +6,7 @@ export const PAGES = [
   { path: '/live/:device?', name: '实时数据', ic: '◉', component: () => import('./views/Live.vue'), props: true },
   { path: '/devices', name: '下挂设备', ic: '⌬', component: () => import('./views/Devices.vue') },
   { path: '/video', name: '视频与测温', ic: '▶', component: () => import('./views/Video.vue') },
+  { path: '/evidence', name: '证据', ic: '◉', component: () => import('./views/Evidence.vue') },
   { path: '/diag', name: '诊断', ic: '✚', component: () => import('./views/Diag.vue') },
   { path: '/logs', name: '日志', ic: '☰', component: () => import('./views/Logs.vue') },
   { path: '/system', name: '系统', ic: '⚙', component: () => import('./views/System.vue') },

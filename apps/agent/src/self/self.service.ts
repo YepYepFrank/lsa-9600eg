@@ -21,6 +21,7 @@ import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { QualityService } from '../quality/quality.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
+import { EvidenceService } from '../evidence/evidence.service.js'
 
 /** 规范的 EG 档：5 s */
 const PERIOD_MS = 5_000
@@ -46,6 +47,7 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
     private readonly bus: BusService,
     private readonly quality: QualityService,
     private readonly uplink: UplinkService,
+    private readonly evidence: EvidenceService,
   ) {}
 
   onModuleInit(): void {
@@ -122,6 +124,8 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
       'eg.up_kbps': this.upKbps(),
       // 上送状态（I2，EG独立TB调整方案 §8.1）：子站判补传中、积压、丢失都靠这几个
       ...this.uplink.metrics(),
+      // 证据（G5）：待上传条数、证据存储满、循环录像是否在录
+      ...this.evidence.metrics(),
     }
   }
 

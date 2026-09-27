@@ -17,6 +17,7 @@ import { AuditService } from '../audit/audit.service.js'
 import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
 import { ApplyService } from '../apply/apply.service.js'
+import { EvidenceService } from '../evidence/evidence.service.js'
 import { EventsStore, type EgEvent, type Observed } from './events.store.js'
 
 /** 本地 TB 的告警对象（规则引擎消息与 REST 返回的 AlarmInfo 共有的部分） */
@@ -111,6 +112,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     private readonly uplink: UplinkService,
     private readonly audit: AuditService,
     private readonly applySvc: ApplyService,
+    private readonly evidence: EvidenceService,
   ) {
     this.devices = new Map([[cfg.eg.name, 'eg'], ...cfg.devices.map(d => [d.name, d.kind] as [string, string])])
   }
@@ -233,6 +235,8 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     const ev = this.store.observe(o)
     if (ev) {
       this.log.log(`${ev.device}「${ev.type}」${ev.state === 'ACTIVE' ? '发生' : '恢复'}（${ev.severity}，第 ${ev.revision} 版）`)
+      // G5：告警发生即锁证据（循环录像前后窗、双光抓图、录波）
+      if (ev.revision === 1 && ev.state === 'ACTIVE') this.evidence.onAlarm(ev)
       void this.sendDue()
     }
     return ev

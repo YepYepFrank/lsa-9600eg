@@ -20,6 +20,43 @@ export class VideoClient {
     }
   }
 
+  /** 循环录像覆盖（G5）：各路最旧 / 最新一段、是否在录 */
+  async recording(): Promise<{ ok: boolean; paths: { channel: 'visible' | 'ir'; oldest: number | null; newest: number | null; recording: boolean }[] } | null> {
+    try {
+      const r = await fetch(`${BASE}/api/video/recording`, { signal: AbortSignal.timeout(5000) })
+      return r.ok ? ((await r.json()) as never) : null
+    } catch {
+      return null
+    }
+  }
+
+  /** 裁一段录像：成功给 MP4 与实际起止；没有录像给 missingReason；eg-video 不在抛错 */
+  async clip(ch: 'visible' | 'ir', start: number, end: number): Promise<{ mp4: Buffer; actualStart: number; actualEnd: number; gap: boolean } | { missing: string; message: string }> {
+    const r = await fetch(`${BASE}/api/video/clip?ch=${ch}&start=${start}&end=${end}`, { signal: AbortSignal.timeout(90_000) })
+    if (r.status === 404) {
+      const j = (await r.json().catch(() => ({}))) as { missingReason?: string; message?: string }
+      return { missing: j.missingReason ?? 'stream_down', message: j.message ?? '没有录像' }
+    }
+    if (!r.ok) throw new Error(`eg-video 裁片段失败（${r.status}）：${(await r.text()).slice(0, 120)}`)
+    return {
+      mp4: Buffer.from(await r.arrayBuffer()),
+      actualStart: Number(r.headers.get('x-actual-start')),
+      actualEnd: Number(r.headers.get('x-actual-end')),
+      gap: r.headers.get('x-gap') === '1',
+    }
+  }
+
+  /** 抓一帧 JPEG（证据用） */
+  async snapshotRaw(ch: 'visible' | 'ir'): Promise<{ jpeg: Buffer; ts: number } | { error: string }> {
+    try {
+      const r = await fetch(`${BASE}/api/video/snapshot?ch=${ch}`, { method: 'POST', signal: AbortSignal.timeout(20_000) })
+      if (!r.ok) return { error: ((await r.json().catch(() => ({}))) as { message?: string }).message ?? `抓帧失败（${r.status}）` }
+      return { jpeg: Buffer.from(await r.arrayBuffer()), ts: Number(r.headers.get('x-snapshot-ts')) || Date.now() }
+    } catch (e) {
+      return { error: `eg-video 连不上：${(e as Error).message}` }
+    }
+  }
+
   /** 摄像机配置改了：让 eg-video 重读（它不在就算了，起来时会读） */
   async refresh(): Promise<boolean> {
     try {
