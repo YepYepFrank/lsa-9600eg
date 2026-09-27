@@ -6,7 +6,8 @@
  * 周期取点表目录（@lsa/points 的 catalog = 规范 §6）。按 agent 收到的时刻判，不按设备时间戳（设备时钟可能偏）。
  *
  * 同事若自己也发了 q（他知道哪个传感器坏了），与看护的结果合并后再发 —— 否则两边的 q 互相覆盖。
- * 一台设备的必有量全部 invalid = 整台失效，EG 状态降级（eg.state=degraded，由 SelfService 发）。
+ * 一台设备的必有量全部 invalid = 整台失效，EG 状态降级（eg.state=degraded，由 SelfService 发）；
+ * 同一判据另发 dev.link（1 在线 / 0 失联，与 q 同发、每分钟重发）—— EG 本地 TB 按它出「设备失联」告警（§8 dev.link）。
  * 派生量（el.load_pct）跟随它的输入：三相电流有一相不有效，负荷率同样标。
  *
  * q 变化时立即发，另外每分钟重发一次（恢复后发 "{}"，子站据此清掉标记）。 */
@@ -34,6 +35,8 @@ interface DeviceWatch {
   derived: Record<string, string>
   /** 上一次发出去的 q（JSON） */
   published: string | null
+  /** 上一次发出去的 dev.link */
+  link: 0 | 1 | null
   publishedAt: number
 }
 
@@ -73,7 +76,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         if (ms === null || p.key in DERIVED) continue
         keys.set(p.key, { period: ms, optional: !!p.optional, lastAt: this.startedAt, seen: false })
       }
-      this.devices.set(d.name, { keys, fromSource: {}, derived: {}, published: null, publishedAt: 0 })
+      this.devices.set(d.name, { keys, fromSource: {}, derived: {}, published: null, link: null, publishedAt: 0 })
     }
   }
 
@@ -115,10 +118,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
   /** 整台失效的设备（必有量全部 invalid） */
   deadDevices(now = Date.now()): string[] {
     const out: string[] = []
-    for (const [name, d] of this.devices) {
-      const must = [...d.keys.entries()].filter(([, w]) => !w.optional)
-      if (must.length && must.every(([, w]) => judge(w, now) === 'invalid')) out.push(name)
-    }
+    for (const [name, d] of this.devices) if (isDead(d, now)) out.push(name)
     return out
   }
 
@@ -153,16 +153,25 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     for (const [name, d] of this.devices) {
       if (only && name !== only) continue
       const q = JSON.stringify(sortKeys(this.qualityOf(name, now)))
-      if (q === d.published && now - d.publishedAt < REPUBLISH_MS) continue
+      const link = isDead(d, now) ? 0 : 1
+      if (q === d.published && link === d.link && now - d.publishedAt < REPUBLISH_MS) continue
+      if (link !== d.link && d.link !== null) this.log.log(`${name} ${link ? '恢复在线' : '整台失效（dev.link = 0）'}`)
       if (q !== d.published) {
         const n = Object.keys(JSON.parse(q)).length
         if (d.published !== null || n) this.log.log(`${name} 质量码 ${n ? q : '全部有效'}`)
       }
-      this.bus.publish(name, { q }, now)
+      this.bus.publish(name, { q, 'dev.link': link }, now)
       d.published = q
+      d.link = link
       d.publishedAt = now
     }
   }
+}
+
+/** 整台失效：必有量全部 invalid */
+function isDead(d: DeviceWatch, now: number): boolean {
+  const must = [...d.keys.values()].filter(w => !w.optional)
+  return must.length > 0 && must.every(w => judge(w, now) === 'invalid')
 }
 
 function judge(w: Watch, now: number): Quality | null {

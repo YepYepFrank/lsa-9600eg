@@ -96,7 +96,7 @@ export class SouthService implements OnModuleInit, OnModuleDestroy {
     if (!s) return
     for (const e of entries) {
       const keys = Object.keys(e.values)
-      if (keys.some(k => k.startsWith('dev.'))) s.bySource = true
+      if (keys.some(k => k.startsWith('dev.') && k !== 'dev.link')) s.bySource = true
       if (!keys.some(k => s.fastKeys.has(k))) continue
       // 按到达时刻分桶（补发的旧数据也算到达）；同一采样时刻只算一次
       const m = Math.floor(Date.now() / MIN)

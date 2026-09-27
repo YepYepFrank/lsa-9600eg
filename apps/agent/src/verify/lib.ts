@@ -114,6 +114,14 @@ export class Tb {
     ).json()) as { key: string; value: unknown }[]
     return r.find(a => a.key === key)?.value
   }
+
+  /** 某设备上的活动告警 */
+  async activeAlarms(device: string): Promise<{ id: string; type: string; severity: string }[]> {
+    const r = (await (
+      await fetch(`${this.base}/api/alarm/DEVICE/${await this.id(device)}?searchStatus=ACTIVE&pageSize=50&page=0`, { headers: this.h })
+    ).json()) as { data?: { id: { id: string }; type: string; severity: string }[] }
+    return (r.data ?? []).map(a => ({ id: a.id.id, type: a.type, severity: a.severity }))
+  }
 }
 
 export async function post(url: string): Promise<unknown> {

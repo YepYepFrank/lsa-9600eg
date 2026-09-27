@@ -145,6 +145,14 @@ async function main() {
     const p = hit.s.devices.find(d => d.name === pm)!
     check(p.dead && (p.south?.timeout ?? 0) > 0, `eg-agent：${pm} 整台失效、南向超时计数上涨`, `timeout ${p.south?.timeout}`)
   }
+  // dev.link（设备失联告警的依据）：整台失效的 = 0，只缺几个量的仍 = 1
+  const link = async (dev: string) => (await tb.latest(dev, ['dev.link']))['dev.link']?.value
+  const down = await until(async () => ((await link(pm)) === '0' ? true : null), 15_000, 1000)
+  check(!!down && (await link(samA)) === '1', `本地 TB：${pm} 的 dev.link = 0（整台失效）；${samA} 只缺两个量，dev.link 仍 = 1`, `${pm}=${await link(pm)} ${samA}=${await link(samA)}`)
+  const alarmType = '设备失联'
+  const lost = await until(async () => (await tb.activeAlarms(pm)).some(a => a.type === alarmType) || null, 20_000, 2000).catch(() => null)
+  if (lost) check(true, `本地 TB：${pm} 出「${alarmType}」告警`)
+  else console.log(`  · 本地 TB 上 ${pm} 没出「${alarmType}」告警 —— 规则由后端 provision:eg 加（dev.link == 0），没加时这项跳过`)
   await post(`${EMU}/emu/dev/${samA}/drop?keys=`)
   await post(`${EMU}/emu/dev/${pm}/dead?on=0`)
   const back = await until(
@@ -152,11 +160,15 @@ async function main() {
       const qa = (await tb.latest(samA, ['q']))['q']?.value
       const qp = (await tb.latest(pm, ['q']))['q']?.value
       const egs = (await tb.latest(cfg.eg.name, ['eg.state']))['eg.state']?.value
-      return qa === '{}' && qp === '{}' && egs === 'online'
+      return qa === '{}' && qp === '{}' && egs === 'online' && (await link(pm)) === '1'
     },
     30_000,
   )
-  check(!!back, '恢复后 30 s 内 q 回到 "{}"、eg.state 回到 online')
+  check(!!back, '恢复后 30 s 内 q 回到 "{}"、eg.state 回到 online、dev.link 回到 1')
+  if (lost) {
+    const cleared = await until(async () => !(await tb.activeAlarms(pm)).some(a => a.type === alarmType) || null, 30_000, 2000).catch(() => null)
+    check(!!cleared, `恢复后本地 TB 上「${alarmType}」告警清除`)
+  }
 
   console.log(`\n8. 同事自己发的 q 与看护结果合并（${samB}）`)
   const cli = await mqtt.connectAsync(BUS, { clientId: `g1-verify-${Date.now()}` })
