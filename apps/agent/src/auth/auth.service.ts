@@ -15,7 +15,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common'
 import { stationToken, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
-import { verifyTicket, type TicketRole } from './ticket.js'
+import { verifyTicket, type TicketClaims, type TicketRole } from './ticket.js'
 
 export const POLICY = { minLen: 8, lockAfter: 5, lockMin: 15, sessionMin: 30 } as const
 export const LOCAL_USER = 'maint'
@@ -97,7 +97,9 @@ export class AuthService {
     const now = Date.now()
     for (const [j, exp] of this.usedTickets) if (exp < now - 120_000) this.usedTickets.delete(j)
     // 票据由子站用它那边 EG 网关设备的令牌派生密钥签（I 阶段起本地 TB 的令牌可以不同，见 @lsa-eg/config stationToken）
-    const c = verifyTicket(stationToken(this.cfg), ticket, this.cfg.cabinet.code, now)
+    const v = verifyTicket(stationToken(this.cfg), ticket, this.cfg.cabinet.code, now)
+    // 服务票据换不了浏览器会话
+    const c = 'error' in v || v.r !== 'station' ? v : { error: '这是服务票据，不能用来登录' }
     if ('error' in c) {
       this.audit.write({ user: '?', name: '?', via: 'sp', ip, action: '子站单点登录', target: 'EG', ok: false, detail: c.error })
       throw new AuthError('bad_ticket', c.error)
@@ -107,9 +109,21 @@ export class AuthService {
       throw new AuthError('bad_ticket', '票据已用过，请回子站重新打开')
     }
     this.usedTickets.set(c.j, c.exp)
-    const s = this.open({ user: c.u, name: c.n, role: c.r, via: 'sp', ip })
+    const s = this.open({ user: c.u, name: c.n, role: c.r as TicketRole, via: 'sp', ip })
     this.audit.write({ user: s.user, name: s.name, via: 'sp', ip, action: '子站单点登录', target: 'EG', ok: true, detail: `角色 ${c.r === 'maint' ? '维护' : '只看'}` })
     return s
+  }
+
+  /** 子站的服务票据（I4 下发配置）：签名、柜号、时效、角色 station、一次性。成功返回载荷，失败返回原因 */
+  verifyService(ticket: string | undefined, now = Date.now()): TicketClaims | { error: string } {
+    if (!ticket) return { error: '没带服务票据（X-EG-Ticket）' }
+    for (const [j, exp] of this.usedTickets) if (exp < now - 120_000) this.usedTickets.delete(j)
+    const c = verifyTicket(stationToken(this.cfg), ticket, this.cfg.cabinet.code, now)
+    if ('error' in c) return c
+    if (c.r !== 'station') return { error: '不是服务票据（角色要 station）' }
+    if (this.usedTickets.has(c.j)) return { error: '票据已用过' }
+    this.usedTickets.set(c.j, c.exp)
+    return c
   }
 
   /** 按令牌取会话；30 分钟无操作失效 */

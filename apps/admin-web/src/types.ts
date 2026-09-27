@@ -132,6 +132,8 @@ export interface Config {
     docker: { api: string; containers: Record<string, string> }
     camera: { onvif: string; user: string; password: string; rtsp: { visible: string; thermal: string; visibleSub: string; thermalSub: string } }
   }
+  /** 子站下发、实际生效的告警规则与阈值版本（I4） */
+  applied?: { version: string | null; appliedAt: number | null; by: string | null; rulesOff: string[] }
 }
 
 export interface AuditEntry {

@@ -8,6 +8,7 @@ import { Inject, Injectable, type OnModuleInit } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
+import { ApplyService } from '../apply/apply.service.js'
 
 export const AGENT_VERSION = '0.1.0'
 
@@ -16,13 +17,15 @@ export class AttrsService implements OnModuleInit {
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
+    private readonly apply: ApplyService,
   ) {}
 
   onModuleInit(): void {
     this.bus.onConnect(() => {
       for (const d of this.cfg.devices) this.bus.publishAttributes(d.name, d.attrs)
       // egAgentVersion：§8.1 约定的名字；agent 是 G1 时起的旧名，留着给本地页
-      this.bus.publishAttributes(this.cfg.eg.name, { ...this.cfg.eg.attrs, agent: AGENT_VERSION, egAgentVersion: AGENT_VERSION })
+      // cfg：实际生效的配置版本（I4 应用过就是应用的那一版，§8.1）
+      this.bus.publishAttributes(this.cfg.eg.name, { ...this.cfg.eg.attrs, cfg: this.apply.version(), agent: AGENT_VERSION, egAgentVersion: AGENT_VERSION })
     })
   }
 }

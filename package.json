@@ -26,7 +26,8 @@
     "g3:shots": "node apps/admin-web/tools/shots.mjs",
     "i1:verify": "pnpm -F @lsa-eg/agent verify:i1",
     "i2:verify": "pnpm -F @lsa-eg/agent verify:i2",
-    "i3:verify": "pnpm -F @lsa-eg/agent verify:i3"
+    "i3:verify": "pnpm -F @lsa-eg/agent verify:i3",
+    "i4:verify": "pnpm -F @lsa-eg/agent verify:i4"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

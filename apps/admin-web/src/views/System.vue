@@ -86,6 +86,13 @@ onMounted(async () => {
             <dt>设备网 / 上行网</dt><dd>{{ cfg.eg.eg.attrs['ip'] ?? '—' }} / {{ cfg.eg.eg.attrs['ipUp'] ?? '—' }}</dd>
             <dt>访问令牌</dt><dd>{{ cfg.eg.eg.token }}</dd>
             <dt>子站配置生成于</dt><dd>{{ dt(Date.parse(cfg.eg.generatedAt)) }}</dd>
+            <dt>告警规则与阈值</dt>
+            <dd>
+              版本 {{ cfg.applied?.version ?? '—' }}
+              <template v-if="cfg.applied?.appliedAt">（{{ dt(cfg.applied.appliedAt) }} 由子站 {{ cfg.applied.by }} 下发）</template>
+              <template v-else>（部署时带来的，未经子站下发）</template>
+              <template v-if="cfg.applied?.rulesOff.length">；停用 {{ cfg.applied.rulesOff.join('、') }}</template>
+            </dd>
             <dt>eg-agent</dt><dd>{{ store.status?.version }}</dd>
             <dt>EG 本地 TB</dt><dd class="mono">{{ comp('tb')?.image ?? '—' }}</dd>
             <dt>本地 TB 账号</dt><dd>{{ cfg.eg.tb?.user ?? '—（provision:eg 还没建）' }}</dd>

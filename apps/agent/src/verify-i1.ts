@@ -6,7 +6,7 @@
  * pnpm dev:config 拷来的 eg.yaml 带 tb 账号；dev:emu、dev:agent 在跑。
  * 验收：AH03 数据进本地 TB、本地 7 类告警能触发（仿真器打弧光）、本地 TB 内存实测。
  * I1 期间子站上 AH03 没有数据是正常的（I2 才上送）。 */
-import { readFileSync } from 'node:fs'
+import { readFileSync, utimesSync } from 'node:fs'
 import { resolve } from 'node:path'
 import mqtt from 'mqtt'
 import { BUS_TOPIC, loadConfig } from '@lsa-eg/config'
@@ -109,6 +109,28 @@ async function main() {
   const states = await tb.history(cfg.eg.name, 'eg.state', Date.parse(w0), Date.now())
   const bad = states.filter(p => p.value !== 'online')
   check(states.length >= 20 && !bad.length, '2 分钟内本地 TB 上 eg.state 一直是 online（不抖）', `${states.length} 条，非 online ${bad.length} 条`)
+
+  console.log('\n6b. IoT Gateway 重载连接器后 EG 自身数据不断（I4 发现：重载时关旧实例卡死网关主线程）')
+  // IoT Gateway 每 60 s 按文件 stat 查一次配置，变了就重载全部连接器；只改修改时间就能触发
+  const r0 = new Date().toISOString()
+  utimesSync(resolve(cfg.dir, 'gateway/config/lsa_self.json'), new Date(), new Date())
+  const reloaded = await until(async () => /LSA EG 自身: 订阅本机总线/.test(docker('logs', '--since', r0, 'lsa-eg-gateway')), 100_000, 2000)
+  check(!!reloaded, '改配置文件后 IoT Gateway 重载了 EG 自身连接器（新实例订阅上了）')
+  const tR = Date.now()
+  await sleep(15_000)
+  const fresh = (await tb.latest(cfg.eg.name, ['eg.cpu']))['eg.cpu']
+  check(!!fresh && fresh.ts > tR, '重载后 EG 自身指标照常进本地 TB', fresh ? `最新一条距今 ${((Date.now() - fresh.ts) / 1000).toFixed(1)} s` : '没有')
+  const probe = `p${Date.now()}`
+  const pc = await mqtt.connectAsync(BUS, { clientId: `i1-attr-${probe}`, protocolVersion: 5 })
+  await pc.publishAsync(BUS_TOPIC.attributes(cfg.eg.name), JSON.stringify({ i1Probe: probe }), { qos: 1 })
+  await pc.endAsync()
+  const attrOk = await until(async () => ((await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'i1Probe')) === probe ? true : null), 15_000, 1000)
+  check(!!attrOk, 'EG 自身属性也进本地 TB（cfg、egAgentVersion 走这条）')
+  await sleep(20_000)
+  const again = docker('logs', '--since', new Date(tR).toISOString(), 'lsa-eg-mosquitto')
+    .split('\n')
+    .filter(l => l.includes('tb-gateway-self') && l.includes('taken over')).length
+  check(again === 0, '重载之后没有反复 session taken over', `${again} 次`)
 
   console.log('\n7. 资源（开发机实测）')
   await sleep(1000)

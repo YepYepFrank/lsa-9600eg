@@ -33,8 +33,14 @@ KEEP_S = 5
 # 旧实例没停干净时两个用同一个固定 clientId 的客户端在 Mosquitto 上互相「session taken over」，
 # 各自都收不全 agent 的数据，于是轮流代发 eg.state=degraded，EG 状态在 online / degraded 之间来回跳。
 # 新实例 open() 时先把同设备的旧实例关掉，不依赖 IoT Gateway 有没有调 close()。
+#
+# 重载时 open() / close() 都在 IoT Gateway 的主线程里调，这里任何一步卡住，主线程就停了 —— EG 自身数据从此进不了本地 TB
+# （传感器数据走内置 MQTT 连接器自己的线程，照常，所以不显眼；I4 发现）。所以：
+#   - open() 在单实例表的锁外关旧实例（close() 也要拿这把锁；I1 的写法在锁里调 close()，自己把自己锁死）；
+#   - close() 不等任何线程：只置标志，断开与 loop_stop（要等网络线程退出，而网络线程可能正卡在 gateway.send_* 等主线程）
+#     放后台线程；已停的实例收到消息直接丢。新实例用同一个 clientId 连上时 Mosquitto 踢掉旧会话，旧客户端是主动断开状态、不会重连。
 _LIVE = {}
-_LIVE_LOCK = threading.Lock()
+_LIVE_LOCK = threading.RLock()
 
 
 class LsaSelfConnector(Connector):
@@ -73,12 +79,13 @@ class LsaSelfConnector(Connector):
         self.__keeper = threading.Thread(target=self.__keep, name='lsa-self-keeper', daemon=True)
 
     def open(self):
+        # 在锁外关旧实例：close() 也要拿这把锁（见文件头）
         with _LIVE_LOCK:
             old = _LIVE.get(self.__device)
-            if old is not None and old is not self:
-                self.__log.warning('%s: 上一个实例还在，先关掉它', self.name)
-                old.close()
             _LIVE[self.__device] = self
+        if old is not None and old is not self:
+            self.__log.warning('%s: 上一个实例还在，先关掉它', self.name)
+            old.close()
         self.__stopped = False
         # 看门从开始订阅算起（构造到 open 之间可能隔几秒，从构造算会一上来就误代发）
         self.__last_self = monotonic()
@@ -94,19 +101,23 @@ class LsaSelfConnector(Connector):
             return
         self.__stopped = True
         self.__stop_event.set()
+        with _LIVE_LOCK:
+            if _LIVE.get(self.__device) is self:
+                del _LIVE[self.__device]
+        # 断开与等网络线程退出放后台：调用方是 IoT Gateway 主线程，不能在这里等（见文件头）
+        threading.Thread(target=self.__shutdown, name='lsa-self-close', daemon=True).start()
+        self.__log.info('%s: 已停', self.name)
+
+    def __shutdown(self):
         try:
             self.__client.disconnect()
         except Exception:
             pass
         try:
-            # loop_stop 会等网络线程退出；它退出后 paho 不会再自动重连
+            # loop_stop 等网络线程退出；主动断开后 paho 不会再自动重连
             self.__client.loop_stop()
         except Exception:
             pass
-        with _LIVE_LOCK:
-            if _LIVE.get(self.__device) is self:
-                del _LIVE[self.__device]
-        self.__log.info('%s: 已停', self.name)
 
     def get_id(self):
         return self.__id
@@ -144,7 +155,7 @@ class LsaSelfConnector(Connector):
 
     def __on_message(self, client, userdata, msg):
         kind = self.__topics.get(msg.topic)
-        if kind is None:
+        if kind is None or self.__stopped:
             return
         try:
             body = json.loads(msg.payload.decode('utf-8'))
@@ -178,6 +189,8 @@ class LsaSelfConnector(Connector):
         while not self.__stop_event.wait(KEEP_S):
             if monotonic() - self.__last_self < HOLD_S:
                 continue
+            if self.__stopped:
+                return
             try:
                 if not self.__gateway.tb_client.is_connected():
                     continue

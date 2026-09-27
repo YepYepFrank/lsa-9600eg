@@ -16,6 +16,7 @@ import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
 import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
+import { ApplyService } from '../apply/apply.service.js'
 import { EventsStore, type EgEvent, type Observed } from './events.store.js'
 
 /** 本地 TB 的告警对象（规则引擎消息与 REST 返回的 AlarmInfo 共有的部分） */
@@ -107,6 +108,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     private readonly tb: LocalTbService,
     private readonly uplink: UplinkService,
     private readonly audit: AuditService,
+    private readonly applySvc: ApplyService,
   ) {
     this.devices = new Map([[cfg.eg.name, 'eg'], ...cfg.devices.map(d => [d.name, d.kind] as [string, string])])
   }
@@ -241,8 +243,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
 
   /** 生效的规则版本：I4 起是 agent 应用过的配置版本，之前是 eg.yaml 带来的 cfg 属性 */
   private ruleVersion(): string | null {
-    const v = this.cfg.eg.attrs['cfg']
-    return typeof v === 'string' ? v : null
+    return this.applySvc.version()
   }
 
   private async pages(path: string): Promise<TbAlarm[]> {

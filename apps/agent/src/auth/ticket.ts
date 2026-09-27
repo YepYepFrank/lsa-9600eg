@@ -2,7 +2,8 @@
  * 浏览器带着它打开 EG 页面，EG 验过后给本地会话 —— 不用再登录一次。
  *
  *   v1.<载荷 base64url>.<签名 base64url>
- *   载荷 { c 柜号, u 子站用户名, n 显示名, r 'maint' | 'view', iat, exp（毫秒）, j 随机串 }
+ *   载荷 { c 柜号, u 子站用户名, n 显示名, r 'maint' | 'view' | 'station', iat, exp（毫秒）, j 随机串 }
+ *   r = station 是**服务票据**（I4）：子站扩展服务下发配置时自己签给自己用（请求头 X-EG-Ticket），只能调 PUT /api/config，换不了浏览器会话
  *   签名 HMAC-SHA256(key, "v1." + 载荷)，key = HMAC-SHA256(这台 EG 的访问令牌, "lsa-eg-sso")
  *
  * 用 EG 的访问令牌派生密钥：子站（从 TB 读设备凭据）和 EG（eg.yaml）本来就都有它，不用另发密钥；
@@ -11,11 +12,14 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 
 export type TicketRole = 'maint' | 'view'
 
+/** 票据里的角色：会话角色 + 服务票据 */
+export type ClaimRole = TicketRole | 'station'
+
 export interface TicketClaims {
   c: string
   u: string
   n: string
-  r: TicketRole
+  r: ClaimRole
   iat: number
   exp: number
   j: string
@@ -47,6 +51,6 @@ export function verifyTicket(egToken: string, ticket: string, cabinet: string, n
   const skew = 60_000
   if (now > c.exp + skew) return { error: '票据已过期，请回子站重新打开' }
   if (c.iat > now + skew) return { error: '票据时间在未来（两边时钟差太大？）' }
-  if (c.r !== 'maint' && c.r !== 'view') return { error: '票据角色不对' }
+  if (c.r !== 'maint' && c.r !== 'view' && c.r !== 'station') return { error: '票据角色不对' }
   return c
 }

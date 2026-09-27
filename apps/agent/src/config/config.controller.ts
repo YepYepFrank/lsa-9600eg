@@ -10,6 +10,7 @@ import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
 import { ClientIp, CurrentSession, Maint } from '../auth/guard.js'
 import type { Session } from '../auth/auth.service.js'
+import { ApplyService } from '../apply/apply.service.js'
 
 class RtspDto {
   @IsOptional() @IsString() @MaxLength(512) visible?: string
@@ -37,6 +38,7 @@ export class ConfigController {
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly audit: AuditService,
+    private readonly apply: ApplyService,
   ) {}
 
   @Get()
@@ -57,6 +59,8 @@ export class ConfigController {
         ...c.local,
         camera: { ...c.local.camera, password: c.local.camera.password ? '已设置' : '' },
       },
+      /** 子站下发、实际生效的配置版本（I4） */
+      applied: this.apply.summary(),
       editable: ['ntpServer', 'uplinkIface', 'camera'],
     }
   }
