@@ -8,6 +8,7 @@
 import { loadConfig } from '@lsa-eg/config'
 import { AGENT, agent, check, docker, done, maxGap, sleep, Tb, until } from './verify/lib.js'
 import { checkLostAccounting } from './verify/outbox-lost.js'
+import { checkChunking } from './verify/outbox-chunk.js'
 
 const FAST = process.argv.includes('--fast')
 const CUT_MIN = FAST ? 2 : 10
@@ -30,6 +31,8 @@ async function main() {
 
   console.log('0. 丢失记账（临时库，不碰正在用的 outbox）：eg.lost 累计、只增不减')
   checkLostAccounting(check)
+  console.log('0b. 大批补传切批（临时库）：每次 ≤ 500 条且 ≤ 48 KB，补得完')
+  checkChunking(check)
 
   console.log('\n1. 连上子站、数据直达')
   const u0 = await until(async () => {

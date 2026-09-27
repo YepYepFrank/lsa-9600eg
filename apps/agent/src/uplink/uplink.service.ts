@@ -6,7 +6,7 @@
  * 优先级：连上以后新进来的（实时）先发；连上那一刻 outbox 里已有的（补传）按源时间从旧到新、按 backfillRate 限速地发。
  * 容量：超 maxAgeDays 或 maxMb 丢最旧的遥测，丢失区间记下来随 eg.lost 上报；接近上限时 eg.outbox_full = true。
  *
- * 子站主题（§8.1）：子设备 v1/gateway/telemetry | attributes，EG 自身 v1/devices/me/telemetry | attributes；一次发布 ≤ 500 个样本。
+ * 子站主题（§8.1）：子设备 v1/gateway/telemetry | attributes，EG 自身 v1/devices/me/telemetry | attributes；一次发布 ≤ 500 个样本且 ≤ 48 KB（chunk.ts）。
  * 上报给子站的上送状态（随 EG 自身指标每 5 s）：eg.buf_depth、eg.oldest_unsent、eg.backfill_pct、eg.uplink、eg.outbox_full、eg.lost。 */
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
@@ -16,6 +16,8 @@ import { stationToken, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { OutboxStore, type OutRow, type RowKind } from './outbox.store.js'
+import { chunkRows, MAX_PAYLOAD_BYTES } from './chunk.js'
+import { AuditService } from '../audit/audit.service.js'
 
 export type UplinkState = 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'none' | 'unknown'
 
@@ -72,6 +74,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
+    private readonly audit: AuditService,
   ) {}
 
   get configured(): boolean {
@@ -264,42 +267,14 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 按主题分组发出去；每组 PUBACK 后删掉对应的行 */
+  /** 按主题分组、按条数与字节切批（chunk.ts：≤ 500 条且 ≤ 48 KB）发出去；每批 PUBACK 后删掉对应的行 */
   private send(c: MqttClient, rows: OutRow[], history: boolean): void {
-    const self = this.cfg.eg.name
-    const groups = new Map<string, { payload: unknown; seqs: number[] }>()
-    const group = (topic: string, init: () => unknown) => {
-      let g = groups.get(topic)
-      if (!g) groups.set(topic, (g = { payload: init(), seqs: [] }))
-      return g
-    }
-    for (const r of rows) {
-      const body = JSON.parse(r.body) as Record<string, unknown>
-      if (r.kind === 't') {
-        if (r.dev === self) {
-          const g = group('v1/devices/me/telemetry', () => [])
-          ;(g.payload as unknown[]).push({ ts: r.ts, values: body })
-          g.seqs.push(r.seq)
-        } else {
-          const g = group('v1/gateway/telemetry', () => ({}))
-          const p = g.payload as Record<string, unknown[]>
-          ;(p[r.dev] ??= []).push({ ts: r.ts, values: body })
-          g.seqs.push(r.seq)
-        }
-      } else if (r.dev === self) {
-        const g = group('v1/devices/me/attributes', () => ({}))
-        Object.assign(g.payload as object, body)
-        g.seqs.push(r.seq)
-      } else {
-        const g = group('v1/gateway/attributes', () => ({}))
-        const p = g.payload as Record<string, Record<string, unknown>>
-        Object.assign((p[r.dev] ??= {}), body)
-        g.seqs.push(r.seq)
-      }
-    }
-    for (const [topic, g] of groups) {
+    const { publishes, oversized } = chunkRows(rows, this.cfg.eg.name)
+    for (const r of oversized) this.dropOversized(r)
+    for (const g of publishes) {
       this.inflight++
-      const payload = JSON.stringify(g.payload)
+      const topic = g.topic
+      const payload = g.payload
       this.sentBytes += Buffer.byteLength(payload)
       c.publish(topic, payload, { qos: 1 }, err => {
         this.inflight = Math.max(0, this.inflight - 1)
@@ -309,6 +284,15 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
         if (history) this.histSent += g.seqs.length
       })
     }
+  }
+
+  /** 单独一行就超过子站能收的大小：记审计、记丢失、从 outbox 删掉，不让它卡住后面的 */
+  private dropOversized(r: OutRow): void {
+    const bytes = Buffer.byteLength(r.body)
+    this.log.warn(`${r.dev} 源时间 ${new Date(r.ts).toISOString()} 的一条${r.kind === 't' ? '遥测' : '属性'}有 ${bytes} 字节，超过子站单条上限 ${MAX_PAYLOAD_BYTES}，丢弃`)
+    this.audit.write({ user: 'system', name: '上送', via: 'system', ip: '-', action: 'uplink.oversized', target: `${r.dev} ${r.kind} ${r.ts}`, ok: false, detail: `${bytes} 字节 > ${MAX_PAYLOAD_BYTES}` })
+    this.store?.ack([r.seq])
+    if (r.kind === 't') this.store?.recordLost({ from: r.ts, to: r.ts, n: 1 })
   }
 
   private trim(): void {
