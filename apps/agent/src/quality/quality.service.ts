@@ -30,13 +30,22 @@ interface DeviceWatch {
   keys: Map<string, Watch>
   /** 同事自己发的 q */
   fromSource: Record<string, string>
+  /** agent 自己算的派生量标的（跨设备的输入：区域温升要看 SAM 的 env.t，DeriveService 标） */
+  derived: Record<string, string>
   /** 上一次发出去的 q（JSON） */
   published: string | null
   publishedAt: number
 }
 
 /** 派生量 → 它的输入 */
-const DERIVED: Record<string, string[]> = { 'el.load_pct': ['el.Ia', 'el.Ib', 'el.Ic'] }
+const DERIVED: Record<string, string[]> = {
+  'el.load_pct': ['el.Ia', 'el.Ib', 'el.Ic'],
+  // 摄像机区域测温（G4 摄像机测温约定 §3、§5）：温升还依赖 env.t（跨设备，由 DeriveService 另标），这里只跟随本设备的输入
+  'ir.R1.rise': ['ir.R1.max'],
+  'ir.R2.rise': ['ir.R2.max'],
+  'ir.R3.rise': ['ir.R3.max'],
+  'ir.dmax': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
+}
 const EVAL_MS = 2_000
 const REPUBLISH_MS = 60_000
 
@@ -60,7 +69,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         if (ms === null || p.key in DERIVED) continue
         keys.set(p.key, { period: ms, optional: !!p.optional, lastAt: this.startedAt, seen: false })
       }
-      this.devices.set(d.name, { keys, fromSource: {}, published: null, publishedAt: 0 })
+      this.devices.set(d.name, { keys, fromSource: {}, derived: {}, published: null, publishedAt: 0 })
     }
   }
 
@@ -73,11 +82,20 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer)
   }
 
+  /** DeriveService 标派生量出不来的原因（null = 恢复）；变了马上重发 q */
+  setDerived(device: string, key: string, q: Quality | null): void {
+    const d = this.devices.get(device)
+    if (!d || (d.derived[key] ?? null) === q) return
+    if (q) d.derived[key] = q
+    else delete d.derived[key]
+    this.evaluate(device)
+  }
+
   /** 某设备当前的质量码（合并后），本地页与状态接口用 */
   qualityOf(device: string, now = Date.now()): Record<string, string> {
     const d = this.devices.get(device)
     if (!d) return {}
-    const out: Record<string, string> = { ...d.fromSource }
+    const out: Record<string, string> = { ...d.fromSource, ...d.derived }
     for (const [key, w] of d.keys) {
       const q = judge(w, now)
       if (q) out[key] = q

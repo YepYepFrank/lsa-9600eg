@@ -66,7 +66,29 @@ export interface LocalFile {
   net: { uplink: string }
   /** 本机容器：看状态、取日志、重启（只开放本地 TB 与 IoT Gateway 的重启）。api：unix:///var/run/docker.sock、npipe:////./pipe/docker_engine、http://docker-proxy:2375 */
   docker: { api: string; containers: { tb: string; gateway: string; mosquitto: string; mediamtx: string } }
+  /** EG 本机 mediamtx（G4，docs/G4视频接口约定.md）：配置由 eg-video 生成到 <配置目录>/mediamtx/mediamtx.yml */
+  video: {
+    /** 子站从这里拉流：rtsp://<EG 上行 IP>:<rtspPort>/<柜号>[-sub|-ir|-ir-sub]（开发样机 18554，与子站的 8554 错开） */
+    rtspPort: number
+    /** eg-video 访问 mediamtx API 的地址（读各路状态与码率） */
+    api: string
+    /** mediamtx API 的监听地址：EG 上宿主机网络只听本机；开发样机在容器里要听 :9997 再映射出来 */
+    apiListen: string
+    /** 能读流的地址（IP / CIDR）；空 = 子站主机（sp.host）+ 本机 */
+    readFrom: string[]
+    /** 能调 API 的地址；空 = 本机 */
+    apiFrom: string[]
+    /** 按需拉：没有读者后多久断开上一级（摄像机） */
+    closeAfter: string
+  }
   camera: {
+    /** 摄像机驱动（G4 摄像机测温约定 §1）：sim = 仿真摄像机（流、区域、温度、报警都从仿真器取）；
+     *  onvif / rtsp = 只有视频（ONVIF 查流地址 / 只用手填），不测温。真机驱动归 H */
+    driver: 'sim' | 'onvif' | 'rtsp'
+    /** sim 驱动的仿真器地址，如 http://127.0.0.1:3190/emu/cam */
+    api: string
+    /** 区域温升 ir.R<n>.rise = ir.R<n>.max − env.t：两个输入的源时间差超过这么多秒就不出值（缺省 15 = 1.5 × env.t 周期，约定 §3） */
+    riseToleranceS: number
     /** ONVIF 设备服务地址，如 http://192.168.10.64/onvif/device_service */
     onvif: string
     user: string
@@ -80,7 +102,7 @@ export interface EgConfig extends EgFile {
   /** local.yaml 原样（写给同一 compose 网络里的容器看的地址，IoT Gateway 配置按它生成） */
   local: LocalFile
   /** 本进程自己连的地址：local.yaml 的值，开发时可被环境变量覆盖（进程跑在宿主机、总线在容器里） */
-  conn: { bus: string; tb: string; tbHttp: string; httpPort: number; stationHttp: string }
+  conn: { bus: string; tb: string; tbHttp: string; httpPort: number; stationHttp: string; mtxApi: string; camHost: string }
   dir: string
 }
 
@@ -97,7 +119,8 @@ export const LOCAL_DEFAULTS: LocalFile = {
     api: 'unix:///var/run/docker.sock',
     containers: { tb: 'lsa-eg-tb', gateway: 'lsa-eg-gateway', mosquitto: 'lsa-eg-mosquitto', mediamtx: 'lsa-eg-mediamtx' },
   },
-  camera: { onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
+  video: { rtspPort: 8554, api: 'http://127.0.0.1:9997', apiListen: '127.0.0.1:9997', readFrom: [], apiFrom: [], closeAfter: '10s' },
+  camera: { driver: 'rtsp', api: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 
 /** 仓库根（有 pnpm-workspace.yaml 的那层）；装到 EG 上后没有就返回 null */
@@ -118,7 +141,7 @@ export function configDir(): string {
   return resolve(repoRoot() ?? process.cwd(), 'run')
 }
 
-/** 读两份配置。local.yaml 没有就按默认值生成一份；环境变量 EG_BUS_MQTT / EG_TB_MQTT / EG_TB_HTTP / EG_HTTP_PORT / EG_STATION_HTTP 只改本进程自己的连接（开发用） */
+/** 读两份配置。local.yaml 没有就按默认值生成一份；环境变量 EG_BUS_MQTT / EG_TB_MQTT / EG_TB_HTTP / EG_HTTP_PORT / EG_STATION_HTTP / EG_MTX_API / EG_CAM_HOST 只改本进程自己的连接（开发用） */
 export function loadConfig(dir = configDir()): EgConfig {
   const egPath = resolve(dir, 'eg.yaml')
   if (!existsSync(egPath)) throw new Error(`没有 ${egPath} —— 在子站上跑 pnpm eg:config 生成后拷过来（开发机：pnpm dev:config）`)
@@ -140,6 +163,9 @@ export function loadConfig(dir = configDir()): EgConfig {
     tbHttp: env['EG_TB_HTTP'] || local.tb.http,
     httpPort: Number(env['EG_HTTP_PORT'] || local.http.port),
     stationHttp: (env['EG_STATION_HTTP'] || eg.station.http || `http://${eg.sp.host}`).replace(/\/$/, ''),
+    mtxApi: (env['EG_MTX_API'] || local.video.api).replace(/\/$/, ''),
+    // eg-video 自己直连摄像机（探测、抓图）时把流地址里的「主机:端口」换成它 —— 开发时摄像机测试源在容器里，宿主机上的 eg-video 走映射端口
+    camHost: env['EG_CAM_HOST'] || '',
   }
   return { ...eg, local, conn, dir }
 }

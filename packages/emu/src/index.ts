@@ -12,12 +12,21 @@
  *   GET  /emu/status
  *   POST /emu/dev/<设备名>/dead?on=1|0   这台设备停发（模拟传感器掉线）/ 恢复
  *   POST /emu/dev/<设备名>/drop?keys=a,b  这台设备只停发这几个量（模拟单个传感器坏）；keys 为空 = 恢复
- *   POST /emu/arc?intensity=420&ms=22    热点隔室的 SAM 打一次弧光脉冲 */
+ *   POST /emu/arc?intensity=420&ms=22    热点隔室的 SAM 打一次弧光脉冲
+ *
+ * 仿真摄像机（G4 摄像机测温约定 §6，camera.ts）：eg-video 的 sim 驱动取 GET /emu/cam/state；
+ *   POST /emu/cam/overtemp?region=R2&max=95&s=120   区域最高温保持 s 秒
+ *   POST /emu/cam/stream?ch=visible|visibleSub|thermal|thermalSub|all&on=0|1   断 / 恢复视频流
+ *   POST /emu/cam/dead?on=1|0                      整台摄像机失联
+ *   POST /emu/cam/regions                          改区域配置（请求体 JSON 数组：{name,type,coords,enabled}）
+ *   POST /emu/cam/alarm?state=…                    原生报警状态
+ * 摄像机的 cam.* 由 eg-video 报，这里不再替摄像机发（它不是同事程序管的传感器）。 */
 import { createServer } from 'node:http'
 import mqtt from 'mqtt'
 import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { attributesOf, PERIOD, planCabinets, telemetryOf, type CabPlan, type Ctx, type Period, type Scenario } from '@lsa/points'
 import type { CabinetSpec, SubDeviceSpec } from '@lsa/model'
+import { CameraSim, type RegionDef } from './camera.js'
 
 const argv = process.argv.slice(2)
 const arg = (name: string, d: string) => {
@@ -60,6 +69,12 @@ async function main() {
     const room = roomIndexOf(s, cab)
     ctxOf.set(s.name, { plan, room, roomName: cab.rooms[room] ?? '', zones: false })
   }
+  const cam = new CameraSim(
+    plan,
+    cab.rooms.length,
+    process.env['EMU_CAM_RTSP'] ?? 'rtsp://admin:lsa-cam@camera:8554',
+    process.env['EMU_CAM_API'] ?? 'http://127.0.0.1:19998',
+  )
   const dead = new Set<string>()
   const drop = new Map<string, Set<string>>()
   let sent = 0
@@ -92,7 +107,7 @@ async function main() {
   const tick = (period: Period) => {
     const ts = Date.now()
     for (const s of cab.subs) {
-      if (dead.has(s.name)) continue
+      if (dead.has(s.name) || s.kind === 'camera') continue
       const kv = telemetryOf(s, ctxOf.get(s.name)!, period, ts)
       if (!kv) continue
       for (const k of NOT_FROM_SENSORS) delete kv[k]
@@ -149,6 +164,49 @@ async function main() {
       return json(200, { ok: true, drop: keys })
     }
     if (req.method === 'POST' && seg[1] === 'arc') return json(200, { ok: true, device: arc(num('intensity', 420), num('ms', 22)) })
+    if (seg[1] === 'cam') {
+      const q = (k: string) => url.searchParams.get(k) ?? ''
+      if (req.method === 'GET' && seg[2] === 'state') {
+        const st = cam.state()
+        return st.online ? json(200, st) : json(503, { error: '摄像机失联（仿真）' })
+      }
+      if (req.method === 'POST' && seg[2] === 'overtemp') {
+        cam.overtemp(q('region') || 'R1', num('max', 95), num('s', 120))
+        log(`摄像机 ${q('region') || 'R1'} 注入过温 ${num('max', 95)} ℃ ${num('s', 120)} s`)
+        return json(200, { ok: true })
+      }
+      if (req.method === 'POST' && seg[2] === 'stream') {
+        const ch = (q('ch') || 'all') as Parameters<CameraSim['setStream']>[0]
+        void cam.setStream(ch, q('on') !== '0').then(() => json(200, { ok: true, streams: cam.state().streams }))
+        log(`摄像机视频 ${ch} ${q('on') !== '0' ? '恢复' : '断流'}`)
+        return
+      }
+      if (req.method === 'POST' && seg[2] === 'dead') {
+        void cam.setDead(q('on') !== '0').then(() => json(200, { ok: true }))
+        log(`摄像机 ${q('on') !== '0' ? '失联（仿真）' : '恢复'}`)
+        return
+      }
+      if (req.method === 'POST' && seg[2] === 'alarm') {
+        cam.setAlarm(q('state'))
+        return json(200, { ok: true })
+      }
+      if (req.method === 'POST' && seg[2] === 'regions') {
+        let body = ''
+        req.on('data', d => (body += d))
+        req.on('end', () => {
+          try {
+            const r = JSON.parse(body) as RegionDef[]
+            if (!Array.isArray(r)) throw new Error('要 JSON 数组')
+            cam.setRegions(r.map(x => ({ ...x, enabled: x.enabled ?? true })))
+            log(`摄像机区域配置改为 ${r.length} 个`)
+            json(200, { ok: true, regions: cam.state().regions })
+          } catch (e) {
+            json(400, { error: (e as Error).message })
+          }
+        })
+        return
+      }
+    }
     json(404, { error: '未知路径' })
   }).listen(CTL_PORT, '127.0.0.1', () => log(`控制面 http://127.0.0.1:${CTL_PORT}/emu/status`))
 

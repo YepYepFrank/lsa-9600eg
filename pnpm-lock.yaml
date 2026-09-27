@@ -109,12 +109,18 @@ importers:
       '@nestjs/platform-express':
         specifier: ^10.4.15
         version: 10.4.22(@nestjs/common@10.4.22(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.22)
+      mqtt:
+        specifier: ^5.10.1
+        version: 5.16.0
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
       rxjs:
         specifier: ^7.8.1
         version: 7.8.2
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.1
     devDependencies:
       '@swc-node/register':
         specifier: ^1.10.9
@@ -122,6 +128,9 @@ importers:
       '@swc/core':
         specifier: ^1.10.1
         version: 1.16.2
+      '@types/express':
+        specifier: ^5.0.0
+        version: 5.0.6
 
   packages/config:
     dependencies:

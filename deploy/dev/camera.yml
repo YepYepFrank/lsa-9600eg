@@ -1,0 +1,43 @@
+# 开发用：RTSP 测试源扮本柜的双目摄像机（G4 摄像机测温约定 §6）。镜像要带 ffmpeg（bluenviron/mediamtx:1.21.1-ffmpeg）。
+# 四路：visible / visible-sub（彩条）、thermal / thermal-sub（伪彩热斑）；有人拉才用 ffmpeg 出画面，没人看 10 s 后停，平时不占 CPU。
+# 读要账号 admin / lsa-cam（与 local.yaml camera.user / password 一致，走一遍带认证的拉流）；本机 ffmpeg 推流不要账号。
+# 仿真器 packages/emu 经 API（:9997）把某一路的 runOnDemand 摘掉来模拟断流。
+logLevel: warn
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+api: yes
+apiAddress: :9997
+
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ['127.0.0.1/32', '::1/128']
+    permissions: [{ action: publish }, { action: read }]
+  - user: admin
+    pass: lsa-cam
+    permissions: [{ action: read }]
+  - user: any
+    pass:
+    permissions: [{ action: api }]
+
+pathDefaults:
+  runOnDemandRestart: yes
+  runOnDemandStartTimeout: 10s
+  runOnDemandCloseAfter: 10s
+
+paths:
+  visible:
+    runOnDemand: ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=25 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -bf 0 -g 25 -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH
+  visible-sub:
+    runOnDemand: ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=640x360:rate=25 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -bf 0 -g 25 -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH
+  thermal:
+    runOnDemand: ffmpeg -hide_banner -loglevel error -re -f lavfi -i gradients=size=640x512:rate=25:speed=0.02:type=radial:nb_colors=2:c0=white:c1=0x101010:x0=380:y0=260:x1=640:y1=512,format=gray,format=yuv444p,pseudocolor=p=inferno -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -bf 0 -g 25 -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH
+  thermal-sub:
+    runOnDemand: ffmpeg -hide_banner -loglevel error -re -f lavfi -i gradients=size=320x256:rate=25:speed=0.02:type=radial:nb_colors=2:c0=white:c1=0x101010:x0=190:y0=130:x1=320:y1=256,format=gray,format=yuv444p,pseudocolor=p=inferno -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -bf 0 -g 25 -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH

@@ -45,10 +45,22 @@ docker:
     gateway: lsa-eg-gateway
     mosquitto: lsa-eg-mosquitto
     mediamtx: lsa-eg-mediamtx
+# G4：EG mediamtx 在容器里（RTSP 18554、API 映射到 127.0.0.1:19997）；子站 mediamtx 与宿主机上的 eg-video 都经 Docker 网关进来，读权限放开
+video:
+  rtspPort: 18554
+  api: http://127.0.0.1:19997
+  apiListen: ':9997'
+  readFrom: ['0.0.0.0/0']
+  apiFrom: ['0.0.0.0/0']
+  closeAfter: 10s
+# 摄像机用仿真器（packages/emu 的 /emu/cam）+ RTSP 测试源（deploy/dev 的 camera 容器，账号 admin / lsa-cam）
 camera:
+  driver: sim
+  api: http://127.0.0.1:3190/emu/cam
+  riseToleranceS: 15
   onvif: ''
   user: admin
-  password: ''
+  password: lsa-cam
   rtsp:
     visible: ''
     thermal: ''

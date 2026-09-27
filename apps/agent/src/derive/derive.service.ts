@@ -6,11 +6,18 @@
  *     时间戳与电流读数相同，这样子站上负荷率与电流在同一时刻。
  *
  * 另做一项检查：el.Ep（累计电能）必须单调不减（子站按日差分算日电量）。倒退了（电表清零 / 更换）照样上送，
- * 只记警告日志 —— 要在子站维护记录里登记，否则那天的日电量是负的。 */
+ * 只记警告日志 —— 要在子站维护记录里登记，否则那天的日电量是负的。
+ *
+ * 摄像机区域测温（G4 摄像机测温约定 §3、§5，设备 CAM-<柜号>）：
+ *   ir.R<n>.rise = ir.R<n>.max − env.t（本柜柜内空气温度：CAM 属性 regions.R<n>.env 指定的设备，缺省本柜第一台 SAM）；
+ *     两个输入都有效、源时间差 ≤ 容差（local.yaml camera.riseToleranceS，缺省 15 s）才出值，时间戳取 max 的；允许负值；
+ *     出不来时在 CAM 的质量码里标 ir.R<n>.rise（env.t 缺 / 失效跟随它，时间差超容差标 stale）。
+ *   ir.dmax = 各区域 ir.R<n>.max 的极差（「区域温差」告警的输入 —— TB 规则只能比常量）。 */
 import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
+import { QualityService } from '../quality/quality.service.js'
 
 const PHASES = ['el.Ia', 'el.Ib', 'el.Ic'] as const
 
@@ -23,11 +30,25 @@ export class DeriveService implements OnModuleInit {
   private readonly lastEp = new Map<string, { ts: number; v: number }>()
   /** 电表名 → el.Ep 倒退的次数（状态接口显示） */
   readonly epBackwards = new Map<string, number>()
+  /** 摄像机名 → 区域号 → 取 env.t 的设备 */
+  private readonly envOf = new Map<string, Map<number, string>>()
 
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
+    private readonly quality: QualityService,
   ) {
+    const firstSam = cfg.devices.find(d => d.kind === 'sam')?.name
+    for (const d of cfg.devices) {
+      if (d.kind !== 'camera') continue
+      const regions = (d.attrs['regions'] ?? {}) as Record<string, { env?: string } | undefined>
+      const m = new Map<number, string>()
+      for (const n of [1, 2, 3]) {
+        const env = regions[`R${n}`]?.env ?? firstSam
+        if (env) m.set(n, env)
+      }
+      this.envOf.set(d.name, m)
+    }
     for (const d of cfg.devices) {
       if (d.kind !== 'meter') continue
       const r = Number(d.attrs['rated'] ?? cfg.cabinet.rated)
@@ -37,6 +58,7 @@ export class DeriveService implements OnModuleInit {
 
   onModuleInit(): void {
     this.bus.onTelemetry((dev, entries, own) => {
+      if (!own && this.envOf.has(dev)) return this.camRise(dev, entries)
       if (own || !this.rated.has(dev)) return
       this.loadPct(dev, entries)
       this.checkEp(dev, entries)
@@ -63,6 +85,32 @@ export class DeriveService implements OnModuleInit {
     }
   }
 
+  private camRise(dev: string, entries: Entry[]): void {
+    const envMap = this.envOf.get(dev)!
+    const tol = this.cfg.local.camera.riseToleranceS * 1000
+    for (const e of entries) {
+      const maxes = [1, 2, 3].map(n => ({ n, v: num(e.values[`ir.R${n}.max`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
+      if (!maxes.length) continue
+      const out: Record<string, number> = {}
+      if (maxes.length >= 2) out['ir.dmax'] = round1(Math.max(...maxes.map(x => x.v)) - Math.min(...maxes.map(x => x.v)))
+      for (const { n, v } of maxes) {
+        const key = `ir.R${n}.rise`
+        const envDev = envMap.get(n)
+        const env = envDev ? this.bus.live.get(envDev)?.telemetry['env.t'] : undefined
+        const envQ = envDev ? this.quality.qualityOf(envDev)['env.t'] : undefined
+        const envV = env ? num(env.v) : null
+        if (!env || envV === null) this.quality.setDerived(dev, key, 'invalid')
+        else if (envQ === 'stale' || envQ === 'invalid') this.quality.setDerived(dev, key, envQ)
+        else if (Math.abs(e.ts - env.ts) > tol) this.quality.setDerived(dev, key, 'stale')
+        else {
+          out[key] = round1(v - envV)
+          this.quality.setDerived(dev, key, null)
+        }
+      }
+      if (Object.keys(out).length) this.bus.publish(dev, out, e.ts)
+    }
+  }
+
   private loadPct(dev: string, entries: Entry[]): void {
     const rated = this.rated.get(dev)!
     const live = this.bus.live.get(dev)?.telemetry ?? {}
@@ -76,6 +124,8 @@ export class DeriveService implements OnModuleInit {
     }
   }
 }
+
+const round1 = (v: number) => Math.round(v * 10) / 10
 
 function num(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN

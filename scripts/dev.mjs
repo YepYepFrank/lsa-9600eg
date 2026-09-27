@@ -15,7 +15,7 @@ const cmd = process.argv[2]
 const shellFor = bin => process.platform === 'win32' && bin === 'pnpm'
 
 /** 宿主机进程连容器里的总线与本地 TB；管理页端口 9100（EG 上是 80） */
-const HOST_ENV = { ...process.env, EG_BUS_MQTT: 'mqtt://127.0.0.1:11883', EG_TB_MQTT: 'mqtt://127.0.0.1:11884', EG_TB_HTTP: 'http://127.0.0.1:18080', EG_HTTP_PORT: '9100', EG_DEBUG: '1' }
+const HOST_ENV = { ...process.env, EG_BUS_MQTT: 'mqtt://127.0.0.1:11883', EG_TB_MQTT: 'mqtt://127.0.0.1:11884', EG_TB_HTTP: 'http://127.0.0.1:18080', EG_HTTP_PORT: '9100', EG_DEBUG: '1', EG_CAM_HOST: '127.0.0.1:18555' }
 
 function run(bin, args, env = process.env) {
   const r = spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit', env, shell: shellFor(bin) })
@@ -38,6 +38,8 @@ switch (cmd) {
       process.exit(1)
     }
     run('pnpm', ['-s', 'gateway:render'])
+    // EG mediamtx 起来前要有配置文件（eg-video 起了以后会按摄像机刷新）
+    run('pnpm', ['-s', '-F', '@lsa-eg/video', 'video:render'], HOST_ENV)
     compose('up', '-d', '--wait', 'eg-postgres')
     if (!tbInstalled()) {
       console.log('本地 TB 的库是空的，先建库（约 1–2 分钟）…')

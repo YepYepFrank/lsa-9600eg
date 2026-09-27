@@ -5,6 +5,7 @@
 #
 # 链路：emu（扮演同事的转换程序，宿主机）─► mosquitto ─► tb-gateway ─► eg-tb（EG 本地 TB：存数、本地 7 类告警、本地页面）
 #       eg-agent（宿主机）也连 mosquitto，上送子站走它（I2）
+#       视频（G4）：camera（测试源扮摄像机）◀─ mediamtx（EG 这一级，按需拉）◀─ 子站 mediamtx；eg-video（宿主机）生成 mediamtx 配置、测温、探测
 # 本地 TB 的设备、设备配置（含告警规则）、规则链由后端库 provision:eg 按 eg.yaml 建（它连 127.0.0.1:18080）。
 # 与子站开发环境不共用任何容器、库和网络：本地 TB 用自己的 PostgreSQL（与 EG 上一样），子站那边停了也照样跑。
 name: lsa-eg-dev
@@ -117,6 +118,35 @@ services:
       # 自定义连接器：EG 自身数据经网关自己的会话上送（extensions/lsa/lsa_self_connector.py）
       - ../tb-gateway/extensions/lsa:/thingsboard_gateway/extensions/lsa:ro
       - gw-logs:/thingsboard_gateway/logs
+    networks: [eg]
+
+  # G4：RTSP 测试源扮本柜的双目摄像机（四路按需出测试画面）；仿真器经它的 API 模拟断流
+  camera:
+    image: bluenviron/mediamtx:${MEDIAMTX_VERSION:-1.21.1}-ffmpeg
+    container_name: lsa-eg-camera
+    restart: unless-stopped
+    command: ['/cfg/camera.yml']
+    volumes:
+      - ./camera.yml:/cfg/camera.yml:ro
+    ports:
+      # 宿主机上的 eg-video 探测 / 仿真器断流用（EG_CAM_HOST=127.0.0.1:18555）
+      - '127.0.0.1:18555:8554'
+      - '127.0.0.1:19998:9997'
+    networks: [eg]
+
+  # G4：EG 本机 mediamtx（两级按需拉的 EG 这一级）。配置由 eg-video 生成到 run/mediamtx/mediamtx.yml，变了 mediamtx 自己重载
+  # 开发时 RTSP 用 18554（与子站 mediamtx 的 8554 错开），子站 mediamtx 从 host.docker.internal:18554 拉
+  mediamtx:
+    image: bluenviron/mediamtx:${MEDIAMTX_VERSION:-1.21.1}
+    container_name: lsa-eg-mediamtx
+    restart: unless-stopped
+    depends_on: [camera]
+    command: ['/cfg/mediamtx.yml']
+    volumes:
+      - ../../run/mediamtx:/cfg
+    ports:
+      - '127.0.0.1:18554:18554'
+      - '127.0.0.1:19997:9997'
     networks: [eg]
 
 volumes:
