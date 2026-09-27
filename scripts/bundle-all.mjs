@@ -85,11 +85,12 @@ for (const f of ['images.tar.gz', 'lsa9600sp-backend/docker/.env.prod.example', 
 let EG = opt('eg') && resolve(opt('eg'))
 if (!EG) {
   console.log('没给 --eg：现打 EG 发布件（pack:eg -- --images --debs）\n')
-  run('node', ['scripts/pack-eg.mjs', '--images', '--debs'])
+  // 版本号在打之前取（与 pack-eg 同一算法）：打的过程中有人提交，HEAD 会变
   const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
   const rev = out('git', ['rev-parse', '--short', 'HEAD'])
   const dirty = out('git', ['status', '--porcelain']) ? '-dirty' : ''
   EG = resolve(ROOT, 'dist', `eg-${pkg.version}-${rev}${dirty}`)
+  run('node', ['scripts/pack-eg.mjs', '--images', '--debs'])
 }
 for (const f of ['install.sh', 'compose.yaml', 'IMAGES.txt', 'images-amd64.tar.gz', 'VERSION'])
   if (!existsSync(join(EG, f))) throw new Error(`EG 发布件 ${EG} 里没有 ${f}（要 pack:eg -- --images --debs 的产物）`)
