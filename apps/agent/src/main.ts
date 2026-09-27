@@ -16,6 +16,7 @@ import { AppModule } from './app.module.js'
 import { egConfig } from './config.js'
 import { renderGatewayConfig } from './gateway/render.js'
 import { RingLogger } from './logging/ring-logger.js'
+import { denyOnIfaces } from './net/deny.js'
 
 async function bootstrap() {
   const cfg = egConfig()
@@ -27,6 +28,9 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger })
   // 经子站反代进来时取真实客户端地址（审计用）
   app.set('trust proxy', true)
+  // 管理页只对 LAN2 开：LAN1（摄像机网）进来的一律 403（local.yaml http.denyOn；EG 编排经 EG_HTTP_DENY_ON 给）
+  const deny = denyOnIfaces([...(cfg.local.http.denyOn ?? []), ...(process.env['EG_HTTP_DENY_ON'] ?? '').split(',').map(x => x.trim()).filter(Boolean)])
+  if (deny) app.use(deny)
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }))
 
   // 本地管理页：构建产物由 agent 直出（EG_WEB_DIR 或仓库里 apps/admin-web/dist）

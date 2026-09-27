@@ -59,7 +59,8 @@ export interface LocalFile {
   tb: { http: string }
   /** 上送 outbox（EG独立TB调整方案 §2.2）：保留上限两者先到为准；补传限速（样本 / 秒），免得恢复时压垮子站 */
   outbox: { maxAgeDays: number; maxMb: number; backfillRate: number }
-  http: { port: number }
+  /** 管理页 / API（宿主机网络 0.0.0.0:<port>）。denyOn：从这些网口进来的请求一律 403（部署时填 LAN1 摄像机网口名，I5-2） */
+  http: { port: number; denyOn: string[] }
   /** 对时：SNTP 查询的服务器，测 eg.clk_offset 用（EG 自己的对时由系统 chrony 做）。空 = 子站主机 */
   ntp: { server: string }
   /** 上行网口名（算 eg.up_kbps）；空 = 按默认路由自动找 */
@@ -135,7 +136,7 @@ export const LOCAL_DEFAULTS: LocalFile = {
   mqtt: { bus: 'mqtt://mosquitto:1883', tb: 'mqtt://tb:1883' },
   tb: { http: 'http://tb:8080' },
   outbox: { maxAgeDays: 7, maxMb: 2048, backfillRate: 2000 },
-  http: { port: 80 },
+  http: { port: 80, denyOn: [] },
   ntp: { server: '' },
   net: { uplink: '' },
   docker: {

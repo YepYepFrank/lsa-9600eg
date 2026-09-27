@@ -2,11 +2,14 @@
 #
 #   /opt/lsa-eg/                 部署目录（scripts/pack-eg.mjs 出的发布件解压在这里）
 #     compose.yaml  .env         本文件；.env 由 install.sh 首次生成（本地库口令等），只在这台 EG 上
-#     config/                    EG_CONFIG_DIR：eg.yaml（子站生成、每台一份）、local.yaml、IoT Gateway 配置、outbox / 事件库、审计
-#     mosquitto.conf  extensions/lsa/
+#     config/                    EG_CONFIG_DIR：eg.yaml（子站生成、每台一份）、local.yaml、IoT Gateway 配置、mediamtx 配置、outbox / 事件库、证据、审计
+#     recordings/                循环录像（两路子码流常录，按 evidence.ringHours 删最旧的；约 11 GB / 天写入）
+#     mosquitto.conf  extensions/lsa/  debs/（Docker 与 chrony 离线包）  diskcheck.sh
 #
 # 链路：同事的采集程序（本机）─► mosquitto（127.0.0.1:1884）─► gateway ─► tb（EG 本地 TB：存数、本地 7 类告警）
 #       agent（宿主机网络）也连 mosquitto：派生量、质量码、上送子站（mqtts 8883）、告警事件与配置回执（https 443）、本地管理页（80）
+#       摄像机（LAN1）─► mediamtx（宿主机网络，RTSP 8554 给子站拉，子码流常录）；video（eg-video）生成 mediamtx 配置、测温、抓帧；视频不经 TB
+# 内存上限合计约 2.9 GB（X26A 按 4 GB 核算，开发计划 §1）；日志 json-file 10 MB × 3 轮转。
 # 服务名 mosquitto / tb 与 local.yaml 的缺省地址一致（IoT Gateway 在容器网络里按服务名连），容器名与 local.yaml 的 docker.containers 一致。
 name: lsa-eg
 
@@ -129,7 +132,7 @@ services:
     networks: [eg]
 
   agent:
-    image: ${EG_AGENT_IMAGE:-lsa-eg-agent:latest}
+    image: ${EG_APP_IMAGE:-lsa-eg-app:latest}
     container_name: lsa-eg-agent
     restart: unless-stopped
     # 宿主机网络：管理页听 80（LAN2 上直连、子站反代）；上行网口流量（eg.up_kbps）、对时、探测子站都要看宿主机的网卡
@@ -141,6 +144,8 @@ services:
       # 本进程自己连的地址（容器网络外）；local.yaml 里的 mosquitto / tb 是写给 IoT Gateway 的
       EG_BUS_MQTT: mqtt://127.0.0.1:1884
       EG_TB_HTTP: http://127.0.0.1:18080
+      # 管理页只对 LAN2 开：从 LAN1（摄像机网口，install.sh --lan1 记在 .env）进来的请求 403（I5-2）
+      EG_HTTP_DENY_ON: ${EG_LAN1:-}
       # 子站自签证书（上送 mqtts 8883、事件 https 443 都认它）：部署时拷到 config/sp-ca.pem（手册 §3）
       NODE_EXTRA_CA_CERTS: /config/sp-ca.pem
     volumes:
@@ -148,6 +153,39 @@ services:
       # 组件状态、日志、重启（只许本地 TB 与 IoT Gateway）
       - /var/run/docker.sock:/var/run/docker.sock
     mem_limit: 384m
+    logging: *log
+
+  # eg-video（G4 / G5）：与 agent 同一个镜像；只听本机 127.0.0.1:9110（管理页经 agent 转）；生成 config/mediamtx/mediamtx.yml
+  video:
+    image: ${EG_APP_IMAGE:-lsa-eg-app:latest}
+    container_name: lsa-eg-video
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app/apps/video
+    command: ['node', '--import', '@swc-node/register/esm-register', 'src/main.ts']
+    environment:
+      TZ: Asia/Shanghai
+      EG_CONFIG_DIR: /config
+    volumes:
+      - ./config:/config
+    # 含抓帧时起的 ffmpeg
+    mem_limit: 256m
+    logging: *log
+
+  # EG 本机 mediamtx：宿主机网络（LAN1 连摄像机、LAN2 给子站拉 RTSP 8554）；API 9997 与回放 9996 只听本机。
+  # 配置由 video 生成（install.sh 先生成一次），文件一变 mediamtx 自己重载。
+  mediamtx:
+    image: bluenviron/mediamtx:${MEDIAMTX_VERSION:-1.21.1}
+    container_name: lsa-eg-mediamtx
+    restart: unless-stopped
+    network_mode: host
+    command: ['/cfg/mediamtx.yml']
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./config/mediamtx:/cfg
+      - ${EG_RECORDINGS_DIR:-./recordings}:/recordings
+    mem_limit: 256m
     logging: *log
 
 volumes:

@@ -1,12 +1,12 @@
 # LSA-9600EG 部署手册
 
 > 适用：I 阶段起（EG 跑独立 ThingsBoard CE，后端库 `docs/EG独立TB调整方案.md`）。子站侧的安装见后端库 `docs/子站部署手册.md`。
-> 状态（2026-09-27）：发布件、编排、安装脚本已写；agent 镜像已构建并在隔离容器里冒烟通过（评审记录 I5）。**整套安装尚未在 Linux 实机 / 虚拟样机上跑过**（G6 的 Ubuntu 虚拟样机验收时补），本手册随之修订。
+> 状态（2026-09-27）：G6 起发布件含视频（eg-video + mediamtx）、Docker / chrony 离线包、升级回退、磁盘检查；**Hyper-V 虚拟样机（Ubuntu 24.04、4 GB / 4 核）验收进行中**，本手册随之修订。
 > 两样东西配套装：**本库的通用发布件**（`pnpm pack:eg`，各台一样、不含凭据）+ **子站出的每台配置包**（后端库 `scripts/pack-eg.sh`：这台的 `eg.yaml` 与站内 CA 证书 `sp-ca.pem`）。
 
 ## 1. 组成与端口
 
-一台 EG（新创云 XCY-X26A，x86_64）上跑 5 个容器，全部由 `compose.yaml` 编排：
+一台 EG（新创云 XCY-X26A，x86_64）上跑 7 个容器，全部由 `compose.yaml` 编排（内存上限合计约 2.9 GB，日志各 10 MB × 3 轮转）：
 
 | 容器 | 作用 | 端口 | 谁访问 |
 |---|---|---|---|
@@ -15,8 +15,8 @@
 | lsa-eg-postgres | 本地 TB 的库 | 不对外 | 本地 TB |
 | lsa-eg-mosquitto | 本机总线 | 1884/TCP 只绑 127.0.0.1 | 同事的采集程序（本机）、agent、IoT Gateway |
 | lsa-eg-gateway | TB IoT Gateway 3.8.5：总线 → 本地 TB | 不对外 | — |
-
-G4 起另有 `lsa-eg-mediamtx`（视频按需拉），到时补进本表。
+| lsa-eg-video | eg-video：摄像机驱动、测温、生成 mediamtx 配置、抓帧、裁证据片段（与 agent 同一镜像 `lsa-eg-app`，含 ffmpeg） | 9110/TCP 只听 127.0.0.1 | agent |
+| lsa-eg-mediamtx | 视频：主码流按需拉、两路子码流常拉常录（循环录像在 `recordings/`） | **8554/TCP**（宿主机网络）；API 9997、回放 9996 只听 127.0.0.1 | 子站 mediamtx（只许子站主机读）；eg-video、agent |
 
 **网口**：LAN1 接双目摄像机（设备网），LAN2 接子站交换机（上行网）。
 
@@ -25,22 +25,26 @@ G4 起另有 `lsa-eg-mediamtx`（视频按需拉），到时补进本表。
 | 方向 | 端口 | 说明 |
 |---|---|---|
 | 入站 LAN2 | 80/TCP | 本地管理页、子站反代、子站下发配置 |
+| 入站 LAN2 | 8554/TCP | 子站拉视频（RTSP；mediamtx 只许子站主机读） |
 | 入站 LAN2 | 22/TCP | 维护（部署时子站开 SSH 隧道跑 provision:eg）；可只放子站主机的地址 |
 | 出站 → 子站 | **8883/TCP**（MQTT over TLS） | 遥测上送（`station.mqtt`） |
 | 出站 → 子站 | **443/TCP**（HTTPS） | 告警事件与回执（`station.http`） |
 | 出站 → 子站 | 123/UDP | 对时（chrony 与 agent 的 SNTP 测量） |
-| 入站 LAN1 | 全关 | 摄像机网只出不进（agent 听的是 0.0.0.0:80，要靠防火墙挡住 LAN1，见 §8 I5-2） |
+| 入站 LAN1 | 全关 | 摄像机网只出不进。agent 听 0.0.0.0:80，但 `install.sh --lan1 <网口>` 后从 LAN1 进来的请求一律 403（I5-2 已做） |
+| 出站 → LAN1 | 554、80 | 拉摄像机 RTSP、ONVIF / 测温接口 |
 
 容器之间走 docker 网络 `lsa-eg`；本地 TB 的告警钩子经 `host.docker.internal`（宿主机网关地址）推给宿主机网络上的 agent 的 80 口 —— 防火墙要允许 docker 网段访问本机 80。
 
 ## 2. 主机准备
 
 - 系统：Ubuntu Server 24.04 LTS 最小安装（开发计划 §1；G6 定稿）。
-- Docker Engine + compose 插件。现场无外网时用离线 deb 包（G6 的离线包提供；与子站 `pack-offline.sh` 同一做法）。
-- 对时：chrony 指向子站主机（子站再对站内时钟源）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
+- Docker Engine + compose 插件、chrony：**不用先装** —— 发布件的 `debs/`（`pack:eg -- --debs`）带离线包，install.sh 发现没有就装（apt 装本地 deb，不联网；顺带卸掉与 chrony 冲突的 systemd-timesyncd）。
+- 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`（子站再对站内时钟源）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
+- 系统日志：install.sh 写 `/etc/systemd/journald.conf.d/lsa-eg.conf`，journald 封顶 200 MB。
 - 网卡：LAN1 静态地址（与摄像机同段），LAN2 静态地址（站内网），缺省路由走 LAN2。
 - 数据盘：本地 TB 留 7 天、上送 outbox 最多 2 GB、**循环录像**（两路子码流常录，按 1 Mbit/s 估每天约 10.8 GB，留 24 h）、锁定的证据片段（30 天，按每次告警约 12 MB 估），按 128 GB 工业级 mSATA 准备（开发计划 §1）。
-- **摄像机侧没人看时也一直有流量**：EG 从摄像机常拉两路子码流做循环录像（约 1 Mbit/s，LAN1 上），主码流才按需；**SSD 每天约 11 GB 写入**（一年约 4 TB，按盘的 TBW 核寿命；G6 容量 / 寿命检查项）。
+- **摄像机侧没人看时也一直有流量**：EG 从摄像机常拉两路子码流做循环录像（约 1 Mbit/s，LAN1 上），主码流才按需；**SSD 每天约 11 GB 写入**（一年约 4 TB，按盘的 TBW 核寿命）。
+- **容量 / 寿命检查**：`sudo bash diskcheck.sh [采样秒数] [盘的 TBW]` —— 各部分占用（录像、证据、outbox、TB 卷、日志）、开机以来与当前的写入速率、按 TBW 估的寿命；有 smartctl 时另报盘自己记的累计写入。
 
 ## 3. 子站侧要先准备的
 
@@ -53,12 +57,12 @@ G4 起另有 `lsa-eg-mediamtx`（视频按需拉），到时补进本表。
 
 ## 4. 安装
 
-发布件在开发机上生成：`pnpm pack:eg -- --images`，得到 `dist/eg-<版本>/`（compose、安装脚本、Mosquitto 配置、自定义连接器、`images-amd64.tar.gz`）。所有 EG 通用，不含任何凭据。
+发布件在开发机上生成：`pnpm pack:eg -- --images --debs`，得到 `dist/eg-<版本>/`（compose、安装脚本、磁盘检查、Mosquitto 配置、自定义连接器、`images-amd64.tar.gz`、`debs/`）。所有 EG 通用，不含任何凭据。
 
 ```bash
 # 在 EG 上
 sudo mkdir -p /opt/lsa-eg && sudo cp -r eg-<版本>/* /opt/lsa-eg/ && cd /opt/lsa-eg
-sudo bash install.sh        # 第一轮：导入镜像、生成 .env（本地库口令）、建本地 TB 的库、起本地 TB
+sudo bash install.sh --lan1 <摄像机网口>   # 第一轮：没有 Docker 先装离线包、导入镜像、生成 .env（本地库口令）、建本地 TB 的库、起本地 TB
 ```
 
 第一轮结束时本地 TB 已起、但还是空的。**在子站主机上**给它建实体：
@@ -81,7 +85,7 @@ scp dist/eg/<柜号>/eg.yaml dist/eg/<柜号>/sp-ca.pem <账号>@<EG 的 LAN2 �
 然后在 EG 上：
 
 ```bash
-sudo bash install.sh        # 第二轮：生成 IoT Gateway 配置、起全部
+sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 mediamtx 配置、起全部
 ```
 
 **验收**：浏览器开 `http://<EG 的 LAN2 地址>/`，本地维护账号 `maint`，初始口令在 `config/initial-password.txt`（登录后改掉口令、删掉这个文件）。
@@ -105,8 +109,9 @@ sudo bash install.sh        # 第二轮：生成 IoT Gateway 配置、起全部
 
 ## 6. 升级与回滚
 
-- **升级**：新发布件解压到新目录，把旧目录的 `.env` 与 `config/` 拷过去（或直接解压覆盖到 `/opt/lsa-eg`，`config/` 与 `.env` 不在发布件里、不会被覆盖），`sudo bash install.sh`。install.sh 会把 `.env` 里的 `EG_AGENT_IMAGE` 改成新版本。
-- **回滚**：旧镜像还在本机 —— `.env` 里 `EG_AGENT_IMAGE` 改回旧版本号，`docker compose up -d agent`。本地 TB、PostgreSQL 的版本与数据卷不随 agent 变。
+- **升级**：新发布件直接解压覆盖到 `/opt/lsa-eg`（`config/`、`recordings/`、`.env` 不在发布件里、不会被覆盖），`sudo bash install.sh`。install.sh 把上一次装好的部署文件（`.installed/`）挪成 `.previous/`、`.env` 的 `EG_APP_IMAGE` 改成新版本；更早的 `lsa-eg-app` 镜像清掉，只留现在的与可回退的。
+- **回滚**：`sudo bash install.sh --rollback` —— 部署文件换回 `.previous/`、镜像改回旧版本、`docker compose up -d`；再跑一次 `--rollback` 又回到新版。本地 TB 版本（`compose.yaml` 里 tb-node 的标签）变过的不许回退（库结构只升不降）。
+- `sudo bash install.sh --status`：容器状态、已装版本、可回退到哪个版本。
 - 升级期间 agent 停几秒：同事的数据由 Mosquitto 持久会话排着，上送 outbox 在磁盘上，都不丢（I2 实测重启无断档）。
 
 ## 7. 排障速查
@@ -124,7 +129,7 @@ sudo bash install.sh        # 第二轮：生成 IoT Gateway 配置、起全部
 | # | 问题 | 现在的做法 |
 |---|---|---|
 | I5-1 | 本地 TB 的实体由子站经 SSH 隧道跑 provision:eg 建 —— 现场要给子站开 EG 的 SSH | 按此；以后可改为 agent 按 eg.yaml 自建（I4 已有生成告警规则的代码） |
-| I5-2 | agent 用宿主机网络听 0.0.0.0:80，LAN1（摄像机网）也能访问管理页 | 靠防火墙挡；G6 加 `local.yaml http.bind` 只听 LAN2 地址 |
+| I5-2 | ~~agent 用宿主机网络听 0.0.0.0:80，LAN1（摄像机网）也能访问管理页~~ | 已解决（G6）：`install.sh --lan1 <网口>` → 从该网口进来的请求 403（按网口现有地址判，不 bind 地址，免得开机时地址没配上起不来）；也可在 `local.yaml http.denyOn` 列网口名 |
 | I5-3 | ~~本地 TB 的系统管理员沿用出厂口令~~ | 已解决：provision:eg 建完租户后改掉（后端 01a28c5） |
 | I5-4 | 本机总线不鉴权（只绑 127.0.0.1 与容器网络） | 按此 |
-| I5-5 | 镜像与整套安装未在 Linux 上跑过 | G6 虚拟样机验收 |
+| I5-5 | 镜像与整套安装未在 Linux 上跑过 | G6 虚拟样机验收（进行中） |
