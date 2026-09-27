@@ -82,15 +82,19 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
     if (this.connected) fn()
   }
 
+  /** 旁观模式（EG_PASSIVE=1）：只收不发、不占持久会话 —— 开发机上与正在跑的 agent 并排验新接口用，现场不用 */
+  readonly passive = process.env['EG_PASSIVE'] === '1'
+
   onModuleInit(): void {
     const known = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
+    if (this.passive) this.log.warn('旁观模式（EG_PASSIVE=1）：只收本机总线、不发任何数据')
     // 持久会话（固定 clientId、不清会话、会话保留 1 天）：agent 或 Mosquitto 重启那一会儿同事发的数据由 Mosquitto 排着，
     // 重连后补给 agent —— 上送 outbox 的数据就是从这里来的，不能丢（I2，EG独立TB调整方案 §2.2）
     this.client = mqtt.connect(this.cfg.conn.bus, {
-      clientId: `eg-agent-${this.cfg.cabinet.code}`,
+      clientId: this.passive ? `eg-agent-${this.cfg.cabinet.code}-passive-${process.pid}` : `eg-agent-${this.cfg.cabinet.code}`,
       protocolVersion: 5,
-      clean: false,
-      properties: { sessionExpiryInterval: 86_400 },
+      clean: this.passive,
+      properties: this.passive ? {} : { sessionExpiryInterval: 86_400 },
       reconnectPeriod: 3000,
       connectTimeout: 5000,
       keepalive: 30,
@@ -151,7 +155,7 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
 
   /** 发到本机总线（派生量、质量码、EG 自身指标）；与传感器数据同一格式，带 src=eg-agent */
   publish(device: string, values: Record<string, unknown>, ts = Date.now()): void {
-    if (!this.client?.connected) return
+    if (!this.client?.connected || this.passive) return
     // 取不到的量不发（不发 null / 0 冒充读数，接入规范 §4 规则 4）
     const kv = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null && v !== undefined))
     if (!Object.keys(kv).length) return
@@ -163,7 +167,7 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
 
   /** 发设备属性（平铺对象） */
   publishAttributes(device: string, attrs: Record<string, unknown>): void {
-    if (!this.client?.connected || !Object.keys(attrs).length) return
+    if (!this.client?.connected || this.passive || !Object.keys(attrs).length) return
     this.client.publish(BUS_TOPIC.attributes(device), JSON.stringify(attrs), { qos: 1, properties: { userProperties: { src: SELF_SRC } } })
   }
 

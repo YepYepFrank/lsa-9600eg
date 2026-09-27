@@ -88,8 +88,8 @@ const canMaint = computed(() => session.me?.role === 'maint')
     </section>
 
     <div class="panel">
-      <div class="panel-h">下挂设备<span class="t2">设备清单由子站下发；数据由同事的转换程序经本机总线送来</span><span class="sp" /><el-button size="small" text @click="router.push('/devices')">详情 ›</el-button></div>
-      <el-table :data="st.devices" size="small" @row-click="(r: Dev) => router.push('/live/' + r.name)" style="cursor: pointer">
+      <div class="panel-h">下挂设备<span class="t2">设备清单由子站下发；数据由同事的转换程序经本机总线送来</span><span class="sp" /><el-button size="small" text @click="router.push('/manage/devices')">详情 ›</el-button></div>
+      <el-table :data="st.devices" size="small" @row-click="(r: Dev) => router.push('/manage/live/' + r.name)" style="cursor: pointer">
         <el-table-column label="设备" width="170"><template #default="{ row }"><span class="mono">{{ row.name }}</span></template></el-table-column>
         <el-table-column prop="label" label="名称" min-width="150" />
         <el-table-column label="类型" width="110"><template #default="{ row }">{{ KIND[row.kind] }}</template></el-table-column>

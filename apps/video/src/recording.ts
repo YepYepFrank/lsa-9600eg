@@ -20,6 +20,8 @@ export interface RingState {
   newest: number | null
   /** 最新一段开始于 2.5 分钟内（每段 60 s）= 在录 */
   recording: boolean
+  /** 覆盖范围里的断档（相邻两段之间空出 > 1.5 s：mediamtx 重启、摄像机断流等），新的在后，最多 20 个 */
+  gaps: { from: number; to: number }[]
 }
 
 export class MissingError extends Error {
@@ -58,7 +60,19 @@ export class Recording {
         /* API 不通按没有 */
       }
       const newest = starts.length ? starts[starts.length - 1]! : null
-      out.push({ channel, path, segments: starts.length, oldest: starts[0] ?? null, newest, recording: newest !== null && Date.now() - newest < 150_000 })
+      const gaps: { from: number; to: number }[] = []
+      if (starts.length) {
+        try {
+          const segs = await this.segments(channel, starts[0]!, Date.now())
+          for (let i = 1; i < segs.length; i++) {
+            const end = segs[i - 1]!.start + segs[i - 1]!.duration
+            if (segs[i]!.start - end > 1500) gaps.push({ from: end, to: segs[i]!.start })
+          }
+        } catch {
+          /* 回放服务不通：不报缺口 */
+        }
+      }
+      out.push({ channel, path, segments: starts.length, oldest: starts[0] ?? null, newest, recording: newest !== null && Date.now() - newest < 150_000, gaps: gaps.slice(-20) })
     }
     return out
   }

@@ -1,7 +1,20 @@
 # LSA-9600EG 边缘网关端
 
 LSA-9600SP 态势感知系统的边缘网关（每面柜一台，硬件拟用新创云 XCY-X26A）上我方的软件。EG 本地跑独立 ThingsBoard CE（后端库 `docs/EG独立TB调整方案.md`）。
-计划：`docs/LSA-9600EG_开发计划.md`；进度与待确认：`docs/评审记录.md`；部署：`docs/EG部署手册.md`；给同事的对接文档：`docs/EG内部MQTT格式.md`。
+计划：`docs/LSA-9600EG_开发计划.md`；进度与待确认：`docs/评审记录.md`；部署：`docs/EG部署手册.md`；给同事的对接文档：`docs/EG内部MQTT格式.md`；本地页接口：`docs/EG本地接口.md`。
+
+## 单柜监测界面
+
+本地管理页的界面基线是领导 80e01ad（yangjun1966/lsa-9600eg「完善边缘网关单柜界面」）：本柜总览、电气量、事件与录像、设备与通信（原有的各管理页都在这里面）。**已接真实接口**：双光实况（agent 带会话鉴权反代本机 mediamtx 的 WebRTC / HLS）、测温区按摄像机坐标画框、温湿度 / 露点 / 局放 / 颗粒物 / 弧光、电表、本地事件与证据回放、近 24 h 趋势（本地 TB）。说明：[单柜主界面设计与预览](docs/单柜主界面设计与预览.md)。
+
+演示预览（不接后端，只在 Vite 开发服务器上）：
+
+```powershell
+npx --yes pnpm@9.15.9 --filter @lsa-eg/admin-web install --frozen-lockfile
+npx --yes pnpm@9.15.9 web
+```
+
+浏览器打开 `http://127.0.0.1:8798/?demo=1#/overview`；生产构建不会因 `demo=1` 绕过登录。前端构建检查：`pnpm -F @lsa-eg/admin-web build`；接口自检：`pnpm ui:verify`；截图：`pnpm g3:shots`。
 
 ```
 同事的转换程序 ─MQTT─► Mosquitto ─► TB IoT Gateway ─► EG 本地 TB CE（存 7 天、算 7 类告警）

@@ -119,7 +119,7 @@ const pretty = (s: string) => {
   <div class="live">
     <aside class="devs panel">
       <div class="panel-h">设备</div>
-      <button v-for="d in devices" :key="d.name" class="dev" :class="{ on: d.name === sel }" @click="router.replace('/live/' + d.name)">
+      <button v-for="d in devices" :key="d.name" class="dev" :class="{ on: d.name === sel }" @click="router.replace('/manage/live/' + d.name)">
         <span class="dot" :class="d.bad ? 'minor' : 'good'" />
         <span class="n"><span class="mono">{{ d.name }}</span><small>{{ d.label }}</small></span>
       </button>

@@ -56,6 +56,14 @@ video:
   # G5：回放服务（裁证据片段）在容器里听 :9996、映射到 127.0.0.1:19996
   playback: http://127.0.0.1:19996
   playbackListen: ':9996'
+  # eg-ui-v2：本地管理页看实时画面（agent 反代 WHEP / HLS）；容器里听 :8889 / :8888、映射到 127.0.0.1:18889 / 18888；
+  # WebRTC 媒体 UDP 8190（子站 mediamtx 已占 8189），通告 127.0.0.1 给宿主机上的浏览器
+  webrtc: http://127.0.0.1:18889
+  webrtcListen: ':8889'
+  webrtcUdp: 8190
+  webrtcHosts: ['127.0.0.1']
+  hls: http://127.0.0.1:18888
+  hlsListen: ':8888'
 # 摄像机用仿真器（packages/emu 的 /emu/cam）+ RTSP 测试源（deploy/dev 的 camera 容器，账号 admin / lsa-cam）
 camera:
   driver: sim

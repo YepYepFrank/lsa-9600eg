@@ -26,6 +26,7 @@
 |---|---|---|
 | 入站 LAN2 | 80/TCP | 本地管理页、子站反代、子站下发配置 |
 | 入站 LAN2 | 8554/TCP | 子站拉视频（RTSP；mediamtx 只许子站主机读） |
+| 入站 LAN2 | 8189/UDP | 本地管理页看实时画面（WebRTC 媒体；信令经 agent 80 口、要会话，没协商过的包不回）。挡住也行，页面自动退到 HLS（经 80 口） |
 | 入站 LAN2 | 22/TCP | 维护（部署时子站开 SSH 隧道跑 provision:eg）；可只放子站主机的地址 |
 | 出站 → 子站 | **8883/TCP**（MQTT over TLS） | 遥测上送（`station.mqtt`） |
 | 出站 → 子站 | **443/TCP**（HTTPS） | 告警事件与回执（`station.http`） |
@@ -138,6 +139,8 @@ sudo bash /opt/lsa-eg/test/test.sh down
 ```
 
 造告警（emu 控制面只听本机 3190）：`curl -X POST "http://127.0.0.1:3190/emu/arc?intensity=450&ms=25"`（弧光）、`…/emu/cam/overtemp?region=R1&max=120&s=300`（区域过温）、`…/emu/dev/<设备>/dead?on=1`（整台停发）。
+
+**开发用开关**：`EG_PASSIVE=1`（旁观模式，只收不发）只给开发机并排验接口，发布件的 compose 与 install.sh 里没有；现场 agent 看到它会连打三条错误日志 —— 看到就去掉。
 
 ## 7. 排障速查
 
