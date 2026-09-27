@@ -38,7 +38,7 @@
 ## 2. 主机准备
 
 - 系统：Ubuntu Server 24.04 LTS 最小安装（开发计划 §1；G6 定稿）。
-- Docker Engine + compose 插件、chrony：**不用先装** —— 发布件的 `debs/`（`pack:eg -- --debs`）带离线包，install.sh 发现没有就装（apt 装本地 deb，不联网；顺带卸掉与 chrony 冲突的 systemd-timesyncd）。
+- Docker Engine + compose 插件、chrony：**不用先装** —— 发布件的 `debs/`（`pack:eg -- --debs`）带离线包，install.sh 发现没有就装：先卸与 chrony 冲突的 systemd-timesyncd，再 `dpkg -i` 一次装本机没有 / 比本机新的那些（不联网；不用 `apt-get install ./debs/*.deb` —— 机器上留着装系统时的源索引时 apt 会报「Pathname to install is not absolute」，虚拟样机实测）。发布件的 `IMAGES.txt` 列各镜像的 tag / digest / ID，导入后逐个核对。
 - 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`（子站再对站内时钟源）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
 - 系统日志：install.sh 写 `/etc/systemd/journald.conf.d/lsa-eg.conf`，journald 封顶 200 MB。
 - 网卡：LAN1 静态地址（与摄像机同段），LAN2 静态地址（站内网），缺省路由走 LAN2。
@@ -114,6 +114,19 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 - `sudo bash install.sh --status`：容器状态、已装版本、可回退到哪个版本。
 - 升级期间 agent 停几秒：同事的数据由 Mosquitto 持久会话排着，上送 outbox 在磁盘上，都不丢（I2 实测重启无断档）。
 
+## 6b. 测试件（只在虚拟样机 / 实验台上用，**现场不装**）
+
+`pnpm pack:eg -- --test` 另出 `dist/eg-<版本>-test/`：仿真器 `lsa-eg-emu`（代替同事的采集程序往本机总线发数据、扮摄像机测温接口）与 RTSP 测试源（扮摄像机四路视频，127.0.0.1:8555）。不进 `IMAGES.txt`、与正式编排不共用容器。
+
+```bash
+# 正式编排第二轮装完之后
+sudo cp -r eg-<版本>-test /opt/lsa-eg/test
+sudo bash /opt/lsa-eg/test/test.sh up      # 导入测试镜像、local.yaml 摄像机改 sim + 本机测试源、起 emu 与 camera、重启 eg-video
+sudo bash /opt/lsa-eg/test/test.sh down
+```
+
+造告警（emu 控制面只听本机 3190）：`curl -X POST "http://127.0.0.1:3190/emu/arc?intensity=450&ms=25"`（弧光）、`…/emu/cam/overtemp?region=R1&max=120&s=300`（区域过温）、`…/emu/dev/<设备>/dead?on=1`（整台停发）。
+
 ## 7. 排障速查
 
 | 现象 | 看哪里 |
@@ -122,6 +135,7 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 | 诊断「数据上送」连不上子站 | `station.mqtt` 地址、8883 是否放通、证书（日志里 `self-signed certificate` / `Hostname/IP does not match` → `sp-ca.pem` 或证书 SAN） |
 | 告警事件「重试中」 | 同上查 443；子站回 401 → `station.token` 与子站设备令牌不一致（重新生成 eg.yaml） |
 | 本地告警不出 | 本地 TB 设备配置是否有规则（子站下发过配置吗）；`docker logs lsa-eg-gateway` 看总线与本地 TB 的连接 |
+| 诊断「对时」灰、eg.clk_offset 没有值 | 对时服务器（`local.yaml ntp.server`，空 = `sp.host`）UDP 123 不通：诊断页灰、日志每分钟一行「对时测量失败」，不报警、不影响其它功能（虚拟样机上宿主没有 NTP 服务，就是这样）。现场由站内 NTP 提供 |
 | EG 自身指标本地 TB 上不更新 | `docker logs lsa-eg-gateway \| grep "LSA EG 自身"`，重载后应有「订阅本机总线」（I4 修过一次死锁） |
 
 ## 8. 待定（记在评审记录 I5）
