@@ -12,7 +12,11 @@
  *   ir.R<n>.rise = ir.R<n>.max − env.t（本柜柜内空气温度：CAM 属性 regions.R<n>.env 指定的设备，缺省本柜第一台 SAM）；
  *     两个输入都有效、源时间差 ≤ 容差（local.yaml camera.riseToleranceS，缺省 15 s）才出值，时间戳取 max 的；允许负值；
  *     出不来时在 CAM 的质量码里标 ir.R<n>.rise（env.t 缺 / 失效跟随它，时间差超容差标 stale）。
- *   ir.dmax = 各区域 ir.R<n>.max 的极差（「区域温差」告警的输入 —— TB 规则只能比常量）。 */
+ *   ir.dmax = 各区域 ir.R<n>.max 的极差（「区域温差」告警的输入 —— TB 规则只能比常量）。
+ *   汇总量（§8.6 补充：TB 同一设备同一告警类型只有一条活动告警，每区域一组同类型规则会互相清除，所以本地规则按汇总量判）：
+ *     ir.rise = 各区域温升的最大值（都算不出时不出值、质量码标 ir.rise）；ir.rmax = 各区域最高温的最大值（point 用 .pt）；
+ *     ir.hot = 温升最高的区域号 1–3（没有温升时取最高温最高的区域），告警明细带它，子站据此显示是哪个区域。
+ *   都与 ir.R<n>.max 同一时间戳。 */
 import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
@@ -90,8 +94,10 @@ export class DeriveService implements OnModuleInit {
     const tol = this.cfg.local.camera.riseToleranceS * 1000
     for (const e of entries) {
       const maxes = [1, 2, 3].map(n => ({ n, v: num(e.values[`ir.R${n}.max`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
-      if (!maxes.length) continue
+      const pts = [1, 2, 3].map(n => ({ n, v: num(e.values[`ir.R${n}.pt`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
+      if (!maxes.length && !pts.length) continue
       const out: Record<string, number> = {}
+      const rises: { n: number; v: number }[] = []
       if (maxes.length >= 2) out['ir.dmax'] = round1(Math.max(...maxes.map(x => x.v)) - Math.min(...maxes.map(x => x.v)))
       for (const { n, v } of maxes) {
         const key = `ir.R${n}.rise`
@@ -104,8 +110,22 @@ export class DeriveService implements OnModuleInit {
         else if (Math.abs(e.ts - env.ts) > tol) this.quality.setDerived(dev, key, 'stale')
         else {
           out[key] = round1(v - envV)
+          rises.push({ n, v: out[key]! })
           this.quality.setDerived(dev, key, null)
         }
+      }
+      const all = [...maxes, ...pts]
+      const top = (xs: { n: number; v: number }[]) => xs.reduce((a, b) => (b.v > a.v ? b : a))
+      out['ir.rmax'] = top(all).v
+      if (rises.length) {
+        const r = top(rises)
+        out['ir.rise'] = r.v
+        out['ir.hot'] = r.n
+        this.quality.setDerived(dev, 'ir.rise', null)
+      } else {
+        out['ir.hot'] = top(all).n
+        // 都算不出：跟随第一个区域温升的原因（env.t 缺 / 失效 / 超容差）
+        this.quality.setDerived(dev, 'ir.rise', maxes.length ? ((this.quality.qualityOf(dev)[`ir.R${maxes[0]!.n}.rise`] as 'stale' | 'invalid' | undefined) ?? 'stale') : null)
       }
       if (Object.keys(out).length) this.bus.publish(dev, out, e.ts)
     }

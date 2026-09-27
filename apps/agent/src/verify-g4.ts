@@ -113,6 +113,17 @@ async function main() {
     const dm = r?.telemetry['ir.dmax']
     const maxes = [1, 2, 3].map(i => n(r?.telemetry[`ir.R${i}.max`]?.v))
     check(!!dm && Math.abs(n(dm.v) - (Math.max(...maxes) - Math.min(...maxes))) < 0.15, 'ir.dmax = 各区域最高温的极差', dm ? String(n(dm.v)) : '没有')
+    // §8.6 补充：汇总量（本地规则每类一条，按它们判）
+    const rises = [1, 2, 3].map(i => n(r?.telemetry[`ir.R${i}.rise`]?.v))
+    const rs = r?.telemetry['ir.rise']
+    const rm = r?.telemetry['ir.rmax']
+    const hot = r?.telemetry['ir.hot']
+    const hotWant = rises.indexOf(Math.max(...rises)) + 1
+    check(
+      !!rs && !!rm && !!hot && n(rs.v) === Math.max(...rises) && n(rm.v) === Math.max(...maxes) && n(hot.v) === hotWant && rs.ts === max!.ts,
+      '汇总量 ir.rise = 最大温升、ir.rmax = 最高温、ir.hot = 温升最高的区域，时间戳与 max 相同',
+      rs ? `rise ${n(rs.v)} rmax ${n(rm?.v)} hot R${n(hot?.v)}` : '没有',
+    )
   }
   const tb = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()
   const tbv = await tb.latest(camDev, ['ir.R2.max', 'ir.R2.rise'])
@@ -134,7 +145,7 @@ async function main() {
     const o = q ? (JSON.parse(String(q.v)) as Record<string, string>) : {}
     return o['ir.R1.rise'] ? o : null
   }, 60_000, 2000)
-  check(!!qd, '柜内空气温度停发 → CAM 质量码标 ir.R1.rise', qd ? JSON.stringify(qd) : '60 s 内没标')
+  check(!!qd && !!qd['ir.rise'], '柜内空气温度停发 → CAM 质量码标 ir.R<n>.rise 与汇总 ir.rise', qd ? JSON.stringify(qd) : '60 s 内没标')
   await post(`${EMU}/emu/dev/${firstSam}/drop?keys=`)
   const qok = await until(async () => {
     const q = (await live(camDev)).telemetry['q']

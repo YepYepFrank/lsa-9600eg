@@ -45,6 +45,10 @@ const DERIVED: Record<string, string[]> = {
   'ir.R2.rise': ['ir.R2.max'],
   'ir.R3.rise': ['ir.R3.max'],
   'ir.dmax': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
+  // §8.6 补充的汇总量（本地规则按它们判）
+  'ir.rise': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
+  'ir.rmax': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
+  'ir.hot': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
 }
 const EVAL_MS = 2_000
 const REPUBLISH_MS = 60_000
