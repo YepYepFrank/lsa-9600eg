@@ -68,6 +68,23 @@ const items = computed<Item[]>(() => {
               : '',
     })
   }
+  const vd = d.video
+  if (vd) {
+    const online = vd.metrics?.['cam.online']
+    const measureBad = vd.measure?.supported && !vd.measure.ok
+    out.push({
+      name: '视频与测温（eg-video）',
+      level: !vd.available ? 'crit' : online === 0 || measureBad || (vd.driver && !vd.driver.ok) ? 'crit' : online !== undefined && online < 4 ? 'minor' : vd.mediamtx?.error ? 'minor' : 'good',
+      result: !vd.available
+        ? vd.error ?? 'eg-video 连不上'
+        : `摄像机可用 ${online ?? '—'} / 4 路；${vd.measure?.supported ? (vd.measure.ok ? '区域测温正常' : `测温失败：${vd.measure.error}`) : '当前驱动不测温'}${vd.driver && !vd.driver.ok ? `；取流地址失败：${vd.driver.error}` : ''}${vd.mediamtx?.error ? `；${vd.mediamtx.error}` : ''}`,
+      hint: !vd.available
+        ? '看「本机组件」里 eg-video 是否在跑'
+        : online === 0
+          ? '摄像机（LAN1）网线、电源、地址与账号；「视频与测温」页看每一路的探测结果'
+          : '',
+    })
+  }
   const off = d.clock.offsetMs
   out.push({
     name: '对时',

@@ -22,9 +22,10 @@ import { SouthService } from './south/south.service.js'
 import { StatusController } from './status/status.controller.js'
 import { LocalTbService } from './tb/local-tb.service.js'
 import { UplinkService } from './uplink/uplink.service.js'
+import { VideoClient, VideoController } from './video/video.controller.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController],
   providers: [
     configProvider,
     AuditService,
@@ -41,6 +42,7 @@ import { UplinkService } from './uplink/uplink.service.js'
     LocalTbService,
     AlarmsService,
     ApplyService,
+    VideoClient,
   ],
 })
 export class AppModule {}

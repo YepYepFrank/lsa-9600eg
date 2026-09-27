@@ -11,6 +11,7 @@ import { AuditService } from '../audit/audit.service.js'
 import { ClientIp, CurrentSession, Maint } from '../auth/guard.js'
 import type { Session } from '../auth/auth.service.js'
 import { ApplyService } from '../apply/apply.service.js'
+import { VideoClient } from '../video/video.controller.js'
 
 class RtspDto {
   @IsOptional() @IsString() @MaxLength(512) visible?: string
@@ -39,6 +40,7 @@ export class ConfigController {
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly audit: AuditService,
     private readonly apply: ApplyService,
+    private readonly video: VideoClient,
   ) {}
 
   @Get()
@@ -85,8 +87,9 @@ export class ConfigController {
       for (const k of ['visible', 'thermal', 'visibleSub', 'thermalSub'] as const) set(`RTSP ${k}`, l.camera.rtsp[k], cam.rtsp?.[k]?.trim(), v => (l.camera.rtsp[k] = v))
     }
     if (changed.length) {
-      // 本进程里的配置对象是共享的：对时服务器、上行网口下一次采样就生效；摄像机由 eg-video 读文件（G4）
+      // 本进程里的配置对象是共享的：对时服务器、上行网口下一次采样就生效；摄像机由 eg-video 读文件，这里通知它重读（G4）
       saveLocal(l, this.cfg.dir)
+      if (b.camera) void this.video.refresh()
       this.audit.write({ user: s.user, name: s.name, via: s.via, ip, action: '改本地配置', target: 'local.yaml', ok: true, detail: changed.join('、') })
     }
     return { ok: true, changed }

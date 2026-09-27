@@ -28,6 +28,7 @@
     "i2:verify": "pnpm -F @lsa-eg/agent verify:i2",
     "i3:verify": "pnpm -F @lsa-eg/agent verify:i3",
     "i4:verify": "pnpm -F @lsa-eg/agent verify:i4",
+    "g4:verify": "pnpm -F @lsa-eg/agent verify:g4",
     "pack:eg": "node scripts/pack-eg.mjs"
   },
   "devDependencies": {

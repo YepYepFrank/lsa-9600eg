@@ -70,6 +70,15 @@ export interface Diag {
     hook: { count: number; lastAt: number | null; ignored: boolean }
     reconcile: { lastAt: number | null; lastError: string | null }
   }
+  /** 视频与测温（G4，eg-video 转来；不在时 available=false） */
+  video?: {
+    available: boolean
+    error?: string
+    driver?: { driver: string; ok: boolean; error: string | null } | null
+    metrics?: Record<string, number>
+    measure?: { supported: boolean; ok: boolean; error: string | null; at: number | null }
+    mediamtx?: { error: string | null }
+  }
   host: { uptimeSec: number; memUsedPct: number; disk: { usedPct: number; freeGb: number } | null }
   devices: { dead: string[]; unknown: string[] }
 }
@@ -130,7 +139,7 @@ export interface Config {
     ntp: { server: string }
     net: { uplink: string }
     docker: { api: string; containers: Record<string, string> }
-    camera: { onvif: string; user: string; password: string; rtsp: { visible: string; thermal: string; visibleSub: string; thermalSub: string } }
+    camera: { driver: string; onvif: string; user: string; password: string; rtsp: { visible: string; thermal: string; visibleSub: string; thermalSub: string } }
   }
   /** 子站下发、实际生效的告警规则与阈值版本（I4） */
   applied?: { version: string | null; appliedAt: number | null; by: string | null; rulesOff: string[] }

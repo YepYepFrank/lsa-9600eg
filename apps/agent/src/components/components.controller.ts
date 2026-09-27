@@ -13,6 +13,7 @@ import { SelfService } from '../self/self.service.js'
 import { COMPONENTS, ComponentsService, RESTARTABLE, type ComponentKey } from './components.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
 import { AlarmsService } from '../alarms/alarms.service.js'
+import { VideoClient } from '../video/video.controller.js'
 
 @Controller('api')
 export class ComponentsController {
@@ -25,6 +26,7 @@ export class ComponentsController {
     private readonly quality: QualityService,
     private readonly audit: AuditService,
     private readonly alarms: AlarmsService,
+    private readonly video: VideoClient,
   ) {}
 
   @Get('components')
@@ -80,6 +82,7 @@ export class ComponentsController {
       clock: this.self.clock(),
       uplink,
       events: this.alarms.status(),
+      video: await this.video.status(1500),
       host: { uptimeSec: Math.round(uptime()), memUsedPct: Math.round((1 - freemem() / totalmem()) * 1000) / 10, disk },
       devices: { dead: this.quality.deadDevices(now), unknown: [...this.bus.unknown.keys()] },
     }

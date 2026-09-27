@@ -13,7 +13,8 @@
     "verify:i1": "node --import @swc-node/register/esm-register src/verify-i1.ts",
     "verify:i2": "node --import @swc-node/register/esm-register src/verify-i2.ts",
     "verify:i3": "node --import @swc-node/register/esm-register src/verify-i3.ts",
-    "verify:i4": "node --import @swc-node/register/esm-register src/verify-i4.ts"
+    "verify:i4": "node --import @swc-node/register/esm-register src/verify-i4.ts",
+    "verify:g4": "node --import @swc-node/register/esm-register src/verify-g4.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",
