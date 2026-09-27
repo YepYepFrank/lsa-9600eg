@@ -32,8 +32,6 @@ async function main() {
     const s = state(c)
     check(s.startsWith('running') && !s.includes('unhealthy'), `容器 ${c} 在跑`, s)
   }
-  const edge = state(`lsa-edge-${code.toLowerCase()}`)
-  check(!edge.startsWith('running'), `本柜的 TB Edge 容器已停（lsa-edge-${code.toLowerCase()}）`, edge)
   const gwLog = docker('logs', '--since', '30m', 'lsa-eg-gateway')
   check(/connected to platform eg-tb/.test(gwLog) || /connected to platform/.test(gwLog), 'IoT Gateway 已连本地 TB')
 

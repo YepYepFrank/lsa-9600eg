@@ -1,111 +1,63 @@
-/* G0 自检：开发样机的链路通不通。
+/* G0 自检：开发样机的链路通不通（EG 本地跑独立 TB CE，开发计划 v0.4）。
  *
  *   pnpm g0:verify
  *
- * 前提：pnpm dev:config && pnpm dev:up；pnpm dev:emu、pnpm dev:agent 在跑；
- * 子站开发环境（TB、本柜 Edge）在跑，子站模拟器以 --except <柜号> 让出这面柜。
- *
- * 链路：emu ─► mosquitto ─► IoT Gateway ─► 本柜 Edge ─► 子站 TB；eg-agent 也在总线上。 */
-import { execFileSync } from 'node:child_process'
+ * 前提：pnpm dev:config && pnpm dev:up；pnpm dev:emu、pnpm dev:agent 在跑；本地 TB 已 provision:eg。
+ * 链路：emu ─► mosquitto ─► IoT Gateway ─► EG 本地 TB；eg-agent 也在总线上，打开上送时经 outbox 送子站 TB。
+ * agent 以 EG_UPLINK=off 起时，子站那几项跳过（只验本地一段）。 */
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import mqtt from 'mqtt'
 import { BUS_TOPIC, loadConfig } from '@lsa-eg/config'
-import { agent } from './verify/lib.js'
+import { agent, BUS, check, docker, done, env, SIM, sleep, Tb } from './verify/lib.js'
 
-const env = (k: string, d: string) => process.env[k] ?? d
-const TB = env('TB_URL', 'http://localhost:8080')
-const AGENT = env('EG_AGENT_URL', 'http://127.0.0.1:9100')
-const BUS = env('EG_BUS_MQTT', 'mqtt://127.0.0.1:11883')
-const SIM = env('SIM_URL', 'http://localhost:3100')
-/** 数据新鲜的判据：快档 2 s，给 IoT Gateway + Edge + gRPC 一共留 8 s */
+const LOCAL_TB = env('EG_TB_HTTP', 'http://127.0.0.1:18080')
+/** 数据新鲜的判据：快档 2 s，给 IoT Gateway + 本地 TB（或 outbox + 子站 TB）留 8 s */
 const FRESH_MS = 10_000
 
-let pass = 0
-let fail = 0
-function check(ok: boolean, name: string, detail = '') {
-  if (ok) pass++
-  else fail++
-  console.log(`${ok ? '  ✓' : '  ✗'} ${name}${detail ? `  —— ${detail}` : ''}`)
-}
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-
-async function tbLogin(): Promise<Record<string, string>> {
-  const r = await fetch(`${TB}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: env('TB_TENANT_USER', 'admin@lsa9600sp.local'), password: env('TB_TENANT_PASSWORD', 'lsa9600sp') }),
-  })
-  const { token } = (await r.json()) as { token: string }
-  return { 'X-Authorization': `Bearer ${token}` }
-}
-
-/** 往本机总线发一条过去时刻的探针，等它出现在子站，再删掉（不留在子站库里） */
-async function probe(H: Record<string, string>, device: string, now: number): Promise<{ ok: boolean; detail: string }> {
+/** 往本机总线发一条过去时刻的探针，等它在 tb 上按原时刻出现，再删掉 */
+async function probe(tb: Tb, device: string, now: number): Promise<{ ok: boolean; detail: string }> {
   const ts = Math.floor((now - 5 * 60_000) / 1000) * 1000
   const val = Math.round(Math.random() * 1e6)
   const client = await mqtt.connectAsync(BUS, { clientId: `g0-verify-${val}` })
   await client.publishAsync(BUS_TOPIC.telemetry(device), JSON.stringify({ ts, values: { 'g0.probe': val } }), { qos: 1 })
   await client.endAsync()
-  const dev = (await (await fetch(`${TB}/api/tenant/devices?deviceName=${encodeURIComponent(device)}`, { headers: H })).json()) as { id: { id: string } }
+  const id = await tb.id(device)
   let got: { ts: number; value: string } | undefined
   for (let i = 0; i < 20 && !got; i++) {
     await sleep(1000)
-    const r = (await (
-      await fetch(`${TB}/api/plugins/telemetry/DEVICE/${dev.id.id}/values/timeseries?keys=g0.probe&startTs=${ts - 1}&endTs=${ts + 1}`, { headers: H })
-    ).json()) as Record<string, { ts: number; value: string }[]>
+    const r = await tb.get<Record<string, { ts: number; value: string }[]>>(`/api/plugins/telemetry/DEVICE/${id}/values/timeseries?keys=g0.probe&startTs=${ts - 1}&endTs=${ts + 1}`)
     got = r['g0.probe']?.find(p => Number(p.value) === val)
   }
-  await fetch(`${TB}/api/plugins/telemetry/DEVICE/${dev.id.id}/timeseries/delete?keys=g0.probe&deleteAllDataForKeys=true&deleteLatest=true`, {
-    method: 'DELETE',
-    headers: H,
-  })
+  await fetch(`${tb.base}/api/plugins/telemetry/DEVICE/${id}/timeseries/delete?keys=g0.probe&deleteAllDataForKeys=true&deleteLatest=true`, { method: 'DELETE', headers: tb.headers })
   return { ok: got?.ts === ts, detail: got ? `ts 差 ${got.ts - ts} ms` : '20 s 内没到' }
-}
-
-function dockerLogs(container: string, since?: string): string {
-  try {
-    const args = ['logs', ...(since ? ['--since', since] : ['--tail', '400']), container]
-    return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-  } catch (e) {
-    return String((e as { stdout?: string }).stdout ?? '')
-  }
 }
 
 async function main() {
   console.log('G0 自检：EG 开发样机\n')
 
-  // 1. 配置
+  console.log('1. 配置')
   const cfg = loadConfig()
   check(cfg.schema === 1 && !!cfg.eg.token && cfg.devices.length > 0, 'eg.yaml 可读', `${cfg.eg.name}，${cfg.devices.length} 台下挂设备`)
   const gwDir = resolve(cfg.dir, 'gateway/config')
-  const gwFiles = ['tb_gateway.json', 'mqtt.json', 'lsa_self.json', 'logs.json', '.firstlaunch']
-  check(gwFiles.every(f => existsSync(resolve(gwDir, f))), 'IoT Gateway 配置已生成', gwDir)
+  check(['tb_gateway.json', 'mqtt.json', 'lsa_self.json', 'logs.json', '.firstlaunch'].every(f => existsSync(resolve(gwDir, f))), 'IoT Gateway 配置已生成', gwDir)
   const gw = JSON.parse(readFileSync(resolve(gwDir, 'tb_gateway.json'), 'utf8'))
-  check(gw.thingsboard.security.accessToken === cfg.eg.token, 'IoT Gateway 用本 EG 的访问令牌连 Edge', `${gw.thingsboard.host}:${gw.thingsboard.port}`)
+  check(gw.thingsboard.security.accessToken === cfg.eg.token && gw.thingsboard.host === new URL(cfg.local.mqtt.tb).hostname, 'IoT Gateway 用本 EG 的令牌连本地 TB', `${gw.thingsboard.host}:${gw.thingsboard.port}`)
   check(gw.thingsboard.remoteConfiguration === false, 'IoT Gateway 远程配置已关（配置只有 eg-agent 一个来源）')
 
-  // 2. 容器
-  for (const c of ['lsa-eg-mosquitto', 'lsa-eg-gateway', `lsa-edge-${cfg.cabinet.code.toLowerCase()}`]) {
-    let state = ''
-    try {
-      state = execFileSync('docker', ['inspect', '-f', '{{.State.Status}}', c], { encoding: 'utf8' }).trim()
-    } catch {
-      state = '不存在'
-    }
-    check(state === 'running', `容器 ${c} 在跑`, state)
+  console.log('\n2. 容器')
+  for (const c of ['lsa-eg-postgres', 'lsa-eg-tb', 'lsa-eg-mosquitto', 'lsa-eg-gateway']) {
+    const s = docker('inspect', '-f', '{{.State.Status}}', c).trim() || '不存在'
+    check(s === 'running', `容器 ${c} 在跑`, s)
   }
-  const gwLog = dockerLogs('lsa-eg-gateway')
-  check(/connected to platform/.test(gwLog), 'IoT Gateway 已连 Edge')
+  const gwLog = docker('logs', '--tail', '2000', 'lsa-eg-gateway')
+  check(/connected to platform/.test(gwLog), 'IoT Gateway 已连本地 TB')
   check(new RegExp(`subscription success to topic lsa/${cfg.devices[0]!.name}/telemetry`).test(gwLog), 'IoT Gateway 按设备清单订阅本机总线')
-  check(/Import LsaSelfConnector/.test(gwLog), 'IoT Gateway 加载了 EG 自身连接器（LsaSelfConnector）')
+  check(/LsaSelfConnector/.test(gwLog), 'IoT Gateway 加载了 EG 自身连接器（LsaSelfConnector）')
 
-  // 3. eg-agent
-  const st = await agent<{ bus: { connected: boolean }; devices: { name: string; kind: string; ageSec: number | null; keys: number }[]; unknownDevices: string[] }>(
-    cfg.dir,
-    '/api/status',
-  ).catch(() => null)
-  check(!!st, 'eg-agent 可达', AGENT)
+  console.log('\n3. eg-agent')
+  const st = await agent<{ bus: { connected: boolean }; devices: { name: string; kind: string; ageSec: number | null }[]; unknownDevices: string[] }>(cfg.dir, '/api/status').catch(() => null)
+  check(!!st, 'eg-agent 可达')
   if (st) {
     check(st.bus.connected, 'eg-agent 已连本机总线')
     const sensors = st.devices.filter(d => d.kind !== 'camera')
@@ -113,54 +65,41 @@ async function main() {
     check(!stale.length, 'eg-agent 收到各传感器数据', stale.length ? `没数据：${stale.map(d => d.name).join('、')}` : `${sensors.length} 台`)
     check(!st.unknownDevices.length, '总线上没有清单外的设备名', st.unknownDevices.join('、'))
   }
+  const uplink = (await agent<{ uplink: { state: string } }>(cfg.dir, '/api/diag').catch(() => null))?.uplink.state ?? 'none'
 
-  // 4. 子站：各设备的数据新鲜、时间戳是设备侧的
-  const H = await tbLogin()
   const now = Date.now()
-  for (const d of cfg.devices.filter(x => x.kind !== 'camera')) {
-    const dev = (await (await fetch(`${TB}/api/tenant/devices?deviceName=${encodeURIComponent(d.name)}`, { headers: H })).json()) as { id: { id: string } }
-    const keys = (await (await fetch(`${TB}/api/plugins/telemetry/DEVICE/${dev.id.id}/keys/timeseries`, { headers: H })).json()) as string[]
-    const want = keys.filter(k => !k.startsWith('dev.') && k !== 'q' && k !== 'el.load_pct').slice(0, 40)
-    const v = (await (await fetch(`${TB}/api/plugins/telemetry/DEVICE/${dev.id.id}/values/timeseries?keys=${want.join(',')}`, { headers: H })).json()) as Record<string, { ts: number }[]>
-    const newest = Math.max(...Object.values(v).map(a => a[0]?.ts ?? 0))
-    check(now - newest < FRESH_MS, `子站 ${d.name} 数据新鲜`, `最新一条距今 ${((now - newest) / 1000).toFixed(1)} s`)
+  const tbs: [string, Tb][] = [['本地 TB', await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()]]
+  if (uplink !== 'none') tbs.push(['子站 TB', await new Tb().login()])
+  else console.log('\n（上送没开：子站那几项跳过）')
+  for (const [label, tb] of tbs) {
+    console.log(`\n4. ${label}：各设备数据新鲜、设备侧时间戳原样落位`)
+    for (const d of cfg.devices.filter(x => x.kind !== 'camera')) {
+      const keys = (await tb.get<string[]>(`/api/plugins/telemetry/DEVICE/${await tb.id(d.name)}/keys/timeseries`)).filter(k => !k.startsWith('dev.') && k !== 'q' && k !== 'el.load_pct').slice(0, 40)
+      const v = await tb.latest(d.name, keys)
+      const newest = Math.max(0, ...Object.values(v).map(p => p?.ts ?? 0))
+      check(now - newest < FRESH_MS, `${label}上 ${d.name} 数据新鲜`, `最新一条距今 ${((now - newest) / 1000).toFixed(1)} s`)
+    }
+    const eg = await tb.latest(cfg.eg.name, ['eg.cpu'])
+    check(!!eg['eg.cpu'] && now - eg['eg.cpu'].ts < 15_000, `${label}上 ${cfg.eg.name} 的自身指标新鲜（eg-agent 发）`)
+    // 下挂设备走 IoT Gateway 的 MQTT 连接器（本地）/ outbox（子站）；EG 自己走 LsaSelfConnector（本地）
+    const cam = cfg.devices.find(d => d.kind === 'camera') ?? cfg.devices[0]!
+    for (const [dev, what] of [
+      [cam.name, '下挂设备'],
+      [cfg.eg.name, 'EG 自身'],
+    ] as const) {
+      const r = await probe(tb, dev, now)
+      check(r.ok, `${what}（${dev}）设备侧时间戳原样到${label}`, r.detail)
+    }
   }
 
-  // EG 自身指标（eg-agent 每 5 s 发）：子站靠它判 EG 在线、判 Edge 是否卡住
-  const egDev = (await (await fetch(`${TB}/api/tenant/devices?deviceName=${encodeURIComponent(cfg.eg.name)}`, { headers: H })).json()) as { id: { id: string } }
-  const egV = (await (await fetch(`${TB}/api/plugins/telemetry/DEVICE/${egDev.id.id}/values/timeseries?keys=eg.cpu,eg.mem,eg.state`, { headers: H })).json()) as Record<
-    string,
-    { ts: number; value: string }[]
-  >
-  const egAge = now - (egV['eg.cpu']?.[0]?.ts ?? 0)
-  check(egAge < 15_000, `子站 ${cfg.eg.name} 的自身指标新鲜（eg-agent 发）`, `eg.cpu=${egV['eg.cpu']?.[0]?.value ?? '—'}，距今 ${(egAge / 1000).toFixed(1)} s`)
-
-  // 设备侧时间戳：往总线发一条 5 分钟前的探针，子站上应按原时刻落位。
-  // 下挂设备走 IoT Gateway 的 MQTT 连接器；EG 自己走自定义连接器 LsaSelfConnector（网关自己的会话）
-  const cam = cfg.devices.find(d => d.kind === 'camera') ?? cfg.devices[0]!
-  const since = new Date().toISOString()
-  for (const [dev, what] of [
-    [cam.name, '下挂设备'],
-    [cfg.eg.name, 'EG 自身'],
-  ] as const) {
-    const r = await probe(H, dev, now)
-    check(r.ok, `${what}（${dev}）设备侧时间戳原样到达子站`, r.detail)
-  }
-  const after = dockerLogs('lsa-eg-gateway', since)
-  check(!/disconnected by server/.test(after), 'IoT Gateway 发 EG 自身数据时会话没被 Edge 断开', /disconnected by server/.test(after) ? '日志里有 disconnected by server' : '')
-
-  // 5. 子站模拟器已让出这面柜（否则两路数据打架）
+  console.log('\n5. 子站模拟器让出了这面柜（否则两路数据打架）')
   const sim = await fetch(`${SIM}/sim/status`)
-    .then(r => r.json() as Promise<{ cabinets: { code: string }[]; handed?: { code: string; linkUp: boolean | null }[] }>)
+    .then(r => r.json() as Promise<{ cabinets?: { code: string }[] }>)
     .catch(() => null)
-  if (sim) {
-    check(!sim.cabinets.some(c => c.code === cfg.cabinet.code), `子站模拟器没在采 ${cfg.cabinet.code}`)
-    const h = sim.handed?.find(x => x.code === cfg.cabinet.code)
-    check(!!h && h.linkUp !== false, `子站模拟器为 ${cfg.cabinet.code} 转发上行`, h ? `linkUp=${h.linkUp}` : '没有 --except')
-  } else check(false, '子站模拟器控制面可达', `${SIM}（Edge 的上行经它转发）`)
+  if (sim?.cabinets) check(!sim.cabinets.some(c => c.code === cfg.cabinet.code), `子站模拟器没在出 ${cfg.cabinet.code}`)
+  else console.log(`  · 子站模拟器控制面 ${SIM} 不可达或没有柜清单，跳过`)
 
-  console.log(`\n${pass} 项通过，${fail} 项失败`)
-  process.exit(fail ? 1 : 0)
+  done()
 }
 
 main().catch(e => {

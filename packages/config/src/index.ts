@@ -7,7 +7,7 @@
  * EG 本地跑独立 TB CE（后端库 docs/EG独立TB调整方案.md）：
  *   eg.yaml 的 station 段多了子站 MQTT 地址与令牌（上送用，§8.1）、tb 段是本地 TB 的租户账号（provision:eg 建的，agent 读本地告警、写设备配置用）；
  *   eg.token 是本地 TB 上 EG 网关设备的令牌（IoT Gateway 连本地 TB 用）。
- *   local.yaml 的本地 TB 项叫 mqtt.tb / tb.http / docker.containers.tb（legacy() 照读更早的写法）。
+ *   local.yaml 的本地 TB 项叫 mqtt.tb / tb.http / docker.containers.tb。
  *
  * 目录由 EG_CONFIG_DIR 指定；开发时默认仓库下的 run/（不进仓库）。 */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -186,7 +186,7 @@ export function loadConfig(dir = configDir()): EgConfig {
   const localPath = resolve(dir, 'local.yaml')
   let local: LocalFile
   if (existsSync(localPath)) {
-    local = merge(LOCAL_DEFAULTS, legacy(parse(readFileSync(localPath, 'utf8')) ?? {}))
+    local = merge(LOCAL_DEFAULTS, parse(readFileSync(localPath, 'utf8')) ?? {})
   } else {
     local = structuredClone(LOCAL_DEFAULTS)
     saveLocal(local, dir)
@@ -223,19 +223,6 @@ export const BUS_TOPIC = {
 export function deviceOfTopic(topic: string): { device: string; kind: 'telemetry' | 'attributes' } | null {
   const m = /^lsa\/([^/]+)\/(telemetry|attributes)$/.exec(topic)
   return m ? { device: m[1]!, kind: m[2] as 'telemetry' | 'attributes' } : null
-}
-
-/** 更早的 local.yaml 写法：mqtt.edge → mqtt.tb，docker.containers.edge → tb，edgeDb 丢掉（开发机上的旧文件；G6 部署包之后可删） */
-function legacy(raw: unknown): unknown {
-  if (!isObj(raw)) return raw
-  const r = structuredClone(raw) as Record<string, any>
-  if (isObj(r['mqtt']) && r['mqtt']['edge'] && !r['mqtt']['tb']) r['mqtt']['tb'] = r['mqtt']['edge']
-  if (isObj(r['mqtt'])) delete r['mqtt']['edge']
-  const c = isObj(r['docker']) ? r['docker']['containers'] : null
-  if (isObj(c) && c['edge'] && !c['tb']) c['tb'] = c['edge']
-  if (isObj(c)) delete c['edge']
-  delete r['edgeDb']
-  return r
 }
 
 /** 验子站签的票据、上送鉴权用的令牌：子站上 EG 网关设备的令牌（eg.yaml station.token）；
