@@ -95,7 +95,9 @@ const dischargeSeries = computed(() => (props.demo ? [...pdSeries, ...countSerie
 const dischargeUnits = computed(() => (props.demo ? ['dBμV', '次'] : [ampUnit.value, cntUnit.value]))
 const dischargeScales = computed(() => {
   const cnt = props.demo ? countSeries.flatMap(s => s.data.map(p => p[1])) : realDischarge.value.filter(s => s.unit === cntUnit.value).flatMap(s => s.data.map(p => p[1] ?? 0))
-  return { [dischargeUnits.value[1]!]: { min: 0, max: Math.max(4, ...cnt), interval: Math.max(1, Math.ceil(Math.max(4, ...cnt) / 4)) } }
+  // 次数轴取整：刻度 4 格、每格整数（趋势是 5 min 平均，最大值会带小数）
+  const iv = Math.max(1, Math.ceil(Math.max(4, ...cnt) / 4))
+  return { [dischargeUnits.value[1]!]: { min: 0, max: iv * 4, interval: iv } }
 })
 const pdAxisColors = computed(() => ({ [dischargeUnits.value[0]!]: 'var(--s1)', [dischargeUnits.value[1]!]: 'var(--s2)' }))
 const hasPd = computed(() => sams.value.some(s => has(s, 'us.amp')))

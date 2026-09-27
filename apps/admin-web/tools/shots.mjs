@@ -26,7 +26,7 @@ const BROWSERS = [process.env.BROWSER, 'C:/Program Files (x86)/Microsoft/Edge/Ap
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 const localPw = process.env.EG_ADMIN_PASSWORD ?? readFileSync(resolve(ROOT, 'run/initial-password.txt'), 'utf8').trim()
-const cabinet = readFileSync(resolve(ROOT, 'run/dev-cabinet'), 'utf8').trim()
+const cabinet = process.env.CABINET ?? readFileSync(resolve(ROOT, 'run/dev-cabinet'), 'utf8').trim()
 const EG = `EG-${cabinet}`
 const SAM_A = `SAM-${cabinet}-A`
 const SAM_B = `SAM-${cabinet}-B`
