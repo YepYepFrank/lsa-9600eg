@@ -166,6 +166,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       EG_CONFIG_DIR: /config
+      # 宿主机网络上连不到服务名 mosquitto（local.yaml 的地址是写给 IoT Gateway 的）：CAM 测温经它发（虚拟样机 G6 发现漏了）
+      EG_BUS_MQTT: mqtt://127.0.0.1:1884
     volumes:
       - ./config:/config
     # 含抓帧时起的 ffmpeg（虚拟样机实测常驻约 205 MiB，256m 太紧）

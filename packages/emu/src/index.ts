@@ -77,6 +77,8 @@ async function main() {
     process.env['EMU_CAM_API'] ?? 'http://127.0.0.1:19998',
   )
   const dead = new Set<string>()
+  /** /emu/cam/down：到这个时刻之前 /emu/cam/state 直接断连接 */
+  let camDownUntil = 0
   const drop = new Map<string, Set<string>>()
   let sent = 0
 
@@ -168,8 +170,15 @@ async function main() {
     if (seg[1] === 'cam') {
       const q = (k: string) => url.searchParams.get(k) ?? ''
       if (req.method === 'GET' && seg[2] === 'state') {
+        // 测温源不可达（仿真摄像机重启 / 晚起）：直接断连接，像连不上
+        if (Date.now() < camDownUntil) return void req.socket.destroy()
         const st = cam.state()
         return st.online ? json(200, st) : json(503, { error: '摄像机失联（仿真）' })
+      }
+      if (req.method === 'POST' && seg[2] === 'down') {
+        camDownUntil = Date.now() + num('s', 20) * 1000
+        log(`测温接口不可达 ${num('s', 20)} s（仿真摄像机重启）`)
+        return json(200, { ok: true, until: camDownUntil })
       }
       if (req.method === 'POST' && seg[2] === 'overtemp') {
         cam.overtemp(q('region') || 'R1', num('max', 95), num('s', 120))

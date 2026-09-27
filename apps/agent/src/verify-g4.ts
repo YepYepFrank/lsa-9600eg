@@ -210,6 +210,19 @@ async function main() {
   check(!!back, '恢复后测温照常')
   await agent(cfg.dir, '/api/video/refresh', { method: 'POST' })
 
+  console.log('\n10. 测温源不可达（仿真摄像机重启 / 晚起）后自动恢复')
+  const vb = (await vs()) as unknown as { bus?: { url: string; connected: boolean } }
+  check(!!vb.bus?.connected, 'eg-video 已连本机总线（CAM 测温经它发）', vb.bus?.url ?? '')
+  await post(`${EMU}/emu/cam/down?s=20`)
+  const lost = await until(async () => ((await vs()).measure.ok ? null : true), 10_000, 500)
+  check(!!lost, '测温接口断连接 → 测温失败如实显示')
+  const tDown = Date.now()
+  const rec = await until(async () => {
+    const p = (await live(camDev)).telemetry['ir.max']
+    return p && p.ts > tDown + 20_000 ? p : null
+  }, 45_000, 1000)
+  check(!!rec, '测温源恢复后 25 s 内 CAM 测温接着出（不依赖谁先起）', rec ? `${((rec.ts - tDown) / 1000 - 20).toFixed(1)} s` : '45 s 内没出')
+
   done()
 }
 
