@@ -31,7 +31,8 @@
     "g4:verify": "pnpm -F @lsa-eg/agent verify:g4",
     "g5:verify": "pnpm -F @lsa-eg/agent verify:g5",
     "pack:eg": "node scripts/pack-eg.mjs",
-    "bundle": "node scripts/bundle-all.mjs"
+    "bundle": "node scripts/bundle-all.mjs",
+    "ui:verify": "pnpm -F @lsa-eg/agent verify:ui"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

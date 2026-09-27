@@ -32,8 +32,12 @@ interface Resp {
   items: Item[]
 }
 
+interface Ring { channel: 'visible' | 'ir'; oldest: number | null; newest: number | null; recording: boolean; gaps?: { from: number; to: number }[] }
 const data = ref<Resp | null>(null)
+/** 循环录像覆盖与断档（mediamtx 重启、摄像机断流会留缺口；落在缺口里的证据会标 gap / 缺证） */
+const ring = ref<Ring[]>([])
 async function load() {
+  void api<{ paths: Ring[] }>('video/recording').then(r => (ring.value = r.paths)).catch(() => (ring.value = []))
   try {
     data.value = await api<Resp>('evidence?limit=300')
   } catch (e) {
@@ -113,6 +117,22 @@ async function upload(it: Item) {
       </div>
     </div>
 
+    <div v-if="ring.length" class="panel">
+      <div class="panel-h">循环录像覆盖与断档<span class="t2">相邻两段之间空出 > 1.5 s 记为断档；证据的视频窗口落在断档里会标「部分缺口」</span></div>
+      <div class="panel-b">
+        <el-table :data="ring" size="small">
+          <el-table-column label="通道" width="110"><template #default="{ row }">{{ CH[row.channel] }}子码流</template></el-table-column>
+          <el-table-column label="覆盖" width="320"><template #default="{ row }">{{ row.oldest ? dt(row.oldest) : '—' }} — {{ row.newest ? dt(row.newest) : '—' }}{{ row.recording ? '（在录）' : '（没在录）' }}</template></el-table-column>
+          <el-table-column label="断档（最近的在后）">
+            <template #default="{ row }">
+              <span v-if="!row.gaps?.length" class="muted">无</span>
+              <span v-for="g in row.gaps" :key="g.from" class="gap">{{ dt(g.from) }} 起 {{ ((g.to - g.from) / 1000).toFixed(1) }} s</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="panel-h">证据清单</div>
       <div class="panel-b">
@@ -156,3 +176,7 @@ async function upload(it: Item) {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.gap { display: inline-block; margin: 0 10px 2px 0; padding: 0 6px; border-radius: 3px; background: rgba(var(--minor-rgb), .14); color: var(--text); font-variant-numeric: tabular-nums; }
+</style>

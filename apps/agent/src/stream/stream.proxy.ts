@@ -30,6 +30,8 @@ export function streamProxy(cfg: EgConfig, auth: AuthService) {
     if (!allowed.includes(req.method)) return deny(res, 405, 'method', `${req.method} 不支持`)
     const base = whep ? cfg.conn.mtxWebrtc : cfg.conn.mtxHls
     const target = new URL(`/${m[1]}/${m[2]}${m[5] ?? ''}`, base)
+    // mediamtx 1.21 的 HLS 先 302 到 ?cookieCheck=1 探浏览器能不能存 cookie（它的 cookie 鉴权用）；这里不用它的鉴权，直接带上免得多跳一次
+    if (!whep && !target.searchParams.has('cookieCheck')) target.searchParams.set('cookieCheck', '1')
 
     const headers: Record<string, string> = {}
     for (const k of PASS_REQ) {
@@ -42,7 +44,7 @@ export function streamProxy(cfg: EgConfig, auth: AuthService) {
         const v = r.headers[k]
         if (v === undefined) continue
         // mediamtx 回的会话地址是 /<路径>/whep/<会话>：改成相对地址，经子站反代（/eg/<柜号>/）进来也对
-        if (k === 'location' && typeof v === 'string') res.setHeader('Location', v.replace(/^.*\/whep\//, 'whep/'))
+        if (k === 'location' && typeof v === 'string') res.setHeader('Location', whep ? v.replace(/^.*\/whep\//, 'whep/') : v.replace(new RegExp(`^/${m[1]}/`), ''))
         else res.setHeader(k, v)
       }
       res.setHeader('Cache-Control', 'no-store')

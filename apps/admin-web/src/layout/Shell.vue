@@ -26,7 +26,7 @@ onBeforeUnmount(() => {
 
 const view = computed(() => (route.meta['nav'] as NavKey | undefined) ?? 'overview')
 const navigate = (k: NavKey) => router.push('/' + k)
-const clockText = computed(() => new Date(now.value).toLocaleString('zh-CN', { hour12: false }))
+const clockText = computed(() => new Date(now.value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))
 const title = computed(() => (store.status ? `${store.status.cabinet.code} ${store.status.cabinet.name}` : demoMode ? 'AH03 1#出线柜' : '本柜监测'))
 const mode = computed(() => (demoMode ? '本地演示' : session.me?.via === 'sp' ? '经子站访问' : '本地访问'))
 /** 「设备与通信」上的小红点：诊断有问题项、下挂设备有质量码 */

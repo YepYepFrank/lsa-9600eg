@@ -20,7 +20,8 @@ const boxes = ref(true)
 const camera = ref<HTMLElement>()
 const selected = ref<Record<string, boolean>>({})
 const eventFilter = ref('全部')
-const time = (t: number) => new Date(t).toLocaleString('zh-CN', { hour12: false })
+const TZ = 'Asia/Shanghai'
+const time = (t: number) => new Date(t).toLocaleString('zh-CN', { hour12: false, timeZone: TZ })
 const f1 = (v: number | null, d = 1) => (v === null ? '—' : v.toFixed(d))
 async function fullscreen() {
   try { await camera.value?.requestFullscreen() } catch { ElMessage.warning('当前浏览器无法进入全屏') }
@@ -150,7 +151,7 @@ function detailOf(a: AlarmRow): string {
   const v = d['value'] ?? d['val']
   const k = typeof d['key'] === 'string' ? d['key'] : ''
   const u = typeof d['unit'] === 'string' ? d['unit'] : ''
-  return `${labelOf(a.device)}${k ? ` · ${k}` : ''}${v !== undefined && v !== null ? ` = ${v}${u}` : ''}`
+  return `${labelOf(a.device)}${k ? ` · ${k}` : ''}${v !== undefined && v !== null ? ` = ${v}${u ? ' ' + u : ''}` : ''}`
 }
 interface EvRow { id: string; time: number; level: string; color: string; type: string; detail: string; state: string; ev: EvidenceItem[] }
 const evByEvent = computed(() => {
@@ -166,7 +167,7 @@ const realEvents = computed<EvRow[]>(() =>
     color: SEV[a.severity]?.[1] ?? 'var(--muted)',
     type: a.type,
     detail: detailOf(a),
-    state: a.state === 'ACTIVE' ? '发生' : `已恢复 ${new Date(a.clearedAt ?? a.occurredAt).toLocaleTimeString('zh-CN', { hour12: false })}`,
+    state: a.state === 'ACTIVE' ? '发生' : `已恢复 ${new Date(a.clearedAt ?? a.occurredAt).toLocaleTimeString('zh-CN', { hour12: false, timeZone: TZ })}`,
     ev: evByEvent.value.get(a.eventId) ?? [],
   })),
 )
@@ -232,8 +233,8 @@ async function download(id: string, label: string) {
       </section>
       <div class="sensor-stack">
       <section class="monitor-card pd-card">
-        <div class="monitor-card-heading"><b>超声局放</b><span class="grow"/><span class="muted">近 24h</span></div>
-        <div class="sensor-values"><div><span>局放幅值</span><b>{{ demo ? '6.2' : f1(pdAmp?.v ?? null) }} <small>{{ demo ? 'dBμV' : ampUnit }}</small></b></div><div><span>局放次数</span><b>{{ demo ? '2' : f1(pdCnt?.v ?? null, 0) }} <small>{{ demo ? '次' : cntUnit }}</small></b></div><div v-if="!demo && pdAmp && sams.length > 1" class="src-tag">{{ shortSam(pdAmp.s) }}</div></div>
+        <div class="monitor-card-heading"><b>超声局放</b><span v-if="!demo && pdAmp && sams.length > 1" class="muted" :title="'各隔室取大，当前最大在 ' + labelOf(pdAmp.s)">{{ shortSam(pdAmp.s) }} 最大</span><span class="grow"/><span class="muted">近 24h</span></div>
+        <div class="sensor-values"><div><span>局放幅值</span><b>{{ demo ? '6.2' : f1(pdAmp?.v ?? null) }} <small>{{ demo ? 'dBμV' : ampUnit }}</small></b></div><div><span>局放次数</span><b>{{ demo ? '2' : f1(pdCnt?.v ?? null, 0) }} <small>{{ demo ? '次' : cntUnit }}</small></b></div></div>
         <MultiUnitTrend v-if="demo || hasPd" :series="dischargeSeries" :units="dischargeUnits" :height="125" compact hide-legend center-unit-names :scales="dischargeScales" :axis-colors="pdAxisColors" />
         <div v-else class="monitor-empty">尚未接入局放监测数据</div>
       </section>
@@ -255,13 +256,13 @@ async function download(id: string, label: string) {
         <div class="climate-layout"><div class="dial-column"><ThermoHygroDial compact :temperature="demo ? 26.5 : envT" :humidity="demo ? 56 : envRh" :min="0" :max="100" /><div class="dew-reading">计算露点 <b>{{ demo ? dewPoint(26.5, 56) : f1(dew) }}<small> ℃</small></b><el-tooltip content="计算露点由柜内空气温度和相对湿度计算得到。壳体表面温度低于此温度时，有凝露风险。" placement="bottom" :popper-style="{ maxWidth: '320px', lineHeight: '1.6' }"><button aria-label="计算露点说明">?</button></el-tooltip></div></div><MultiUnitTrend v-if="demo || climate.some(s => s.data.length)" :series="climate" :height="215" compact hide-legend center-unit-names :selected="selected" :scales="{ '℃': { min: 0, max: 100, interval: 20 }, '%': { min: 0, max: 100, interval: 20 } }" :axis-colors="{ '℃': 'var(--s2)', '%': 'var(--s1)' }" /><div v-else class="monitor-empty">等待温湿度数据</div></div>
       </section>
       <section class="monitor-card arc-card">
-        <div class="monitor-card-heading"><b>UV 弧光监测</b><span class="grow"/><span class="pending" title="相对强度使用任意单位 a.u.，待实际产品确定后调整">{{ demo ? '模拟 · 近 24h' : hasArc ? '实测 · 近 24h' : '接口待确认' }}</span></div>
+        <div class="monitor-card-heading"><b>UV 弧光监测</b><span class="grow"/><span v-if="!demo && hasArc" class="muted">当前 {{ f1(arcNow?.v ?? null, 0) }} a.u.</span><span class="pending" title="相对强度使用任意单位 a.u.，待实际产品确定后调整">{{ demo ? '模拟 · 近 24h' : hasArc ? '实测 · 近 24h' : '接口待确认' }}</span></div>
         <template v-if="demo">
           <div class="preview-readings arc-readings"><div><span>峰值强度</span><b>{{ Math.max(...arcPreview.pulses.map(p => p.value)) }}<small> a.u.</small></b></div><div><span>脉冲次数</span><b>{{ arcPreview.pulses.length }}<small> 次</small></b></div></div>
           <SensorPreviewTrend :pulses="arcPreview.pulses" :from="arcPreview.from" :to="arcPreview.to" />
         </template>
         <template v-else-if="hasArc">
-          <div class="preview-readings arc-readings"><div><span>当前强度</span><b>{{ f1(arcNow?.v ?? null, 0) }}<small> a.u.</small></b></div><div><span>24h 峰值</span><b>{{ arcPulses.length ? Math.max(...arcPulses.map(p => p.value)) : '—' }}<small> a.u.</small></b></div><div><span>脉冲次数</span><b>{{ arcPulses.length }}<small> 次</small></b></div></div>
+          <div class="preview-readings arc-readings"><div><span>峰值强度</span><b>{{ arcPulses.length ? Math.max(...arcPulses.map(p => p.value)) : '—' }}<small> a.u.</small></b></div><div><span>脉冲次数</span><b>{{ arcPulses.length }}<small> 次</small></b></div></div>
           <SensorPreviewTrend :pulses="arcPulses" :from="arcFrom" :to="Date.now()" />
         </template>
         <div v-else class="arc-placeholder"><b>—</b><span>量值与单位待协议确认</span></div>
@@ -277,7 +278,7 @@ async function download(id: string, label: string) {
     </template>
 
     <template v-else>
-      <section class="monitor-card"><div class="monitor-card-heading"><b>本地事件记录</b><span v-if="!demo" class="muted">EG 本地 TB 告警 · 事件库</span><span class="grow"/><select v-model="eventFilter" aria-label="事件类型"><option>全部</option><option v-for="t in eventTypes" :key="t">{{ t }}</option></select></div><div class="table-scroll"><table class="event-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>描述</th><th>状态</th><th>关联录像</th></tr></thead><tbody><tr v-for="e in events" :key="e.id"><td>{{ time(e.time) }}</td><td :style="{ color: e.color }">{{ e.level }}</td><td>{{ e.type }}</td><td>{{ e.detail }}</td><td>{{ e.state }}</td><td><template v-if="demo"><span class="muted">演示事件 · 无录像文件</span></template><button v-else-if="e.ev.length" class="text-link" @click="openEvidence(e)">{{ evText(e.ev) }} ›</button><span v-else class="muted">—</span></td></tr><tr v-if="!events.length"><td colspan="6" class="monitor-empty">{{ demo || m.alarms.length ? '没有匹配的事件' : '本机还没有告警事件' }}</td></tr></tbody></table></div></section>
+      <section class="monitor-card"><div class="monitor-card-heading"><b>本地事件记录</b><span v-if="!demo" class="muted">EG 本地 TB 告警 · 事件库</span><span class="grow"/><select v-model="eventFilter" aria-label="事件类型"><option>全部</option><option v-for="t in eventTypes" :key="t">{{ t }}</option></select></div><div class="table-scroll" :class="{ 'events-scroll': !demo }"><table class="event-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>描述</th><th>状态</th><th>关联录像</th></tr></thead><tbody><tr v-for="e in events" :key="e.id"><td>{{ time(e.time) }}</td><td :style="{ color: e.color }">{{ e.level }}</td><td>{{ e.type }}</td><td>{{ e.detail }}</td><td>{{ e.state }}</td><td><template v-if="demo"><span class="muted">演示事件 · 无录像文件</span></template><button v-else-if="e.ev.length" class="text-link" @click="openEvidence(e)">{{ evText(e.ev) }} ›</button><span v-else class="muted">—</span></td></tr><tr v-if="!events.length"><td colspan="6" class="monitor-empty">{{ demo || m.alarms.length ? '没有匹配的事件' : '本机还没有告警事件' }}</td></tr></tbody></table></div></section>
       <section class="monitor-card recording-card"><div class="monitor-card-heading"><b>双光录像</b><span v-if="play" class="muted">{{ play.title }}</span><span class="grow"/><span class="pending">{{ demo ? '待接入' : '告警证据 · 前 30 s / 后 60 s' }}</span></div>
         <div v-if="play" class="evidence-play">
           <div v-for="it in play.items" :key="it.id" class="ev-item" :class="it.kind">
@@ -306,11 +307,13 @@ async function download(id: string, label: string) {
 .sensor-stack{display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;min-width:0}.arc-card{display:flex;flex-direction:column}.arc-card>.monitor-card-heading{flex:none}.arc-placeholder{flex:1}
 .cab-monitor{font-size:13px}.pd-card{align-self:start;padding-bottom:12px}button,select{font:inherit;color:var(--text2);background:var(--surface2);border:1px solid var(--line2);border-radius:4px;padding:4px 9px;cursor:pointer}button:hover{color:var(--brand-ink);border-color:var(--brand)}button:focus-visible,select:focus-visible{outline:2px solid var(--brand);outline-offset:2px}.cab-warning{margin-bottom:12px;display:flex;align-items:center;gap:10px;background:rgba(var(--major-rgb),.10);border:1px solid rgba(var(--major-rgb),.35);padding:7px 10px;border-radius:4px;font-size:12px}.warning-tag{background:var(--major);color:#171d20;padding:1px 5px;border-radius:3px}.cab-warning button{margin-left:auto;background:none;border:0;color:var(--brand-ink)}.monitor-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(300px,2fr);gap:12px}.monitor-card{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:6px;overflow:hidden}.monitor-card-heading{display:flex;align-items:center;gap:10px;padding:12px;min-height:22px;font-size:12px}.monitor-card-heading label{display:flex;align-items:center;gap:4px;color:var(--s1);font-size:11px}.monitor-card-heading select,.monitor-card-heading button{font-size:11px}.grow{flex:1}.camera-frame{margin:0 12px;height:305px;min-width:0}.camera-frame:fullscreen{height:100vh;margin:0;background:#080b0d;padding:20px;box-sizing:border-box}.camera-summary{display:flex;justify-content:flex-end;align-items:center;gap:20px;padding:12px;color:var(--muted);font-size:12px}.camera-summary b{font-size:22px;color:var(--major);margin-left:8px}.camera-summary small{margin-left:4px}.sensor-values{display:flex;align-items:baseline;gap:18px;margin:2px 20px 14px}.sensor-values>div{display:flex;align-items:baseline;gap:6px;white-space:nowrap}.sensor-values span{color:var(--muted);font-size:11px}.sensor-values b{font-size:22px}.sensor-values small{font-size:11px;font-weight:400;color:var(--text2)}.climate-card>.monitor-card-heading{justify-content:flex-end}.climate-legend{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.climate-legend button{display:flex;align-items:center;gap:4px;border:0;background:none;padding:0;font-size:10px}.climate-legend .inactive{opacity:.35}.climate-legend i{width:9px;height:2px}.climate-layout{display:grid;grid-template-columns:minmax(220px,28%) minmax(0,1fr);align-items:center;padding:0 6px 10px}.dial-column{min-width:0}.dial-column :deep(.climate-dial){justify-content:center;--dial-size:155px}.dew-reading{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:4px;font-size:11px;color:var(--muted)}.dew-reading b{color:var(--text);font-size:15px}.dew-reading small{font-weight:400;font-size:11px}.dew-reading button{width:17px;height:17px;padding:0;border-radius:50%;background:none;font-size:10px}.pending{font-size:10px;color:var(--muted);border:1px solid var(--line2);border-radius:3px;padding:2px 5px}.monitor-empty{display:flex;min-height:160px;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--muted);font-size:12px;text-align:center;padding:12px}.monitor-empty strong{font-weight:400;color:var(--text2)}.empty-symbol{font-size:36px;opacity:.55}.event-list{padding:0 12px 8px}.event-row{display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);padding:10px 0;font-size:11px}.event-row time{color:var(--muted);font-variant-numeric:tabular-nums}.event-level{white-space:nowrap}.event-detail{flex:1}.event-state{color:var(--muted);white-space:nowrap}.text-link{border:0;background:none;color:var(--brand-ink)}.arc-placeholder{display:flex;gap:12px;align-items:center;padding:26px 18px;color:var(--muted);font-size:12px}.arc-placeholder b{font-size:30px}.electric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.electric-row{display:flex;justify-content:space-between;gap:10px;margin:0 14px;padding:16px 0;border-top:1px solid var(--line);color:var(--text2);font-size:12px}.electric-row b{color:var(--text);font-size:17px;font-variant-numeric:tabular-nums}.electric-chart,.recording-card{margin-top:12px}.table-scroll{overflow:auto}.event-table{width:100%;border-collapse:collapse;font-size:12px;text-align:left;white-space:nowrap}.event-table th,.event-table td{padding:15px 14px;border-top:1px solid var(--line)}.event-table th{color:var(--muted);font-weight:400}.event-table td.monitor-empty{display:table-cell}.recording-card .monitor-empty{min-height:230px}
 /* EG：接真实数据后补的几处（不用 color-mix，照顾 Chromium 88） */
+.events-scroll{max-height:min(46vh,480px)}.events-scroll th{position:sticky;top:0;background:var(--surface);z-index:1}
 .muted{color:var(--muted)}.monitor-card-heading>.muted{font-size:11px}.src-tag{font-size:10px;color:var(--muted);border:1px solid var(--line2);border-radius:3px;padding:1px 5px}.sam-sel{font-size:11px;padding:2px 6px}
 .cab-warning.sev-CRITICAL{background:rgba(var(--crit-rgb),.10);border-color:rgba(var(--crit-rgb),.4)}.cab-warning.sev-CRITICAL .warning-tag{background:var(--crit);color:#fff}
 .evidence-play{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:0 12px 12px}.ev-item{min-width:0;display:flex;flex-direction:column;gap:6px}.ev-item.wave{grid-column:1/-1}.ev-cap{display:flex;align-items:center;font-size:11px;color:var(--text2)}.ev-item video,.ev-item img{width:100%;aspect-ratio:16/10;object-fit:contain;background:#0b0d0e;border-radius:4px}.ev-note{padding:14px;border:1px dashed var(--line2);border-radius:4px;color:var(--muted);font-size:11px}
 @media(min-width:1600px){.camera-frame{height:355px}.sensor-values{margin:16px 20px 28px}.pd-card :deep(.multi-unit-trend){margin-top:10px}.climate-layout{padding-bottom:16px}}
 @media(max-width:1150px){.monitor-grid{grid-template-columns:minmax(0,1fr) 300px}.climate-layout{grid-template-columns:1fr}.dial-column{display:flex;align-items:center;justify-content:center}.dial-column :deep(.climate-dial){width:auto;--dial-size:120px}.dew-reading{margin-left:16px}.climate-legend{gap:5px}.electric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.camera-frame{height:270px}.camera-summary{gap:10px}}
+@media(max-width:1150px){.arc-card :deep(.sensor-preview-trend),.smoke-card :deep(.sensor-preview-trend){min-height:110px}}
 @media(max-width:850px){.monitor-grid{grid-template-columns:1fr}.camera-frame{height:300px}.cab-warning{flex-wrap:wrap}.climate-layout{grid-template-columns:1fr}.electric-grid{grid-template-columns:1fr 1fr}.evidence-play{grid-template-columns:1fr}}
 @media(max-width:520px){.camera-frame{height:200px}.electric-grid{grid-template-columns:1fr}.dial-column{flex-direction:column}}
 /* 桌面总览使用可用高度分配两行，不通过隐藏溢出裁掉监测内容。 */

@@ -1,7 +1,9 @@
-/* EG 本地管理页的验收截图（G3）：两条进入路径都截 —— 交换机直连（本地维护账号）与经子站（票据单点登录，维护 / 只看两种角色）。
+/* EG 本地管理页的验收截图（G3；eg-ui-v2 起按领导 80e01ad 的单柜界面：本柜总览 / 电气量 / 事件与录像 × 1280 / 1920 / 850 三个宽度，
+ * 「设备与通信」下的各管理页）。两条进入路径 —— 交换机直连（本地维护账号）与经子站（票据单点登录，维护 / 只看两种角色）；
+ * 经子站那几张要子站扩展服务的 EXT_EG_URLS 指到 EG_AGENT_URL 这个 agent，SP=1 才截。
  * 做法同子站前端的 web/tools/shots-live.mjs：DevTools 协议驱动无头 Edge / Chrome，不依赖第三方包（Node 22 自带 WebSocket）。
  *
- *   node apps/admin-web/tools/shots.mjs              全部，截到 docs/验收截图/G3/，并写 自检.txt
+ *   node apps/admin-web/tools/shots.mjs              全部，截到 docs/验收截图/eg-ui-v2/（OUT_DIR 可改），并写 自检.txt
  *   ONLY=02,08 node apps/admin-web/tools/shots.mjs   只截这几张
  *
  * 前提：eg-agent（EG_AGENT_URL，默认 http://127.0.0.1:9100，已 build 管理页）、子站扩展服务（EXT_URL，默认 http://localhost:3001，
@@ -17,7 +19,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const AGENT = (process.env.EG_AGENT_URL ?? 'http://127.0.0.1:9100').replace(/\/$/, '')
 const EXT = (process.env.EXT_URL ?? 'http://localhost:3001').replace(/\/$/, '')
 const EMU = process.env.EMU_URL ?? 'http://127.0.0.1:3190'
-const OUT = resolve(ROOT, 'docs/验收截图', process.env.OUT_DIR ?? 'G3')
+const OUT = resolve(ROOT, 'docs/验收截图', process.env.OUT_DIR ?? 'eg-ui-v2')
+const WITH_SP = process.env.SP === '1'
 const SP_PASS = process.env.LSA_PASS ?? 'lsa9600sp'
 const BROWSERS = [process.env.BROWSER, 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/chromium', '/usr/bin/google-chrome'].filter(Boolean)
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -31,23 +34,30 @@ const SAM_B = `SAM-${cabinet}-B`
 /** [名字, 进入方式, 路由, 宽, 高, 额外动作]
  *  进入方式：login 不预置会话 / local 本地账号 / sp:<子站用户> 经子站票据 */
 const SHOTS = [
-  ['01_登录页_直连', 'login', 'overview'],
-  ['02_概览', 'local', 'overview'],
-  ['03_实时数据_感知模块', 'local', `live/${SAM_B}`],
-  ['04_实时数据_原始消息', 'local', `live/${SAM_B}`, 1366, 768, 'raw'],
-  ['05_实时数据_EG自身指标', 'local', `live/${EG}`],
-  ['06_下挂设备', 'local', 'devices'],
-  ['07_视频', 'local', 'video'],
-  ['08_诊断', 'local', 'diag'],
-  ['09_日志', 'local', 'logs'],
-  ['10_系统', 'local', 'system'],
-  ['11_经子站_概览_运维', 'sp:zhang', 'overview'],
-  ['12_经子站_概览_值班员只看', 'sp:duty', 'overview'],
-  ['13_经子站_日志_值班员只看', 'sp:duty', 'logs'],
-  ['14_浅色主题_概览', 'local', 'overview', 1366, 768, 'light'],
-  ['15_大屏_概览_1920', 'local', 'overview', 1920, 1080],
-  ['16_质量异常_实时数据', 'local', `live/${SAM_A}`, 1366, 768, 'fault'],
-  ['17_质量异常_概览', 'local', 'overview', 1366, 768, 'fault'],
+  ['01_登录页_直连', 'login', 'overview', 1280, 800],
+  ['02_本柜总览_1280', 'local', 'overview', 1280, 800],
+  ['03_本柜总览_1920', 'local', 'overview', 1920, 1080],
+  ['04_本柜总览_850', 'local', 'overview', 850, 1500],
+  ['05_电气量_1280', 'local', 'electric', 1280, 800],
+  ['06_电气量_1920', 'local', 'electric', 1920, 1080],
+  ['07_电气量_850', 'local', 'electric', 850, 1300],
+  ['08_事件与录像_1280_回放', 'local', 'events', 1280, 1000, 'play'],
+  ['09_事件与录像_1920', 'local', 'events', 1920, 1080, 'play'],
+  ['10_事件与录像_850', 'local', 'events', 850, 1500],
+  ['11_设备与通信_服务状态', 'local', 'manage/status', 1280, 900],
+  ['12_设备与通信_实时数据', 'local', `manage/live/${SAM_B}`, 1280, 900],
+  ['13_设备与通信_原始消息', 'local', `manage/live/${SAM_B}`, 1280, 900, 'raw'],
+  ['14_设备与通信_EG自身指标', 'local', `manage/live/${EG}`, 1280, 900],
+  ['15_设备与通信_下挂设备', 'local', 'manage/devices', 1280, 900],
+  ['16_设备与通信_视频与测温', 'local', 'manage/video', 1280, 900],
+  ['17_设备与通信_证据_录像断档', 'local', 'manage/evidence', 1280, 900],
+  ['18_设备与通信_诊断', 'local', 'manage/diag', 1280, 900],
+  ['19_设备与通信_日志', 'local', 'manage/logs', 1280, 900],
+  ['20_设备与通信_系统', 'local', 'manage/system', 1280, 900],
+  ['21_浅色主题_本柜总览', 'local', 'overview', 1280, 800, 'light'],
+  ['22_经子站_本柜总览_运维', 'sp:zhang', 'overview', 1280, 800],
+  ['23_经子站_本柜总览_值班员只看', 'sp:duty', 'overview', 1280, 800],
+  ['24_质量异常_本柜总览', 'local', 'overview', 1280, 800, 'fault'],
 ]
 
 async function json(url, init = {}) {
@@ -118,6 +128,10 @@ let faultOn = false
 
 for (const [name, mode, route, w = 1366, h = 768, action] of SHOTS) {
   if (only && !only.some(k => name.startsWith(k))) continue
+  if (mode.startsWith('sp:') && !WITH_SP) {
+    console.log('·', name, '（经子站：没开 SP=1，跳过）')
+    continue
+  }
   // 质量异常两张：让仿真器停发 SAM-A 的环境温湿度、整台停发颗粒物，等看护标到「无效」
   if (action === 'fault' && !faultOn) {
     await fetch(`${EMU}/emu/dev/${SAM_A}/drop?keys=env.t,env.rh`, { method: 'POST' })
@@ -170,8 +184,14 @@ for (const [name, mode, route, w = 1366, h = 768, action] of SHOTS) {
       }
       if (Date.now() - t0 > 15_000) break
     }
-    // 诊断、组件 5 s 一轮，等它们都出来
-    await sleep(6000)
+    // 诊断、组件 5 s 一轮，等它们都出来；总览还要等双光实况（WebRTC 首帧，连不通退 HLS）
+    await sleep(route === 'overview' ? 12_000 : 6000)
+    if (action === 'play') {
+      await evaluate(`document.querySelector('.event-table .text-link')?.click()`, sessionId)
+      await sleep(5000)
+      await evaluate(`document.querySelector('.recording-card')?.scrollIntoView()`, sessionId)
+      await sleep(500)
+    }
     if (action === 'raw') {
       await evaluate(`[...document.querySelectorAll('button')].find(b => b.innerText.includes('原始消息'))?.click()`, sessionId)
       await sleep(1500)

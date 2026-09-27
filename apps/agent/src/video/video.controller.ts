@@ -21,7 +21,7 @@ export class VideoClient {
   }
 
   /** 循环录像覆盖（G5）：各路最旧 / 最新一段、是否在录 */
-  async recording(): Promise<{ ok: boolean; paths: { channel: 'visible' | 'ir'; oldest: number | null; newest: number | null; recording: boolean }[] } | null> {
+  async recording(): Promise<{ ok: boolean; ringHours?: number; paths: { channel: 'visible' | 'ir'; oldest: number | null; newest: number | null; recording: boolean; gaps?: { from: number; to: number }[] }[] } | null> {
     try {
       const r = await fetch(`${BASE}/api/video/recording`, { signal: AbortSignal.timeout(5000) })
       return r.ok ? ((await r.json()) as never) : null
@@ -74,6 +74,14 @@ export class VideoController {
   @Get('status')
   status() {
     return this.video.status()
+  }
+
+  /** 循环录像覆盖与断档（证据页用） */
+  @Get('recording')
+  async recording() {
+    const r = await this.video.recording()
+    if (!r) throw new ServiceUnavailableException('eg-video 没响应')
+    return r
   }
 
   @Maint()

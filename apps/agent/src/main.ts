@@ -44,6 +44,12 @@ async function bootstrap() {
   const port = cfg.conn.httpPort
   await app.listen(port, '0.0.0.0')
   const log = new Logger('eg-agent')
+  // 旁观模式只给开发机并排验接口用（发布件的 compose / install.sh 里没有它）：生产环境看到就醒目地报出来
+  if (process.env['EG_PASSIVE'] === '1') {
+    const msg = '！！！EG_PASSIVE=1 旁观模式：本机不发任何数据（派生量、质量码、EG 自身指标、证据都不做）—— 只用于开发机，现场绝不能开 ！！！'
+    if (process.env['NODE_ENV'] === 'production') for (let k = 0; k < 3; k++) log.error(msg)
+    else log.warn(msg)
+  }
   log.log(`${cfg.eg.name}（${cfg.cabinet.name}）已启动：http://localhost:${port}/`)
   log.log(`IoT Gateway 配置 → ${gw.dir}`)
   if (!existsSync(web)) log.warn(`没有管理页构建产物 ${web}（开发时用 pnpm web）`)

@@ -22,7 +22,7 @@ unpack() {
 
 case "${1:-}" in
   --help | -h)
-    sed -n '2,11p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '2,9p' "$SELF" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   --extract)
