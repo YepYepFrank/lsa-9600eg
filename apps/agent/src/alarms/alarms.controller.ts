@@ -1,6 +1,7 @@
 /* POST /hooks/alarm —— EG 本地 TB 规则链推来的告警变化（provision:eg --hook）。不要登录：本地 TB 的 REST 节点不带凭据；
  *   请求体只当提示，agent 按告警 id 回本地 TB 读一遍才记（alarms.service.ts），伪造的请求记不进任何东西。
- * GET /api/alarms —— 本机最近的告警与送子站的状态（本地页用）。 */
+ * GET /api/alarms —— 本机最近的告警与送子站的状态（本地页用）。
+ * GET /api/alarms/timing[?eventId=] —— 每一版事件的时延（毫秒）：发生 → 钩子 → 排队 → 第一次 POST → 回执，外加各段差值。 */
 import { Body, Controller, ForbiddenException, Get, HttpCode, Post, Query } from '@nestjs/common'
 import { Public } from '../auth/guard.js'
 import { AlarmsService, type AlarmHook } from './alarms.service.js'
@@ -20,6 +21,16 @@ export class AlarmsController {
   list(@Query('limit') limit?: string) {
     const n = Math.min(500, Math.max(1, Number(limit) || 50))
     return { events: this.alarms.status(), alarms: this.alarms.recent(n) }
+  }
+
+  @Get('api/alarms/timing')
+  timing(@Query('eventId') eventId?: string, @Query('limit') limit?: string) {
+    const n = Math.min(500, Math.max(1, Number(limit) || 50))
+    const d = (a: number | null, b: number | null) => (a != null && b != null ? b - a : null)
+    return this.alarms.timing(eventId, n).map(t => ({
+      ...t,
+      ms: { toHook: d(t.at, t.hookAt), toQueue: d(t.hookAt ?? t.at, t.queuedAt), toSend: d(t.queuedAt, t.sentAt), toAck: d(t.sentAt, t.ackedAt), total: d(t.at, t.ackedAt) },
+    }))
   }
 
   /** 调试：把本地全部活动告警按当前版本重发一遍（不用重启 agent）。只在 EG_DEBUG=1 时开放 */

@@ -12,6 +12,7 @@ import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { loadConfig, stationToken } from '@lsa-eg/config'
 import { AGENT, agent, check, done, EMU, env, post, sleep, Tb, until } from './verify/lib.js'
+import { checkEventTiming } from './verify/event-timing.js'
 
 const REAL = process.argv.includes('--real')
 const STUB_PORT = Number(env('EG_STUB_PORT', '3199'))
@@ -81,6 +82,9 @@ function stub(token: string, code: string) {
 
 async function main() {
   console.log(`I3 自检（EG 侧）：告警事件${REAL ? '送真子站' : '送假子站'}\n`)
+  console.log('0. 事件时延记账（临时库）')
+  checkEventTiming(check)
+
   const cfg = loadConfig()
   const code = cfg.cabinet.code
   const tb = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()

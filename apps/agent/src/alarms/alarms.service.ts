@@ -101,6 +101,8 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
   private sendError: string | null = null
   private hookCount = 0
   private hookAt: number | null = null
+  /** 告警 id → 最近一次钩子到达时刻（event_timing 用；60 s 内的才算这一版是钩子带出来的） */
+  private readonly hookSeen = new Map<string, number>()
   private reconcileAt: number | null = null
   private reconcileError: string | null = null
   /** 调试：不理钩子，只靠对账（EG_DEBUG=1，自检验对账补漏用） */
@@ -159,6 +161,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     if (!id || !UUID.test(id)) return { accepted: false, reason: '没有告警 id' }
     this.hookCount++
     this.hookAt = Date.now()
+    this.hookSeen.set(id, this.hookAt)
     if (this.ignoreHooks || !this.tb.available) return { accepted: true }
     const cleared = h.kind === 'cleared' || !!h.alarm?.cleared || !!h.alarm?.status?.startsWith('CLEARED')
     const known = this.store.known(id)
@@ -218,6 +221,10 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     return this.store.recent(limit)
   }
 
+  timing(eventId?: string, limit?: number) {
+    return this.store.timing(eventId, limit)
+  }
+
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const p = this.chain.then(fn, fn)
     this.chain = p.catch(() => undefined)
@@ -232,7 +239,9 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
   private take(a: TbAlarm): EgEvent | null {
     const o = this.observed(a)
     if (!o) return null
-    const ev = this.store.observe(o)
+    const seen = this.hookSeen.get(o.eventId)
+    this.hookSeen.delete(o.eventId)
+    const ev = this.store.observe(o, Date.now(), seen && Date.now() - seen < 60_000 ? seen : null)
     if (ev) {
       this.log.log(`${ev.device}「${ev.type}」${ev.state === 'ACTIVE' ? '发生' : '恢复'}（${ev.severity}，第 ${ev.revision} 版）`)
       // G5：告警发生即锁证据（循环录像前后窗、双光抓图、录波）
@@ -330,6 +339,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     try {
       let res: Response
       const payload = JSON.stringify({ bootId: this.uplink.bootId, batchId, events: rows.map(r => JSON.parse(r.body) as EgEvent) })
+      this.store.markSent(rows)
       try {
         res = await fetch(this.target, {
           method: 'POST',
@@ -367,7 +377,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
           const ev = JSON.parse(row.body) as EgEvent
           this.log.warn(`子站拒收 ${ev.device}「${ev.type}」第 ${ev.revision} 版：${r.reason ?? '（没说原因）'}，丢弃`)
           this.audit.write({ user: 'system', name: '告警事件', via: 'system', ip: '-', action: 'event.rejected', target: `${ev.device} ${ev.type} ${ev.eventId}#${ev.revision}`, ok: false, detail: r.reason })
-          this.store.settle(row.eventId, row.revision)
+          this.store.settle(row.eventId, row.revision, false)
         } else {
           this.store.retry(row.eventId, row.revision, `子站暂不收：${r.reason ?? ''}`, backoff(row.tries))
         }

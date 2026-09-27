@@ -1,6 +1,7 @@
 /* 告警事件的本地库（I3，后端库 docs/EG独立TB调整方案.md §2.3、§8.2）：配置目录下的 events.db。
  *
  *   alarms     EG 本地 TB 上每条告警的最后已知状态 + 已分配的 revision（重启不丢，revision 才能单调）
+ *   event_timing 每一版的时延（毫秒）：本地 TB 告警发生 → 钩子到 → 排进待送 → 第一次 POST → 子站回执；留 30 天（G6，协调会话要的细分）
  *   event_out  待送子站的事件：每个 eventId 只留最新一版（子站按 revision 取大的；恢复那一版带着发生时刻，
  *              断网期间发生又恢复 → 补传时只送一条 CLEARED，子站照样建出一条、时间正确）
  *
@@ -23,6 +24,25 @@ export interface EgEvent {
 }
 
 export type Observed = Omit<EgEvent, 'revision'>
+
+/** 一版事件的时延记录（GET /api/alarms/timing） */
+export interface EventTiming {
+  eventId: string
+  revision: number
+  device: string
+  type: string
+  state: EventState
+  /** 本地 TB 上告警的发生 / 恢复时刻（这一版的起点） */
+  at: number
+  /** 钩子到达 agent（对账 / 重发补出来的为 null） */
+  hookAt: number | null
+  via: 'hook' | 'reconcile'
+  queuedAt: number
+  /** 第一次 POST 发出 */
+  sentAt: number | null
+  ackedAt: number | null
+  tries: number
+}
 
 export interface OutEvent {
   eventId: string
@@ -64,13 +84,29 @@ export class EventsStore {
         last_error text
       );
       create table if not exists meta (k text primary key, v text);
+      create table if not exists event_timing (
+        event_id  text not null,
+        revision  integer not null,
+        device    text not null,
+        type      text not null,
+        state     text not null,
+        at        integer not null,
+        hook_at   integer,
+        via       text not null,
+        queued_at integer not null,
+        sent_at   integer,
+        acked_at  integer,
+        tries     integer not null default 0,
+        primary key (event_id, revision)
+      );
+      create index if not exists event_timing_queued on event_timing(queued_at);
     `)
   }
 
   /** 看到本地 TB 上一条告警的当前状态。状态、级别、恢复时刻变了才算新一版（revision + 1）并排进待送；
    *  只是明细里的测量值变了（设备配置节点在告警持续期间每来一条遥测都会重写明细）只更新本地记录，不发事件。
    *  返回新排进去的那一版；没变返回 null。 */
-  observe(o: Observed, now = Date.now()): EgEvent | null {
+  observe(o: Observed, now = Date.now(), hookAt: number | null = null): EgEvent | null {
     const tx = this.db.transaction((): EgEvent | null => {
       const old = this.db.prepare('select state, severity, cleared_at c, revision from alarms where event_id = ?').get(o.eventId) as
         | { state: EventState; severity: string; c: number | null; revision: number }
@@ -97,9 +133,32 @@ export class EventsStore {
            on conflict(event_id) do update set revision = excluded.revision, body = excluded.body, tries = 0, next_at = excluded.next_at, last_error = null`,
         )
         .run(ev.eventId, ev.revision, JSON.stringify(ev), now, now)
+      this.db
+        .prepare(
+          `insert or ignore into event_timing(event_id, revision, device, type, state, at, hook_at, via, queued_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(ev.eventId, ev.revision, ev.device, ev.type, ev.state, ev.state === 'CLEARED' ? (ev.clearedAt ?? now) : ev.occurredAt, hookAt, hookAt ? 'hook' : 'reconcile', now)
       return ev
     })
     return tx()
+  }
+
+  /** 这一批要 POST 了：第一次发的记 sent_at，每次都记一次尝试 */
+  markSent(rows: { eventId: string; revision: number }[], now = Date.now()): void {
+    const up = this.db.prepare('update event_timing set sent_at = coalesce(sent_at, ?), tries = tries + 1 where event_id = ? and revision = ?')
+    this.db.transaction(() => {
+      for (const r of rows) up.run(now, r.eventId, r.revision)
+    })()
+  }
+
+  timing(eventId?: string, limit = 50): EventTiming[] {
+    const cols = `event_id eventId, revision, device, type, state, at, hook_at hookAt, via, queued_at queuedAt, sent_at sentAt, acked_at ackedAt, tries`
+    return (
+      eventId
+        ? this.db.prepare(`select ${cols} from event_timing where event_id = ? order by revision`).all(eventId)
+        : this.db.prepare(`select ${cols} from event_timing order by queued_at desc limit ?`).all(limit)
+    ) as EventTiming[]
   }
 
   /** 把本地全部活动告警按当前 revision 重新排进待送（I 阶段复测发现：送错目标（自检的假子站）收走过的，真子站永远收不到）。
@@ -133,8 +192,9 @@ export class EventsStore {
   }
 
   /** 子站收下了（accepted / duplicate）或明确不要（rejected 且不可重试）：删掉这一版；期间又排进了更新的一版就留着 */
-  settle(eventId: string, revision: number): void {
+  settle(eventId: string, revision: number, acked = true, now = Date.now()): void {
     this.db.prepare('delete from event_out where event_id = ? and revision <= ?').run(eventId, revision)
+    if (acked) this.db.prepare('update event_timing set acked_at = coalesce(acked_at, ?) where event_id = ? and revision = ?').run(now, eventId, revision)
   }
 
   retry(eventId: string, revision: number, error: string, delayMs: number, now = Date.now()): void {
@@ -185,6 +245,7 @@ export class EventsStore {
     this.db
       .prepare("delete from alarms where state = 'CLEARED' and updated_at < ? and event_id not in (select event_id from event_out)")
       .run(now - KEEP_CLEARED_MS)
+    this.db.prepare('delete from event_timing where queued_at < ?').run(now - KEEP_CLEARED_MS)
   }
 
   getMeta(k: string): string | null {
