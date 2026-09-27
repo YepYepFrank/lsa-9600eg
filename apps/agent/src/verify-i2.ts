@@ -7,6 +7,7 @@
  * dev:emu、dev:agent（EG_DEBUG=1）在跑。断网用 agent 的调试接口模拟（/api/_debug/uplink?down=1）。 */
 import { loadConfig } from '@lsa-eg/config'
 import { AGENT, agent, check, docker, done, maxGap, sleep, Tb, until } from './verify/lib.js'
+import { checkLostAccounting } from './verify/outbox-lost.js'
 
 const FAST = process.argv.includes('--fast')
 const CUT_MIN = FAST ? 2 : 10
@@ -27,7 +28,10 @@ async function main() {
   const uplink = async () => (await agent<{ uplink: Uplink }>(cfg.dir, '/api/diag')).uplink
   const debug = (down: boolean) => fetch(`${AGENT}/api/_debug/uplink?down=${down ? 1 : 0}`, { method: 'POST' }).then(r => r.json() as Promise<Uplink>)
 
-  console.log('1. 连上子站、数据直达')
+  console.log('0. 丢失记账（临时库，不碰正在用的 outbox）：eg.lost 累计、只增不减')
+  checkLostAccounting(check)
+
+  console.log('\n1. 连上子站、数据直达')
   const u0 = await until(async () => {
     const u = await uplink()
     return u.state === 'ok' ? u : null

@@ -63,7 +63,6 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   private tokens = 0
   private downSince: number | null = Date.now()
   private lastAckAt: number | null = null
-  private lastTrimAt = 0
   /** 发给子站的字节数（遥测载荷 + 告警事件请求体），算 eg.up_kbps 的退路 */
   private sentBytes = 0
   private rateMark: { at: number; bytes: number } | null = null
@@ -140,7 +139,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
       target,
       backfillPct: pct,
       outboxMb: Math.round(s.bytes / 1048576),
-      lost: this.store.lost().reduce((a, r) => a + r.n, 0),
+      lost: this.store.lostTotal(),
     }
     if (!up) {
       const mins = this.downSince ? Math.round((Date.now() - this.downSince) / 60_000) : 0
@@ -154,7 +153,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   metrics(): Record<string, unknown> {
     if (!this.store) return {}
     const s = this.store.stats()
-    const full = s.bytes >= this.cfg.local.outbox.maxMb * 1048576 * 0.95 || Date.now() - this.lastTrimAt < FULL_HOLD_MS
+    // 丢过数据后保持 FULL_HOLD_MS：丢弃时刻存在库里，agent 重启不会提前变回 false
+    const full = s.bytes >= this.cfg.local.outbox.maxMb * 1048576 * 0.95 || Date.now() - this.store.lastLostAt() < FULL_HOLD_MS
     const pct = this.backfillPct()
     return {
       'eg.buf_depth': s.depth,
@@ -317,7 +317,6 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     const o = this.cfg.local.outbox
     const lost = this.store.trim(Date.now() - o.maxAgeDays * 86_400_000, o.maxMb * 1048576)
     if (lost) {
-      this.lastTrimAt = Date.now()
       this.log.warn(`outbox 超出上限（${o.maxAgeDays} 天 / ${o.maxMb} MB），丢了最旧的 ${lost.n} 条（源时间 ${new Date(lost.from).toISOString()} – ${new Date(lost.to).toISOString()}）`)
     }
   }
