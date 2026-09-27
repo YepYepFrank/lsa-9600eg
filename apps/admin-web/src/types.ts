@@ -57,6 +57,19 @@ export interface Diag {
     lastAckAt: number | null
     target: string | null
   }
+  /** 告警事件送子站（I3：本地 TB 告警 → /ext/eg/<柜号>/events） */
+  events: {
+    state: 'ok' | 'retrying' | 'off' | 'none'
+    text: string
+    target: string | null
+    pending: number
+    oldestQueuedAt: number | null
+    lastAckAt: number | null
+    lastError: string | null
+    active: number
+    hook: { count: number; lastAt: number | null; ignored: boolean }
+    reconcile: { lastAt: number | null; lastError: string | null }
+  }
   host: { uptimeSec: number; memUsedPct: number; disk: { usedPct: number; freeGb: number } | null }
   devices: { dead: string[]; unknown: string[] }
 }

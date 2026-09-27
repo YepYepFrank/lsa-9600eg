@@ -74,7 +74,6 @@ export class StatusController {
     return { device, telemetry: d.telemetry, attributes: d.attributes, msgs: d.msgs, lastAt: d.lastAt, q: this.quality.qualityOf(device) }
   }
 
-  /** 自检用：暂停发 EG 自身指标 s 秒，模拟 agent 停掉（看 IoT Gateway 的自定义连接器能否维持 EG 在线）。只在 EG_DEBUG=1 时开放 */
   /** 自检用：断开 / 恢复到子站的上送（模拟断网，I2）。只在 EG_DEBUG=1 时开放 */
   @Public()
   @Post('_debug/uplink')
@@ -85,6 +84,7 @@ export class StatusController {
     return this.uplink.status()
   }
 
+  /** 自检用：暂停发 EG 自身指标 s 秒，模拟 agent 停掉（看 IoT Gateway 的自定义连接器能否维持 EG 在线）。只在 EG_DEBUG=1 时开放 */
   @Public()
   @Post('_debug/self-pause')
   @HttpCode(200)

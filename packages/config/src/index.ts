@@ -36,6 +36,8 @@ export interface EgFile {
     mqtt?: string
     /** 子站上 EG-<柜号> 网关设备的访问令牌：上送、X-EG-Token、验子站签的票据都用它 */
     token?: string
+    /** 子站扩展服务的 HTTP 基址（告警事件 POST <http>/ext/eg/<柜号>/events，§8.2）；缺省 http://<sp.host>（经子站 Nginx） */
+    http?: string
   }
   sp: { host: string }
   cabinet: { code: string; name: string; group: Group; kind: string; rated: number; riseLimit: number; rooms: string[]; index: number }
@@ -78,7 +80,7 @@ export interface EgConfig extends EgFile {
   /** local.yaml 原样（写给同一 compose 网络里的容器看的地址，IoT Gateway 配置按它生成） */
   local: LocalFile
   /** 本进程自己连的地址：local.yaml 的值，开发时可被环境变量覆盖（进程跑在宿主机、总线在容器里） */
-  conn: { bus: string; tb: string; tbHttp: string; httpPort: number }
+  conn: { bus: string; tb: string; tbHttp: string; httpPort: number; stationHttp: string }
   dir: string
 }
 
@@ -116,7 +118,7 @@ export function configDir(): string {
   return resolve(repoRoot() ?? process.cwd(), 'run')
 }
 
-/** 读两份配置。local.yaml 没有就按默认值生成一份；环境变量 EG_BUS_MQTT / EG_TB_MQTT / EG_TB_HTTP / EG_HTTP_PORT 只改本进程自己的连接（开发用） */
+/** 读两份配置。local.yaml 没有就按默认值生成一份；环境变量 EG_BUS_MQTT / EG_TB_MQTT / EG_TB_HTTP / EG_HTTP_PORT / EG_STATION_HTTP 只改本进程自己的连接（开发用） */
 export function loadConfig(dir = configDir()): EgConfig {
   const egPath = resolve(dir, 'eg.yaml')
   if (!existsSync(egPath)) throw new Error(`没有 ${egPath} —— 在子站上跑 pnpm eg:config 生成后拷过来（开发机：pnpm dev:config）`)
@@ -137,6 +139,7 @@ export function loadConfig(dir = configDir()): EgConfig {
     tb: env['EG_TB_MQTT'] || local.mqtt.tb,
     tbHttp: env['EG_TB_HTTP'] || local.tb.http,
     httpPort: Number(env['EG_HTTP_PORT'] || local.http.port),
+    stationHttp: (env['EG_STATION_HTTP'] || eg.station.http || `http://${eg.sp.host}`).replace(/\/$/, ''),
   }
   return { ...eg, local, conn, dir }
 }

@@ -29,7 +29,7 @@ const items = computed<Item[]>(() => {
     name: `到子站 ${d.sp.host}:${d.sp.port}`,
     level: loss >= 100 ? 'crit' : loss > 0 ? 'minor' : 'good',
     result: `时延 ${d.sp.latMs ?? '—'} ms，近 1 分钟失败率 ${d.sp.lossPct ?? '—'} %`,
-    hint: loss >= 100 ? '上行口（LAN2）网线、交换机、子站主机是否正常；子站的 7070 端口要对 EG 开放' : loss > 0 ? '偶有失败：看交换机端口是否有错包' : '',
+    hint: loss >= 100 ? '上行口（LAN2）网线、交换机、子站主机是否正常；子站的 MQTT（现场 8883）与 HTTP 端口要对 EG 开放' : loss > 0 ? '偶有失败：看交换机端口是否有错包' : '',
   })
   const u = d.uplink
   out.push({
@@ -40,7 +40,7 @@ const items = computed<Item[]>(() => {
       u.state === 'offline'
         ? '网络恢复后自动按原时间补传，不用手工处理；本地最多留 7 天'
         : u.state === 'none'
-          ? '数据先进本地 TB（本地告警、本地页面照常）；上送子站在 I2 接上'
+          ? '数据先进本地 TB（本地告警、本地页面照常）；子站下发的 eg.yaml 带上子站地址与令牌后自动开始上送'
           : '',
   })
   out.push({
@@ -52,6 +52,22 @@ const items = computed<Item[]>(() => {
         : `待发 ${u.depth} 条；最早未发 ${u.oldestUnsent ? ago(d.now - u.oldestUnsent) : '—'}；最近子站确认 ${u.lastAckAt ? ago(d.now - u.lastAckAt) : '—'}`,
     hint: '子站看得到这几个数（eg.buf_depth 等随 EG 自身指标上报）；断网时这里看积压了多少',
   })
+  const ev = d.events
+  if (ev) {
+    out.push({
+      name: '告警事件上送',
+      level: ev.state === 'ok' ? 'good' : ev.state === 'retrying' ? 'crit' : ev.state === 'none' ? 'minor' : '',
+      result: `${ev.text}；最近子站回执 ${ev.lastAckAt ? ago(d.now - ev.lastAckAt) : '—'}；本地规则链推送 ${ev.hook.count} 次，最近对账 ${ev.reconcile.lastAt ? ago(d.now - ev.reconcile.lastAt) : '—'}`,
+      hint:
+        ev.state === 'retrying'
+          ? '事件留在本机、不会丢，子站恢复后自动补送（同一条告警只送最新状态）'
+          : ev.state === 'none'
+            ? 'eg.yaml 里没有本地 TB 账号：读不到本地告警，重新从子站生成 eg.yaml'
+            : ev.reconcile.lastError
+              ? `读本地告警失败：${ev.reconcile.lastError}（看「本机组件」里本地 TB 是否在跑）`
+              : '',
+    })
+  }
   const off = d.clock.offsetMs
   out.push({
     name: '对时',

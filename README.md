@@ -40,6 +40,7 @@ pnpm dev:emu             # 仿真器（扮同事的程序）
 pnpm dev:agent           # eg-agent，管理页 http://localhost:9100/（先 pnpm -F @lsa-eg/admin-web build）；只验本地 TB 时 EG_UPLINK=off 关上送
 pnpm i1:verify           # I1 自检：本地 TB 的实体、数据、本地告警、连接器稳定、内存
 pnpm i2:verify           # I2 自检：上送子站、断网 10 分钟补齐、重启不丢（-- --fast 断 2 分钟）
+pnpm i3:verify           # I3 自检：本地告警 → 告警事件 → 子站（缺省起假子站 3199；-- --real 查真子站）
 pnpm g0:verify           # G0 自检：链路
 pnpm g1:verify           # G1 自检：派生量、质量码、EG 自身指标、南向统计、韧性（约 8 分钟；-- --fast 约 3 分钟）
 pnpm g2:verify           # G2 自检：访问控制、子站单点登录与反代、组件、诊断、审计（约 4 分钟；子站扩展服务要带 EXT_EG_URLS=AH03=http://127.0.0.1:9100）

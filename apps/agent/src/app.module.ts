@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common'
 import { APP_GUARD } from '@nestjs/core'
 import { configProvider } from './config.js'
+import { AlarmsController } from './alarms/alarms.controller.js'
+import { AlarmsService } from './alarms/alarms.service.js'
 import { AttrsService } from './attrs/attrs.service.js'
 import { AuditService } from './audit/audit.service.js'
 import { AuthController } from './auth/auth.controller.js'
@@ -16,10 +18,11 @@ import { QualityService } from './quality/quality.service.js'
 import { SelfService } from './self/self.service.js'
 import { SouthService } from './south/south.service.js'
 import { StatusController } from './status/status.controller.js'
+import { LocalTbService } from './tb/local-tb.service.js'
 import { UplinkService } from './uplink/uplink.service.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController],
   providers: [
     configProvider,
     AuditService,
@@ -33,6 +36,8 @@ import { UplinkService } from './uplink/uplink.service.js'
     SelfService,
     ComponentsService,
     UplinkService,
+    LocalTbService,
+    AlarmsService,
   ],
 })
 export class AppModule {}

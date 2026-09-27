@@ -12,6 +12,7 @@ import { QualityService } from '../quality/quality.service.js'
 import { SelfService } from '../self/self.service.js'
 import { COMPONENTS, ComponentsService, RESTARTABLE, type ComponentKey } from './components.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
+import { AlarmsService } from '../alarms/alarms.service.js'
 
 @Controller('api')
 export class ComponentsController {
@@ -23,6 +24,7 @@ export class ComponentsController {
     private readonly bus: BusService,
     private readonly quality: QualityService,
     private readonly audit: AuditService,
+    private readonly alarms: AlarmsService,
   ) {}
 
   @Get('components')
@@ -58,7 +60,7 @@ export class ComponentsController {
     }
   }
 
-  /** 诊断汇总：本机总线、到子站、对时、上送子站、资源、下挂设备 */
+  /** 诊断汇总：本机总线、到子站、对时、上送子站（遥测、告警事件）、资源、下挂设备 */
   @Get('diag')
   async diag() {
     const now = Date.now()
@@ -77,6 +79,7 @@ export class ComponentsController {
       sp: probe,
       clock: this.self.clock(),
       uplink,
+      events: this.alarms.status(),
       host: { uptimeSec: Math.round(uptime()), memUsedPct: Math.round((1 - freemem() / totalmem()) * 1000) / 10, disk },
       devices: { dead: this.quality.deadDevices(now), unknown: [...this.bus.unknown.keys()] },
     }
