@@ -102,6 +102,29 @@ export class EventsStore {
     return tx()
   }
 
+  /** 把本地全部活动告警按当前 revision 重新排进待送（I 阶段复测发现：送错目标（自检的假子站）收走过的，真子站永远收不到）。
+   *  已排着同一条的更新版本就不动；子站按 revision 去重，重复的回 duplicate，无害。返回排进去的条数 */
+  requeueActive(now = Date.now()): number {
+    const rows = this.db
+      .prepare(
+        `select event_id eventId, revision, device, type, severity, state, occurred_at occurredAt, cleared_at clearedAt, details
+         from alarms where state = 'ACTIVE'`,
+      )
+      .all() as (Omit<EgEvent, 'details'> & { details: string })[]
+    const up = this.db.prepare(
+      `insert into event_out(event_id, revision, body, queued_at, tries, next_at, last_error) values (?, ?, ?, ?, 0, ?, null)
+       on conflict(event_id) do update set tries = 0, next_at = excluded.next_at where event_out.revision <= excluded.revision`,
+    )
+    const tx = this.db.transaction(() => {
+      for (const r of rows) {
+        const ev: EgEvent = { ...r, details: JSON.parse(r.details) as Record<string, unknown> }
+        up.run(ev.eventId, ev.revision, JSON.stringify(ev), now, now)
+      }
+    })
+    tx()
+    return rows.length
+  }
+
   /** 该发的（到了重试时刻的），按排队先后 */
   due(limit: number, now = Date.now()): OutEvent[] {
     return this.db

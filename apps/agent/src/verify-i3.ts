@@ -4,9 +4,11 @@
  *   pnpm i3:verify -- --real    真子站：事件送扩展服务，查子站 TB 上的告警（后端 /ext/eg/:code/events 做好以后）
  *
  * 前提：I1 的样机在跑，本地 TB 根规则链有告警钩子（后端库 pnpm provision:eg -- --cabinet AH03 --hook http://host.docker.internal:9100/hooks/alarm）；
- * dev:emu 在跑；dev:agent 带 EG_DEBUG=1，假子站时还要 EG_EVENTS=on EG_STATION_HTTP=http://127.0.0.1:3199（遥测上送可以仍是 EG_UPLINK=off）。
+ * dev:emu 在跑；dev:agent 带 EG_DEBUG=1，假子站时还要 EG_EVENTS=on EG_STATION_HTTP=http://127.0.0.1:3199 EG_EVENTS_DB=run/events-stub.db
+ * （**独立的事件库**：与正式运行共用 events.db 时，假子站会把本该送真子站的活动告警收走 —— I 阶段复测踩过；遥测上送可以仍是 EG_UPLINK=off）。
  * 用仿真器打弧光造告警：弧光 60 s 无放电自动恢复，一轮约 1 分钟，全程约 5 分钟。 */
 import { createServer } from 'node:http'
+import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { loadConfig, stationToken } from '@lsa-eg/config'
 import { AGENT, agent, check, done, EMU, env, post, sleep, Tb, until } from './verify/lib.js'
@@ -37,6 +39,7 @@ interface EventsStatus {
   target: string | null
   pending: number
   hook: { count: number }
+  db?: string
 }
 
 /** 假子站：按 §8.2 收事件、回执（revision 不大于已收的回 duplicate） */
@@ -94,6 +97,13 @@ async function main() {
   if (!check(e0.target === want, 'agent 的告警事件送往' + (REAL ? '子站扩展服务' : '假子站'), `${e0.target ?? '不送'}（${e0.text}）`)) {
     console.log(REAL ? '  要 EG_EVENTS=on 或打开上送' : `  agent 要带 EG_DEBUG=1 EG_EVENTS=on EG_STATION_HTTP=http://127.0.0.1:${STUB_PORT} 起`)
     done()
+  }
+  if (!REAL) {
+    const shared = !e0.db || resolve(e0.db) === resolve(cfg.dir, 'events.db')
+    if (!check(!shared, 'agent 用独立的事件库（假子站不收走正式的事件）', e0.db ?? '（agent 版本太旧，没报事件库）')) {
+      console.log('  agent 要带 EG_EVENTS_DB=run/events-stub.db 起')
+      done()
+    }
   }
   const root = (await tb.get<{ data: { id: { id: string }; root: boolean }[] }>('/api/ruleChains?pageSize=50&page=0')).data.find(c => c.root)!
   const meta = await tb.get<{ nodes: { name: string; configuration: { restEndpointUrlPattern?: string } }[] }>(`/api/ruleChain/${root.id.id}/metadata`)

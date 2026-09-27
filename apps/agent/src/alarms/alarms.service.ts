@@ -61,6 +61,8 @@ export interface EventsStatus {
   active: number
   hook: { count: number; lastAt: number | null; ignored: boolean }
   reconcile: { lastAt: number | null; lastError: string | null }
+  /** 事件库文件（自检用独立的库：EG_EVENTS_DB） */
+  db: string
 }
 
 const RECONCILE_MS = 30_000
@@ -126,12 +128,19 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    this.store = new EventsStore(resolve(this.cfg.dir, 'events.db'))
+    this.store = new EventsStore(this.dbPath)
     if (!this.tb.available) {
       this.log.warn('eg.yaml 里没有本地 TB 账号（tb 段）：不读本地告警、不发告警事件')
       return
     }
     this.log.log(this.sendEnabled ? `告警事件送 ${this.target}` : '告警事件只记本地、不送子站（EG_UPLINK=off 或 EG_EVENTS=off）')
+    if (this.sendEnabled) {
+      // 启动时（上送目标也只在启动时会变）把活动告警按当前版本重发一遍：之前送错了地方、或子站丢了的，这里补上
+      const last = this.store.getMeta('target')
+      const n = this.store.requeueActive()
+      if (n) this.log.log(`重发 ${n} 条活动告警${last && last !== this.target ? `（上送目标从 ${last} 改成了 ${this.target}）` : ''}`)
+      this.store.setMeta('target', this.target)
+    }
     this.timers.push(setTimeout(() => this.reconcileSoon(), 5000))
     this.timers.push(setInterval(() => this.reconcileSoon(), RECONCILE_MS))
     this.timers.push(setInterval(() => void this.sendDue(), SEND_TICK_MS))
@@ -165,6 +174,20 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     return { accepted: true }
   }
 
+  /** 事件库：缺省配置目录下的 events.db；EG_EVENTS_DB 指定别的（自检用假子站时要用独立的库，免得假子站把正式的事件收走） */
+  get dbPath(): string {
+    const e = process.env['EG_EVENTS_DB']
+    return e ? resolve(e) : resolve(this.cfg.dir, 'events.db')
+  }
+
+  /** 把活动告警按当前版本重发一遍（调试接口；不用重启 agent） */
+  resync(): number {
+    const n = this.store.requeueActive()
+    this.log.log(`手动重发 ${n} 条活动告警`)
+    void this.sendDue()
+    return n
+  }
+
   /** 马上对账一次（调试 / 自检） */
   reconcileNow(): Promise<void> {
     return this.serial(() => this.reconcile())
@@ -181,6 +204,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
       active: s.active,
       hook: { count: this.hookCount, lastAt: this.hookAt, ignored: this.ignoreHooks },
       reconcile: { lastAt: this.reconcileAt, lastError: this.reconcileError },
+      db: this.dbPath,
     }
     if (!this.tb.available) return { ...base, state: 'none', text: 'eg.yaml 里没有本地 TB 账号：不读本地告警' }
     if (!this.sendEnabled) return { ...base, state: 'off', text: `告警事件只记本地、不送子站（${s.active} 条活动）` }
@@ -301,13 +325,15 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     }
     try {
       let res: Response
+      const payload = JSON.stringify({ bootId: this.uplink.bootId, batchId, events: rows.map(r => JSON.parse(r.body) as EgEvent) })
       try {
         res = await fetch(this.target, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-EG-Token': stationToken(this.cfg) },
-          body: JSON.stringify({ bootId: this.uplink.bootId, batchId, events: rows.map(r => JSON.parse(r.body) as EgEvent) }),
+          body: payload,
           signal: AbortSignal.timeout(10_000),
         })
+        this.uplink.countSent(Buffer.byteLength(payload))
       } catch (e) {
         return retryAll(`连不上 ${this.cfg.conn.stationHttp}：${(e as Error).cause ? String((e as Error).cause) : (e as Error).message}`)
       }

@@ -22,6 +22,15 @@ export class AlarmsController {
     return { events: this.alarms.status(), alarms: this.alarms.recent(n) }
   }
 
+  /** 调试：把本地全部活动告警按当前版本重发一遍（不用重启 agent）。只在 EG_DEBUG=1 时开放 */
+  @Public()
+  @Post('api/_debug/events/resync')
+  @HttpCode(200)
+  resync() {
+    if (process.env['EG_DEBUG'] !== '1') throw new ForbiddenException('只在调试模式（EG_DEBUG=1）开放')
+    return { requeued: this.alarms.resync(), status: this.alarms.status() }
+  }
+
   /** 自检用：不理钩子（只靠 30 s 对账）/ 马上对账一次。只在 EG_DEBUG=1 时开放 */
   @Public()
   @Post('api/_debug/alarms')

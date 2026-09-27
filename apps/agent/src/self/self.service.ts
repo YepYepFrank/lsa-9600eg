@@ -9,7 +9,7 @@
  *   eg.clk_offset   本机时钟 − 时钟源，SNTP 每分钟测一次（local.yaml ntp.server，空 = 子站主机）
  *   eg.cpu eg.mem eg.ssd       CPU、内存、数据分区占用
  *   eg.temp         机内温度：/sys/class/thermal 与 hwmon 里最高的一个
- *   eg.up_kbps      上行网口发送速率（/proc/net/dev）
+ *   eg.up_kbps      上行网口发送速率（/proc/net/dev）；读不到网卡计数时退回上送服务实际发出的字节
  * 取不到的不发（Windows 开发机上 temp / up_kbps 没有；eg.volt、eg.ssd_health X26A 上无传感器 / 要 smartctl，G6 再看）。 */
 import { createSocket } from 'node:dgram'
 import { readdirSync, readFileSync, statfsSync } from 'node:fs'
@@ -144,11 +144,11 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
     if (this.probes.length > PROBE_WINDOW) this.probes.shift()
   }
 
+  /** 上行网口的发送速率；读不到网卡计数（非 Linux、网口找不到）时退回上送服务实际发出的字节（遥测 MQTT + 告警事件） */
   private upKbps(): number | null {
     const iface = this.cfg.local.net.uplink || defaultIface()
-    if (!iface) return null
-    const bytes = txBytes(iface)
-    if (bytes === null) return null
+    const bytes = iface ? txBytes(iface) : null
+    if (bytes === null) return this.uplink.sentKbps()
     const at = Date.now()
     const last = this.lastTx
     this.lastTx = { bytes, at }

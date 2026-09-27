@@ -64,6 +64,9 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   private downSince: number | null = Date.now()
   private lastAckAt: number | null = null
   private lastTrimAt = 0
+  /** 发给子站的字节数（遥测载荷 + 告警事件请求体），算 eg.up_kbps 的退路 */
+  private sentBytes = 0
+  private rateMark: { at: number; bytes: number } | null = null
   /** 调试：人为断开（EG_DEBUG=1，自检模拟断网） */
   forcedDown = false
 
@@ -161,6 +164,20 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
       'eg.outbox_full': full,
       'eg.lost': JSON.stringify(this.store.lost()),
     }
+  }
+
+  countSent(bytes: number): void {
+    this.sentBytes += bytes
+  }
+
+  /** 上次调用以来的平均发送速率（kbps）；上送没开返回 null */
+  sentKbps(): number | null {
+    if (!this.store && !this.sentBytes) return null
+    const now = Date.now()
+    const m = this.rateMark
+    this.rateMark = { at: now, bytes: this.sentBytes }
+    if (!m || now <= m.at) return null
+    return Math.round((((this.sentBytes - m.bytes) * 8) / (now - m.at)) * 10) / 10
   }
 
   private backfillPct(): number | null {
@@ -282,7 +299,9 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     }
     for (const [topic, g] of groups) {
       this.inflight++
-      c.publish(topic, JSON.stringify(g.payload), { qos: 1 }, err => {
+      const payload = JSON.stringify(g.payload)
+      this.sentBytes += Buffer.byteLength(payload)
+      c.publish(topic, payload, { qos: 1 }, err => {
         this.inflight = Math.max(0, this.inflight - 1)
         if (err) return // 没确认的留在 outbox，重连后再发
         this.store?.ack(g.seqs)
