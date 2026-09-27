@@ -84,8 +84,17 @@ function fromDb(r: Record<string, unknown>): EvidenceRow {
   return { ...(r as unknown as EvidenceRow), important: !!r['important'], uploadWanted: !!r['uploadWanted'] }
 }
 
+/** 索引里的时间字段（§8.7：整数毫秒）。裁片的实际起止来自回放服务 / ffprobe，会带小数（子站 bigint 入库失败过，G5 部署发现） */
+export const TIME_FIELDS = ['requestedStart', 'requestedEnd', 'actualStart', 'actualEnd', 'createdAt', 'expiresAt'] as const
+/** 时间字段一律取整（库里已有的带小数的旧记录发出前也过一遍，不迁移） */
+export function roundTimes<T extends object>(o: T): T {
+  const out = { ...o } as Record<string, unknown>
+  for (const k of TIME_FIELDS) if (typeof out[k] === 'number') out[k] = Math.round(out[k] as number)
+  return out as T
+}
+
 export function indexOf(r: EvidenceRow): Evidence {
-  return Object.fromEntries(Object.entries(r).filter(([k]) => !LOCAL_ONLY.has(k as keyof EvidenceRow))) as unknown as Evidence
+  return roundTimes(Object.fromEntries(Object.entries(r).filter(([k]) => !LOCAL_ONLY.has(k as keyof EvidenceRow))) as unknown as Evidence)
 }
 
 export class EvidenceStore {

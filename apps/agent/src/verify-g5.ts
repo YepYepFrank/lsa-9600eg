@@ -8,6 +8,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { loadConfig, stationToken } from '@lsa-eg/config'
 import { signTicket } from './auth/ticket.js'
 import { AGENT, agent, agentLogin, check, done, EMU, post, sleep, until } from './verify/lib.js'
+import { roundTimes, TIME_FIELDS } from './evidence/evidence.store.js'
 
 interface Item {
   evidenceId: string
@@ -139,6 +140,12 @@ async function main() {
   console.log('\n5. EG 自身指标')
   const eg = (await agent<{ telemetry: Record<string, { v: unknown }> }>(cfg.dir, `/api/live/${cfg.eg.name}`)).telemetry
   check('eg.evid_pending' in eg && 'eg.evid_full' in eg && 'eg.rec_ok' in eg, '报 eg.evid_pending / eg.evid_full / eg.rec_ok', `pending=${eg['eg.evid_pending']?.v} full=${eg['eg.evid_full']?.v} rec_ok=${eg['eg.rec_ok']?.v}`)
+
+  console.log('\n5b. 索引里的时间一律整数毫秒（§8.7；子站按 bigint 入库）')
+  check(Object.values(roundTimes({ actualStart: 1790527134005.925, actualEnd: 1790527224005.4, createdAt: 1 })).every(Number.isInteger), '取整：带小数的实际起止（回放服务 / ffprobe 给的）取成整数')
+  const all = (await agent<{ items: Record<string, unknown>[] }>(cfg.dir, '/api/evidence?limit=500')).items
+  const frac = all.filter(it => TIME_FIELDS.some(k => typeof it[k] === 'number' && !Number.isInteger(it[k])))
+  check(!frac.length, `本机证据索引 ${all.length} 条的时间字段都是整数`, frac.length ? `${frac.length} 条带小数（agent 还是旧版？）` : '')
 
   console.log('\n6. 送子站（等子站：/ext/eg/<柜号>/evidence 与 …/file 归后端）')
   const st = (await list()).status

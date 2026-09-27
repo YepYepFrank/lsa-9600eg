@@ -14,7 +14,7 @@ import { AuditService } from '../audit/audit.service.js'
 import { BusService } from '../bus/bus.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
 import { VideoClient } from '../video/video.controller.js'
-import { EvidenceStore, indexOf, type EvChannel, type EvidenceRow, type EvKind } from './evidence.store.js'
+import { EvidenceStore, indexOf, roundTimes, type EvChannel, type EvidenceRow, type EvKind } from './evidence.store.js'
 import { WaveBuffer } from './wave.buffer.js'
 
 export interface LockRequest {
@@ -227,7 +227,9 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
   private async produce(r: EvidenceRow): Promise<void> {
     const now = Date.now()
     const expiresAt = now + this.ev.lockedDays * DAY
-    const done = (buf: Buffer, ext: string, codec: string, actualStart: number, actualEnd: number, missingReason: string | null) => {
+    const done = (buf: Buffer, ext: string, codec: string, actualStart0: number, actualEnd0: number, missingReason: string | null) => {
+      const actualStart = Math.round(actualStart0)
+      const actualEnd = Math.round(actualEnd0)
       const file = `${r.evidenceId}.${ext}`
       writeFileSync(resolve(this.dir, file), buf)
       this.store.update(r.evidenceId, {
@@ -296,7 +298,7 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
       for (const r of rows) this.store.retryIndex(r.id, r.revision, msg, delay ?? backoff(r.tries))
     }
     try {
-      const body = JSON.stringify({ bootId: this.uplink.bootId, batchId: randomBytes(8).toString('hex'), items: rows.map(r => JSON.parse(r.body) as unknown) })
+      const body = JSON.stringify({ bootId: this.uplink.bootId, batchId: randomBytes(8).toString('hex'), items: rows.map(r => roundTimes(JSON.parse(r.body) as object)) })
       let res: Response
       try {
         res = await fetch(this.base, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-EG-Token': stationToken(this.cfg) }, body, signal: AbortSignal.timeout(10_000) })
