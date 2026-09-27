@@ -40,7 +40,7 @@ env_set() {
 # 本地 TB 的版本（compose.yaml 里 tb-node 的缺省标签）：回退不能跨它（库结构只升不降）
 tb_version() { grep -o 'tb-node:\${TB_VERSION:-[^}]*}' "$1" | head -1 | sed 's/.*:-//; s/}//'; }
 # 部署文件（升级时整个发布件覆盖过来的那些）
-DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION extensions'
+DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions'
 
 # ---------- 回退 ----------
 if [ "$MODE" = 'rollback' ]; then
@@ -95,6 +95,16 @@ for f in images-*.tar.gz; do
   gunzip -c "$f" | docker load >/dev/null
   echo "$VERSION" > ".loaded-$f"
 done
+# 镜像清单（pack:eg 写的）逐个核对：tag 在、ID 对得上
+if [ -f IMAGES.txt ]; then
+  bad=0
+  while read -r img _ id; do
+    case "$img" in ''|'#'*) continue ;; esac
+    got="$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || echo 没有)"
+    [ "$got" = "$id" ] || { echo "镜像 $img 不对：应为 $id，本机 $got" >&2; bad=1; }
+  done < IMAGES.txt
+  [ "$bad" = 0 ] || exit 1
+fi
 
 # ---------- 4. .env（本地库口令等，只生成一次） ----------
 if [ ! -f .env ]; then

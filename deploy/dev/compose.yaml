@@ -94,7 +94,7 @@ services:
     networks: [eg]
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:${MOSQUITTO_VERSION:-2.1.2}
     container_name: lsa-eg-mosquitto
     restart: unless-stopped
     volumes:
@@ -106,7 +106,7 @@ services:
     networks: [eg]
 
   tb-gateway:
-    image: thingsboard/tb-gateway:${TB_GATEWAY_VERSION:-latest}
+    image: thingsboard/tb-gateway:${TB_GATEWAY_VERSION:-3.8.5}
     container_name: lsa-eg-gateway
     restart: unless-stopped
     depends_on: [mosquitto, eg-tb]

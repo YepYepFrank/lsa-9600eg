@@ -91,7 +91,26 @@ if (IMAGES) {
   console.log('\n4. 镜像（amd64）')
   const appImg = `lsa-eg-app:${VERSION}`
   run('docker', ['build', '--platform', 'linux/amd64', '-t', appImg, STAGE])
-  for (const img of THIRD) run('docker', ['pull', '-q', '--platform', 'linux/amd64', img])
+  // 本机已有就不拉（与开发编排用的是同一份；拉不下来时也能出包），没有才拉
+  const has = img => {
+    try {
+      return out('docker', ['image', 'inspect', '-f', '{{.Architecture}}', img]) === 'amd64'
+    } catch {
+      return false
+    }
+  }
+  for (const img of THIRD) if (!has(img)) run('docker', ['pull', '-q', '--platform', 'linux/amd64', img])
+  // 镜像清单：确切的 tag、仓库 digest、镜像 ID（install.sh 导入后逐个核对 ID）；不用 latest
+  const lines = [appImg, ...THIRD].map(img => {
+    if (/:latest$/.test(img)) throw new Error(`发布件不用 latest：${img}`)
+    const id = out('docker', ['image', 'inspect', '-f', '{{.Id}}', img])
+    const repo = img.slice(0, img.lastIndexOf(':'))
+    const digests = JSON.parse(out('docker', ['image', 'inspect', '-f', '{{json .RepoDigests}}', img])) ?? []
+    const digest = (digests.find(d => d.startsWith(repo + '@')) ?? '-').split('@').pop()
+    return `${img} ${digest} ${id}`
+  })
+  writeFileSync(resolve(DIST, 'IMAGES.txt'), '# 镜像 tag、仓库 digest（本地构建的为 -）、镜像 ID —— install.sh 导入后按 ID 核对\n' + lines.join('\n') + '\n')
+  console.log(lines.map(l => '  ' + l).join('\n'))
   const tar = resolve(DIST, 'images-amd64.tar')
   run('docker', ['save', '-o', tar, appImg, ...THIRD])
   run('gzip', ['-1', '-f', tar])
