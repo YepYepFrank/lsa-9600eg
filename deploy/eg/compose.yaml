@@ -9,7 +9,7 @@
 # 链路：同事的采集程序（本机）─► mosquitto（127.0.0.1:1884）─► gateway ─► tb（EG 本地 TB：存数、本地 7 类告警）
 #       agent（宿主机网络）也连 mosquitto：派生量、质量码、上送子站（mqtts 8883）、告警事件与配置回执（https 443）、本地管理页（80）
 #       摄像机（LAN1）─► mediamtx（宿主机网络，RTSP 8554 给子站拉，子码流常录）；video（eg-video）生成 mediamtx 配置、测温、抓帧；视频不经 TB
-# 内存上限合计约 2.9 GB（X26A 按 4 GB 核算，开发计划 §1）；日志 json-file 10 MB × 3 轮转。
+# 内存上限合计约 3.0 GB（X26A 按 4 GB 核算，开发计划 §1）；日志 json-file 10 MB × 3 轮转。
 # 服务名 mosquitto / tb 与 local.yaml 的缺省地址一致（IoT Gateway 在容器网络里按服务名连），容器名与 local.yaml 的 docker.containers 一致。
 name: lsa-eg
 
@@ -168,8 +168,8 @@ services:
       EG_CONFIG_DIR: /config
     volumes:
       - ./config:/config
-    # 含抓帧时起的 ffmpeg
-    mem_limit: 256m
+    # 含抓帧时起的 ffmpeg（虚拟样机实测常驻约 205 MiB，256m 太紧）
+    mem_limit: 384m
     logging: *log
 
   # EG 本机 mediamtx：宿主机网络（LAN1 连摄像机、LAN2 给子站拉 RTSP 8554）；API 9997 与回放 9996 只听本机。
