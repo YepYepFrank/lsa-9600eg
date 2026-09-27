@@ -55,6 +55,18 @@
    - 用正规 CA 签的证书就不用 `sp-ca.pem`（没有这个文件时 agent 启动会打一行「忽略额外证书」的提示，无害）。
 3. 子站 TLS 的配置细节见后端库 `docs/子站部署手册.md`。
 
+## 3b. 一键安装文件（整个系统一个文件）
+
+`pnpm bundle -- --sp <子站离线包目录>`（子站离线包由后端库 `scripts/pack-offline.sh --web <前端 dist>` 打；EG 发布件不给就现打）出 `dist/bundle/LSA-9600SP-<版本>-offline.run`：自解压 bash + tar，约 3.7 GB，子站主机与各柜 EG 都用它，装时选角色。负载打包前后各扫一遍，不带任何密钥 / 凭据；`SHA256SUMS` 覆盖每个文件，装前自动校验。
+
+```bash
+sudo bash LSA-9600SP-<版本>-offline.run --role sp [--ip <站内 IP>]     # 子站：随机口令写 /opt/lsa9600sp/初始账号口令.txt
+sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口>  # EG 第一轮（= 下面 §4 的 install.sh）
+sudo bash LSA-9600SP-<版本>-offline.run --role eg --eg-config <目录>   # 子站 provision:eg + pack-eg.sh 之后，带 eg.yaml、sp-ca.pem 起全部
+```
+
+不带 `--role` 就交互选；`--extract <目录>` 只解包。重跑更新的安装文件即升级（子站保留 `docker/.env`，EG 保留 `config/`、`.env`）。以下 §4 是 EG 这一段拆开的步骤。
+
 ## 4. 安装
 
 发布件在开发机上生成：`pnpm pack:eg -- --images --debs`，得到 `dist/eg-<版本>/`（compose、安装脚本、磁盘检查、Mosquitto 配置、自定义连接器、`images-amd64.tar.gz`、`debs/`）。所有 EG 通用，不含任何凭据。
