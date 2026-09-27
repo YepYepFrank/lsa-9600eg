@@ -125,7 +125,7 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 到子站 Edge 同步口的 TCP 建连时延（ms），连不上为 null */
+  /** 到子站上送口（station.mqtt，现场 8883）的 TCP 建连时延（ms），连不上为 null */
   private async probe(): Promise<void> {
     const t0 = performance.now()
     const r = await new Promise<number | null>(res => {

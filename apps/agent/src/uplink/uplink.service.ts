@@ -1,6 +1,6 @@
 /* 上送子站（I2，后端库 docs/EG独立TB调整方案.md §2.1、§2.2、§8.1）。
  *
- * EG 跑独立 TB 以后，数据不再由 TB Edge 同步上去，由 eg-agent 自己送：
+ * EG 跑独立 TB，数据由 eg-agent 自己送到子站：
  *   总线上的每条遥测 / 属性（传感器的、agent 算的、EG 自身指标）─► outbox（SQLite）─► 子站 TB 网关接口（MQTT QoS1）
  *   PUBACK 后才从 outbox 删 —— 至少一次；子站 TB 按 设备 + key + 源时间戳 覆盖写，重发无害。
  * 优先级：连上以后新进来的（实时）先发；连上那一刻 outbox 里已有的（补传）按源时间从旧到新、按 backfillRate 限速地发。

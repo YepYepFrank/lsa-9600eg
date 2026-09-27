@@ -2,15 +2,15 @@
  *
  *   本机总线 lsa/<设备名>/telemetry  {"ts":毫秒,"values":{...}}  或其数组
  *   本机总线 lsa/<设备名>/attributes {...}
- *     ──► IoT Gateway 的 MQTT 连接器（内置 JSON 转换器，"*" 原样转发）──► EG 本地 TB（用 eg.token；I 阶段起是独立 TB CE，E 阶段是 TB Edge）
+ *     ──► IoT Gateway 的 MQTT 连接器（内置 JSON 转换器，"*" 原样转发）──► EG 本地 TB（独立 TB CE，用 eg.token）
  *
  * 用 "*" 而不是逐个 key 映射：key 名本身就是接入规范 §6 的名字，网关不做换算；
  * 载荷是 {ts, values} 时 IoT Gateway 保留设备侧时间戳（3.8.5 的 TelemetryEntry，实测源码）。
  * 规范里的 key 带点（ir.t_max），逐个映射时 ${ir.t_max} 会被当成嵌套路径，"*" 也绕开了这个问题。
  *
  * 主题按设备清单逐台订阅，不用 lsa/+/…：
- *   - 清单外的名字（同事发错）不会在 Edge 上建出野设备；
- *   - EG 自己（lsa/EG-<柜号>/…）不能走这个连接器 —— 设备名与网关同名时 Edge 会断开网关会话（G0 实测），
+ *   - 清单外的名字（同事发错）不会在本地 TB 上建出野设备；
+ *   - EG 自己（lsa/EG-<柜号>/…）不能走这个连接器 —— 设备名与网关同名时平台会断开网关会话（G0 实测，当时本地是 TB Edge），
  *     交给自定义连接器 LsaSelfConnector 经网关自己的会话发（deploy/tb-gateway/extensions/lsa）。
  *
  * 配置由 agent 按 eg.yaml / local.yaml 生成，IoT Gateway 的远程配置关掉（配置只有一个来源）。 */
@@ -62,7 +62,7 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
       reportStrategy: { type: 'ON_RECEIVED' },
       checkingDeviceActivity: { checkDeviceInactivity: false, inactivityTimeoutSeconds: 300, inactivityCheckPeriodSeconds: 10 },
     },
-    // 本地 TB 就在本机，断的只会是它重启那一会儿（实测 Edge 重启 43 s 无断档）；内存队列够用，不落盘（EG 的 SSD 省着用）
+    // 本地 TB 就在本机，断的只会是它重启那一会儿（I2 实测重启本地 TB 无断档）；内存队列够用，不落盘（EG 的 SSD 省着用）
     storage: { type: 'memory', read_records_count: 100, max_records_count: 100000 },
     grpc: { enabled: false },
     connectors: [

@@ -199,7 +199,7 @@ async function main() {
     const after = docker('inspect', '-f', '{{.State.StartedAt}}', 'lsa-eg-gateway').trim()
     check(rs.status === 200 && before !== after, '经 API 重启了 IoT Gateway 容器')
 
-    // 断上行时本地排队涨落：E 阶段读 TB Edge 的队列，I 阶段改为 eg-agent 的 outbox，在 i2:verify 里测
+    // 断上行时本地排队涨落：eg-agent 的 outbox，在 i2:verify 里测
   }
 
   console.log('\n10. 审计')

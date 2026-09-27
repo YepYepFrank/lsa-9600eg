@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # EG 安装 / 升级（在 EG 上、部署目录里跑，可反复跑）。步骤说明见 docs/EG部署手册.md。
 #
-#   sudo ./install.sh              装 / 升级：导入镜像、起本地 TB；config/eg.yaml 齐了就起全部
-#   sudo ./install.sh --status     只看状态
+#   sudo bash install.sh           装 / 升级：导入镜像、起本地 TB；config/eg.yaml 齐了就起全部
+#   sudo bash install.sh --status  只看状态
 #
 # 分两轮是因为本地 TB 的设备、告警规则由子站跑 provision:eg 建（经 SSH 隧道连这台 EG 的 127.0.0.1:18080），
 # 它同时把本地 TB 账号写进 eg.yaml —— 所以：第一轮起本地 TB → 子站 provision:eg → 拷回 eg.yaml → 第二轮起全部。
@@ -56,8 +56,8 @@ if [ ! -f config/eg.yaml ] || ! grep -q '^tb:' config/eg.yaml; then
 本地 TB 已起。下一步（手册 §4）：
   1. 在子站主机上开 SSH 隧道到这台 EG：ssh -N -L 18080:127.0.0.1:18080 <账号>@<这台 EG 的 LAN2 地址>
   2. 在子站后端库跑：pnpm provision:eg -- --cabinet <柜号> --url http://127.0.0.1:18080 --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
-  3. 把子站 tb/provision/out/eg/<柜号>/eg.yaml 拷到这里的 config/eg.yaml（子站用自签证书时连同 sp-ca.pem 拷到 config/）
-  4. 再跑一次 ./install.sh
+  3. 在子站后端库出这台的配置包：scripts/pack-eg.sh --sp <子站地址> --only <柜号>，把 dist/eg/<柜号>/ 里的 eg.yaml 与 sp-ca.pem 拷到这里的 config/
+  4. 再跑一次 sudo bash install.sh
 EOF
   exit 0
 fi

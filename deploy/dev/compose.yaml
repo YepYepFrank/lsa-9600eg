@@ -25,7 +25,7 @@ x-tb-env: &tb-env
   # EG 本地只留 7 天（≥ 2 年由子站保存）
   SQL_TTL_TS_ENABLED: 'true'
   SQL_TTL_TS_TS_KEY_VALUE_TTL: ${EG_TS_TTL_S:-604800}
-  # E 阶段给 TB Edge 调出来的瘦身参数（Edge 实测约 730 MB）；TB CE 单体比 Edge 多几个模块，I1 实测后再定
+  # 瘦身参数：I1 实测空载 688 MB、带一面柜数据 846–904 MB（评审记录 I1-1）
   JAVA_OPTS: ${EG_TB_JAVA_OPTS:--Xms192m -Xmx384m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=96m -Xss512k -XX:MaxDirectMemorySize=64m -XX:TieredStopAtLevel=1}
   TZ: Asia/Shanghai
 

@@ -1,9 +1,9 @@
 # LSA 自定义连接器：把 EG 自身的数据（本机总线 lsa/EG-<柜号>/telemetry | attributes）经 IoT Gateway **自己的会话**
 # 发到 v1/devices/me/telemetry | attributes。
 #
-# 为什么要它（G0 实测，TB Edge 4.2.2.4 + IoT Gateway 3.8.5）：
+# 为什么要它（G0 实测，当时 EG 本地是 TB Edge 4.2.2.4；换独立 TB CE 后照旧用 —— TB 一台设备只留一个会话，两条都一样）：
 #   1. 内置 MQTT 连接器把 EG-<柜号> 当子设备发（v1/gateway/telemetry），设备名与网关自己相同，
-#      Edge 立刻以「Normal disconnection」断开网关会话，5 s 后重连 —— 每发一次断一次；
+#      平台立刻以「Normal disconnection」断开网关会话，5 s 后重连 —— 每发一次断一次；
 #   2. 另开一条 MQTT 连接用 EG 的令牌直发 v1/devices/me/telemetry，两条会话互相挤掉（TB 一台设备只留一个会话）。
 # 所以 EG 自身指标（eg.*，eg-agent 发）与 EG 级信号（sw.cb、eg.power，同事发）只能走网关自己的会话。
 #

@@ -1,7 +1,8 @@
 # LSA-9600EG 部署手册
 
 > 适用：I 阶段起（EG 跑独立 ThingsBoard CE，后端库 `docs/EG独立TB调整方案.md`）。子站侧的安装见后端库 `docs/子站部署手册.md`。
-> 状态（2026-09-27）：发布件、编排、安装脚本已写，**镜像与整套安装尚未在 Linux 实机 / 虚拟样机上跑过**（G6 的 Ubuntu 虚拟样机验收时补），本手册随之修订。
+> 状态（2026-09-27）：发布件、编排、安装脚本已写；agent 镜像已构建并在隔离容器里冒烟通过（评审记录 I5）。**整套安装尚未在 Linux 实机 / 虚拟样机上跑过**（G6 的 Ubuntu 虚拟样机验收时补），本手册随之修订。
+> 两样东西配套装：**本库的通用发布件**（`pnpm pack:eg`，各台一样、不含凭据）+ **子站出的每台配置包**（后端库 `scripts/pack-eg.sh`：这台的 `eg.yaml` 与站内 CA 证书 `sp-ca.pem`）。
 
 ## 1. 组成与端口
 
@@ -42,12 +43,12 @@ G4 起另有 `lsa-eg-mediamtx`（视频按需拉），到时补进本表。
 
 ## 3. 子站侧要先准备的
 
-1. **子站生成这台 EG 的 `eg.yaml`**（后端库 provision / `pnpm eg:config`；子站上 `EG-<柜号>` 网关设备与令牌已建）。现场取值见 §5。
-2. **TLS**：子站对 EG 开 MQTT 8883（TB 的 MQTT over TLS）与 HTTPS 443（Nginx）。站内一般用自签证书：
-   - 证书的 SAN 要含 **EG 用来连子站的那个地址**（通常是子站 LAN 的 IP，写 `IP:192.168.1.10` 这种），否则 EG 校验主机名失败；
-   - 把签发它的 CA 证书（自签时就是证书本身）存成 **`sp-ca.pem`**，随 `eg.yaml` 一起拷到 EG 的 `config/`。agent 容器用 `NODE_EXTRA_CA_CERTS=/config/sp-ca.pem` 信任它，上送（mqtts）与事件（https）都生效。
+1. 子站跑过 `provision`：子站上有 `EG-<柜号>` 网关设备与令牌，`tb/provision/out/eg/<柜号>/eg.yaml` 已生成。
+2. **TLS**：子站对 EG 开 MQTT 8883（TB 的 MQTT over TLS）与 HTTPS 443（Nginx），证书由后端库 `scripts/gen-certs.sh --san <EG 连子站用的地址>` 签：
+   - 证书的 SAN 要含 **EG 用来连子站的那个地址**（通常是子站 LAN 的 IP），否则 EG 报 `Hostname/IP does not match`；
+   - 站内 CA 证书 `sp-ca.pem` 随 `eg.yaml` 一起拷到 EG 的 `config/`。agent 容器用 `NODE_EXTRA_CA_CERTS=/config/sp-ca.pem` 信任它，上送（mqtts）与事件（https）都生效；
    - 用正规 CA 签的证书就不用 `sp-ca.pem`（没有这个文件时 agent 启动会打一行「忽略额外证书」的提示，无害）。
-3. 子站的 TLS 配置本身（TB 的 `MQTT_SSL_ENABLED` 等、Nginx 443）由后端库 I5 做，见子站部署手册。
+3. 子站 TLS 的配置细节见后端库 `docs/子站部署手册.md`。
 
 ## 4. 安装
 
@@ -68,7 +69,15 @@ ssh -N -L 18080:127.0.0.1:18080 <账号>@<EG 的 LAN2 地址> &
 pnpm provision:eg -- --cabinet <柜号> --url http://127.0.0.1:18080 --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
 ```
 
-把子站的 `tb/provision/out/eg/<柜号>/eg.yaml`（和 `sp-ca.pem`）拷到 EG 的 `/opt/lsa-eg/config/`，然后：
+provision:eg 同时把本地 TB 系统管理员的出厂口令改掉（新口令只留在子站 `tb/provision/out/eg/<柜号>/tb-sysadmin.json`）。然后出这台的配置包并拷到 EG：
+
+```bash
+# 子站后端库：dist/eg/<柜号>/ 下出 eg.yaml（station 改成 mqtts://<子站>:8883、https://<子站>）与 sp-ca.pem
+scripts/pack-eg.sh --sp <子站地址> --only <柜号>
+scp dist/eg/<柜号>/eg.yaml dist/eg/<柜号>/sp-ca.pem <账号>@<EG 的 LAN2 地址>:/opt/lsa-eg/config/
+```
+
+然后在 EG 上：
 
 ```bash
 sudo bash install.sh        # 第二轮：生成 IoT Gateway 配置、起全部
@@ -83,8 +92,8 @@ sudo bash install.sh        # 第二轮：生成 IoT Gateway 配置、起全部
 
 | 字段 | 开发环境 | 现场 | 说明 |
 |---|---|---|---|
-| `station.mqtt` | `mqtt://127.0.0.1:1883` | **`mqtts://<子站 LAN IP>:8883`** | 遥测上送（§8.1）。主机名要与子站证书的 SAN 一致 |
-| `station.http` | `http://127.0.0.1:3001` | **`https://<子站 LAN IP>`** | 扩展服务基址：事件 POST `<http>/ext/eg/<柜号>/events`（经子站 Nginx 443）。不写时缺省 `http://<sp.host>` |
+| `station.mqtt` | `mqtt://127.0.0.1:1883` | **`mqtts://<子站 LAN IP>:8883`**（`pack-eg.sh --sp` 写入） | 遥测上送（§8.1）。主机名要与子站证书的 SAN 一致 |
+| `station.http` | `http://127.0.0.1:3001` | **`https://<子站 LAN IP>`**（同上） | 扩展服务基址：事件 POST `<http>/ext/eg/<柜号>/events`（经子站 Nginx 443）。不写时缺省 `http://<sp.host>` |
 | `station.token` | 子站 `EG-<柜号>` 网关设备的令牌 | 同左 | 上送用户名、事件 `X-EG-Token`、验子站票据（单点登录、配置下发）都用它 |
 | `sp.host` | `localhost` | 子站 LAN IP | 没配 `station.mqtt` 时的探测目标；对时服务器缺省也用它 |
 | `eg.token` | 同 `station.token` | 同左 | IoT Gateway 连本地 TB 用；provision:eg 把本地 `EG-<柜号>` 的令牌设成同一个 |
@@ -115,6 +124,6 @@ sudo bash install.sh        # 第二轮：生成 IoT Gateway 配置、起全部
 |---|---|---|
 | I5-1 | 本地 TB 的实体由子站经 SSH 隧道跑 provision:eg 建 —— 现场要给子站开 EG 的 SSH | 按此；以后可改为 agent 按 eg.yaml 自建（I4 已有生成告警规则的代码） |
 | I5-2 | agent 用宿主机网络听 0.0.0.0:80，LAN1（摄像机网）也能访问管理页 | 靠防火墙挡；G6 加 `local.yaml http.bind` 只听 LAN2 地址 |
-| I5-3 | 本地 TB 的系统管理员沿用出厂口令（只绑 127.0.0.1） | provision:eg 建完租户后应改掉（后端库） |
+| I5-3 | ~~本地 TB 的系统管理员沿用出厂口令~~ | 已解决：provision:eg 建完租户后改掉（后端 01a28c5） |
 | I5-4 | 本机总线不鉴权（只绑 127.0.0.1 与容器网络） | 按此 |
 | I5-5 | 镜像与整套安装未在 Linux 上跑过 | G6 虚拟样机验收 |

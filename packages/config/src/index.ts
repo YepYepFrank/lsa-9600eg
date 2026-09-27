@@ -4,10 +4,10 @@
  *               子站 `pnpm eg:config` 生成，EG 上只读（改要回子站改 tb/model.yaml 再生成）。
  *   local.yaml  EG 本地：本机总线与本地 TB 的地址、摄像机地址与账号、管理页端口。本地管理页可改。
  *
- * I 阶段（后端库 docs/EG独立TB调整方案.md）：EG 跑独立 TB CE，不再是 TB Edge。
+ * EG 本地跑独立 TB CE（后端库 docs/EG独立TB调整方案.md）：
  *   eg.yaml 的 station 段多了子站 MQTT 地址与令牌（上送用，§8.1）、tb 段是本地 TB 的租户账号（provision:eg 建的，agent 读本地告警、写设备配置用）；
  *   eg.token 是本地 TB 上 EG 网关设备的令牌（IoT Gateway 连本地 TB 用）。
- *   local.yaml 的 mqtt.edge / docker.containers.edge 改名 tb，旧名照读。
+ *   local.yaml 的本地 TB 项叫 mqtt.tb / tb.http / docker.containers.tb（legacy() 照读更早的写法）。
  *
  * 目录由 EG_CONFIG_DIR 指定；开发时默认仓库下的 run/（不进仓库）。 */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -164,7 +164,7 @@ export function deviceOfTopic(topic: string): { device: string; kind: 'telemetry
   return m ? { device: m[1]!, kind: m[2] as 'telemetry' | 'attributes' } : null
 }
 
-/** E 阶段的 local.yaml（TB Edge）：mqtt.edge → mqtt.tb，docker.containers.edge → tb，edgeDb 不再用 */
+/** 更早的 local.yaml 写法：mqtt.edge → mqtt.tb，docker.containers.edge → tb，edgeDb 丢掉（开发机上的旧文件；G6 部署包之后可删） */
 function legacy(raw: unknown): unknown {
   if (!isObj(raw)) return raw
   const r = structuredClone(raw) as Record<string, any>
@@ -178,7 +178,7 @@ function legacy(raw: unknown): unknown {
 }
 
 /** 验子站签的票据、上送鉴权用的令牌：子站上 EG 网关设备的令牌（eg.yaml station.token）；
- *  E 阶段的 eg.yaml 没有这一项，那时本地与子站是同一个令牌（Edge 同步下来的），用 eg.token */
+ *  没有时退回 eg.token（本地 TB 上 EG 设备的令牌；provision:eg 把两者设成同一个） */
 export function stationToken(cfg: Pick<EgFile, 'station' | 'eg'>): string {
   return cfg.station.token || cfg.eg.token
 }

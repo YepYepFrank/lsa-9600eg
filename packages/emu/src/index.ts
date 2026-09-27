@@ -35,6 +35,8 @@ function cabinetOf(cfg: EgConfig): CabinetSpec {
   const sub = (d: EgConfig['devices'][number]): SubDeviceSpec => ({ name: d.name, kind: d.kind, profile: '', label: d.label, attrs: d.attrs })
   return {
     ...cfg.cabinet,
+    // 后端 I5 起 CabinetSpec 必带 egMode，EG 一律独立 TB
+    egMode: 'standalone',
     assetType: '',
     samProfile: '',
     eg: { name: cfg.eg.name, kind: 'eg', profile: '', label: cfg.eg.name, attrs: cfg.eg.attrs },
