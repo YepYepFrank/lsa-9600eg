@@ -20,6 +20,8 @@ const PROBE_MS = 60_000
 const MEASURE_MS = 2_000
 const STREAMS_MS = 10 * 60_000
 const ALARM_REPEAT_MS = 60_000
+/** 区域配置属性没变也隔这么久重报一次（总线另一端重启了的 agent、本地页要看得到） */
+const REGIONS_REPEAT_MS = 10 * 60_000
 export const SELF_SRC = 'eg-video'
 
 export interface RegionMeta {
@@ -49,6 +51,7 @@ export class VideoService {
   private regions: RegionMeta[] = []
   private regionsVer = ''
   private publishedVer = ''
+  private publishedAt = 0
   private alarm: { state: string; sentAt: number } | null = null
   private bus: MqttClient | null = null
   private timers: NodeJS.Timeout[] = []
@@ -163,10 +166,11 @@ export class VideoService {
     this.regions = this.numbered(m).map(({ id, def }) => ({ id, name: def.name, label: labels[id]?.label ?? `测温区 ${id}`, type: def.type, coords: def.coords, frame: m.frame }))
     this.regionsVer = createHash('sha1').update(JSON.stringify(this.regions)).digest('hex').slice(0, 8)
     const cam = this.camera
-    if (cam && this.bus?.connected && this.regionsVer !== this.publishedVer) {
+    if (cam && this.bus?.connected && (this.regionsVer !== this.publishedVer || Date.now() - this.publishedAt > REGIONS_REPEAT_MS)) {
       this.bus.publish(BUS_TOPIC.attributes(cam), JSON.stringify({ 'ir.regions': this.regions, 'ir.regionsVer': this.regionsVer }), { qos: 1, properties: { userProperties: { src: SELF_SRC } } })
       if (this.publishedVer) this.log.log(`区域配置变了（${this.regions.length} 个，版本 ${this.regionsVer}）`)
       this.publishedVer = this.regionsVer
+      this.publishedAt = Date.now()
     }
   }
 

@@ -34,6 +34,9 @@ async function main() {
   const firstSam = cfg.devices.find(d => d.kind === 'sam')!.name
   const vs = () => agent<VideoStatus>(cfg.dir, '/api/video/status')
   const live = (dev: string) => agent<Live>(cfg.dir, `/api/live/${dev}`)
+  // 两级的即时状态直接问各自的 mediamtx API（eg-video 状态里的每 60 s 才刷新一次）
+  const egPaths = async () =>
+    ((await (await fetch(`${cfg.conn.mtxApi}/v3/paths/list`)).json()) as { items: { name: string; ready: boolean }[] }).items
   const camPaths = async () =>
     ((await (await fetch(`${CAM_API}/v3/paths/list`)).json()) as { items: { name: string; ready: boolean }[] }).items
 
@@ -60,13 +63,16 @@ async function main() {
   check(!!cam1, `${camDev} 的 cam.online = 4（本机总线）`)
 
   console.log('\n3. 按需拉：没人看不拉，看完 20 s 内断到摄像机')
-  const idle = (await vs()).channels.every(c => !c.mtx?.ready) && (await camPaths()).every(p => !p.ready)
-  check(idle, '没人看时 EG 与摄像机两级都不拉流')
+  // 测试源对 DESCRIBE 也要先出画面才答得上（真摄像机不会），上一节的探测会让它亮 10 s：等它歇下来再看
+  const idle = await until(async () => ((await egPaths()).every(p => !p.ready) && (await camPaths()).every(p => !p.ready) ? true : null), 30_000, 1000)
+  check(!!idle, '没人看时 EG 与摄像机两级都不拉流')
   const t0 = Date.now()
   const ff = spawn(process.env['FFMPEG'] || 'ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rtsp_transport', 'tcp', '-i', `rtsp://127.0.0.1:${s0.mediamtx.rtspPort}/${code}`, '-t', '6', '-f', 'null', '-'])
-  const up = await until(async () => ((await vs()).channels.find(c => c.path === code)?.mtx?.ready && (await camPaths()).find(p => p.name === 'visible')?.ready ? true : null), 15_000, 500)
+  const ffDone = new Promise<number | null>(r => ff.on('close', code => r(code)))
+  const up = await until(async () => ((await egPaths()).find(p => p.name === code)?.ready && (await camPaths()).find(p => p.name === 'visible')?.ready ? true : null), 15_000, 500)
   check(!!up, '有人拉 <柜号> 时两级都拉起来', up ? `${((Date.now() - t0) / 1000).toFixed(1)} s` : '15 s 内没拉起')
-  await new Promise(r => ff.on('close', r))
+  const ffCode = await ffDone
+  check(ffCode === 0, '经 EG mediamtx 拉到 6 s 画面（ffmpeg 正常结束）', `退出码 ${ffCode}`)
   const tEnd = Date.now()
   const down = await until(async () => (!(await camPaths()).find(p => p.name === 'visible')?.ready ? true : null), 35_000, 1000)
   check(!!down, '看完后摄像机侧断开（约定 ≤ 20 s）', down ? `${((Date.now() - tEnd) / 1000).toFixed(0)} s` : '35 s 内没断')
@@ -88,8 +94,12 @@ async function main() {
     const miss = keys.filter(k => !(k in cam.telemetry))
     check(!miss.length, '全画面与 R1–R3 的 max / min / 坐标都有', miss.join(' '))
     check(!Object.keys(cam.telemetry).some(k => /avg|center/.test(k)), '不报 avg / center')
-    const regions = cam.attributes['ir.regions'] as { id: string; label: string; frame: { w: number } }[] | undefined
-    check(Array.isArray(regions) && regions.length === 3 && regions[0]!.frame.w > 0 && !!cam.attributes['ir.regionsVer'], '区域配置作属性 ir.regions / ir.regionsVer', regions?.map(r => `${r.id}:${r.label}`).join(' '))
+    // 区域配置看本地 TB 的客户端属性（agent 重启后内存里的属性要等 eg-video 下次重报）
+    const tbA = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()
+    const rv = await tbA.attr(camDev, 'CLIENT_SCOPE', 'ir.regions')
+    const regions = (typeof rv === 'string' ? JSON.parse(rv) : rv) as { id: string; label: string; frame: { w: number } }[] | undefined
+    const ver = await tbA.attr(camDev, 'CLIENT_SCOPE', 'ir.regionsVer')
+    check(Array.isArray(regions) && regions.length === 3 && regions[0]!.frame.w > 0 && !!ver, '区域配置作属性 ir.regions / ir.regionsVer（本地 TB）', regions?.map(r => `${r.id}:${r.label}`).join(' '))
     // 温升 = max − env.t
     const sam = await live(firstSam)
     const env1 = sam.telemetry['env.t']
