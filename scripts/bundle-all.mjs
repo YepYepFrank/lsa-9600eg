@@ -202,6 +202,8 @@ if (!scan(listed, 'tar 清单')) {
   rmSync(join(OUT, `${RUN}.sha256`), { force: true })
   process.exit(1)
 }
+// 重打到同一目录时先删旧的（Windows 上直接覆盖会 unlink 失败）
+rmSync(join(OUT, `${NAME}-安装说明.txt`), { force: true })
 cpSync(join(B, '安装说明.txt'), join(OUT, `${NAME}-安装说明.txt`))
 const size = statSync(join(OUT, RUN)).size
 console.log(`\n完成：${join(OUT, RUN)}（${(size / 1024 ** 3).toFixed(2)} GB）`)
