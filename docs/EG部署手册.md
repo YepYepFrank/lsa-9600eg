@@ -137,6 +137,7 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 ## 6. 升级与回滚
 
 - **升级**：新发布件直接解压覆盖到 `/opt/lsa-eg`（`config/`、`recordings/`、`.env` 不在发布件里、不会被覆盖），`sudo bash install.sh`。install.sh 把上一次装好的部署文件（`.installed/`）挪成 `.previous/`、`.env` 的 `EG_APP_IMAGE` 改成新版本；更早的 `lsa-eg-app` 镜像清掉，只留现在的与可回退的。
+  **一定要在 `/opt/lsa-eg` 里跑**：在解压出来的别的目录直接跑会生成另一份 `.env`（新的本地库口令），把正在跑的本地库 / TB 按新口令重建、TB 连不上库反复重启（0.9.1 现场流程验收踩到）。install.sh 发现本机已装在别处会拒绝并给出正确命令（确实要另装加 `--force`）。
 - **回滚**：`sudo bash install.sh --rollback` —— 部署文件换回 `.previous/`、镜像改回旧版本、`docker compose up -d`；再跑一次 `--rollback` 又回到新版。本地 TB 版本（`compose.yaml` 里 tb-node 的标签）变过的不许回退（库结构只升不降）。
 - `sudo bash install.sh --status`：容器状态、已装版本、可回退到哪个版本。
 - 升级期间 agent 停几秒：同事的数据由 Mosquitto 持久会话排着，上送 outbox 在磁盘上，都不丢（I2 实测重启无断档）。

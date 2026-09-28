@@ -7,6 +7,7 @@
 #
 # --lan1：摄像机网口名（如 enp2s0）。管理页对从它进来的请求一律 403（I5-2），记在 .env 里，以后不用再给。
 #   网口必须存在；本机只有一个对外网口时拒绝（那样唯一的网口也会被挡住，管理页谁都打不开），确实要这样加 --force。
+# 升级在原安装目录（/opt/lsa-eg）里跑：在别的目录跑、而本机已装在别处时拒绝（会生成另一份 .env 把本地库按新口令重建），--force 才另装。
 # --sp-key <子站公钥文件或公钥串>：给子站 provision-eg.sh 用的隧道账号 lsa-sp 授权（可反复给、不重复加）。
 #   lsa-sp 没有口令、没有 shell，authorized_keys 带 restrict,port-forwarding,permitopen="127.0.0.1:18080"：
 #   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完可以 userdel lsa-sp。
@@ -124,6 +125,17 @@ if [ -f IMAGES.txt ]; then
 fi
 
 # ---------- 4. .env（本地库口令等，只生成一次） ----------
+# 这台已经装在别的目录时拒绝：compose 项目名固定 lsa-eg、数据卷跟着项目名，在另一个目录跑会生成另一份 .env（新的本地库口令），
+# 把正在跑的本地库 / TB 按新口令重建 → TB 连不上库反复重启（现场流程验收踩到）。升级要把新发布件拷进原目录再跑。
+if [ ! -f .env ] && [ "$FORCE" != 1 ]; then
+  old="$(docker inspect lsa-eg-postgres --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' 2>/dev/null || true)"
+  [ -z "$old" ] && [ -f /opt/lsa-eg/.env ] && old=/opt/lsa-eg
+  if [ -n "$old" ] && [ "$(readlink -f "$old")" != "$(pwd -P)" ]; then
+    echo "这台 EG 已经装在 $old（本地库口令在那里的 .env），不要在 $(pwd -P) 另装。" >&2
+    echo "升级：sudo cp -a $(pwd -P)/. $old/ && sudo bash $old/install.sh，或用一键安装文件 --role eg。确实要另装加 --force" >&2
+    exit 1
+  fi
+fi
 if [ ! -f .env ]; then
   pg="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   cat > .env <<EOF
