@@ -9,6 +9,7 @@
  * 子站主题（§8.1）：子设备 v1/gateway/telemetry | attributes，EG 自身 v1/devices/me/telemetry | attributes；一次发布 ≤ 500 个样本且 ≤ 48 KB（chunk.ts）。
  * 上报给子站的上送状态（随 EG 自身指标每 5 s）：eg.buf_depth、eg.oldest_unsent、eg.backfill_pct、eg.uplink、eg.outbox_full、eg.lost。 */
 import { randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
@@ -54,6 +55,19 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   private timers: NodeJS.Timeout[] = []
   /** 本次启动的标识（§2.2；遥测靠 ts 幂等用不到，事件 I3 用） */
   readonly bootId = randomBytes(6).toString('hex')
+  /** 主机这次开机的 id（§8.1 hostBootId；容器里读的是宿主机内核的，开发机 Windows 上读不到为 null） */
+  readonly hostBootId: string | null = (() => {
+    try {
+      return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null
+    } catch {
+      return null
+    }
+  })()
+
+  /** EG 自身的重启识别属性（§8.1）：子站 hostBootId 变 → 主机重启；只有 agentBootId 变 → 服务重启 */
+  bootAttrs(): { hostBootId: string | null; agentBootId: string } {
+    return { hostBootId: this.hostBootId, agentBootId: this.bootId }
+  }
 
   // 发送游标：mark = 连上那一刻 outbox 的最大 seq；> mark 的是实时，≤ mark 的是补传
   private mark = 0
@@ -218,6 +232,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     this.log.log(`已连子站 ${this.cfg.station.mqtt}${this.histTotal ? `，补传 ${this.histTotal} 条` : ''}${was ? `（断了 ${Math.round((Date.now() - was) / 1000)} s）` : ''}`)
     // 声明子设备在线（TB 网关接口）；EG 自己是网关本身，不用声明
     for (const d of this.cfg.devices) this.client!.publish('v1/gateway/connect', JSON.stringify({ device: d.name }), { qos: 1 })
+    // 重启识别（§8.1）：每次连上子站发一次
+    this.client!.publish('v1/devices/me/attributes', JSON.stringify(this.bootAttrs()), { qos: 1 })
   }
 
   private onDown(): void {

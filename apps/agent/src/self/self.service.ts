@@ -14,7 +14,7 @@
 import { createSocket } from 'node:dgram'
 import { readdirSync, readFileSync, statfsSync } from 'node:fs'
 import { connect } from 'node:net'
-import { cpus, freemem, totalmem } from 'node:os'
+import { cpus, freemem, totalmem, uptime } from 'node:os'
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
@@ -51,6 +51,8 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
+    // 重启识别属性（§8.1）：每次连上本机总线发一份（本地 TB 可查、也经 outbox 上送）；连上子站时 uplink 另直发一次
+    this.bus.onConnect(() => this.bus.publishAttributes(this.cfg.eg.name, this.uplink.bootAttrs()))
     this.timers.push(
       setInterval(() => {
         void this.probe()
@@ -122,6 +124,9 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
       'eg.ssd': diskUsedPct(this.cfg.dir),
       'eg.temp': boardTemp(),
       'eg.up_kbps': this.upKbps(),
+      // 重启识别（§8.1，可选量）：主机开机秒数（容器里读的是宿主机的）、agent 运行秒数；子站看到变小就记「重启」
+      'eg.uptime_s': Math.round(uptime()),
+      'eg.agent_up_s': Math.round(process.uptime()),
       // 上送状态（I2，EG独立TB调整方案 §8.1）：子站判补传中、积压、丢失都靠这几个
       ...this.uplink.metrics(),
       // 证据（G5）：待上传条数、证据存储满、循环录像是否在录

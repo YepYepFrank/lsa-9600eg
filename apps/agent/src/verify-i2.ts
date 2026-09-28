@@ -59,7 +59,7 @@ async function main() {
   await sleep(30_000)
   const mid = await uplink()
   check(mid.state === 'offline' && (mid.depth ?? 0) > 20, '断网时本地如实显示离线与积压', `${mid.text}`)
-  const stale = (await sp.latest(sam, ['ir.t_max']))['ir.t_max']
+  const stale = (await sp.latest(sam, ['us.amp']))['us.amp']
   check(!!stale && Date.now() - stale.ts > 20_000, '断网期间子站收不到新数据（确实断了）')
   await sleep(CUT_MIN * 60_000 - 30_000)
   const before = await uplink()
@@ -76,7 +76,7 @@ async function main() {
     const u = await uplink()
     if (u.state === 'backfill') sawBackfill = true
     if (firstRealtime === null) {
-      const p = (await sp.latest(sam, ['ir.t_max']))['ir.t_max']
+      const p = (await sp.latest(sam, ['us.amp']))['us.amp']
       if (p && p.ts >= restored) firstRealtime = Date.now() - restored
     }
     return u.state === 'ok' && (u.depth ?? 1e9) < 100 && firstRealtime !== null ? u : null
@@ -84,12 +84,16 @@ async function main() {
   check(!!drained, '补传完、积压清掉', drained ? `${((Date.now() - restored) / 1000).toFixed(1)} s` : '15 分钟内没清')
   check(firstRealtime !== null && firstRealtime < 5_000, '恢复后实时数据马上到子站（不排在补传后面）', firstRealtime === null ? '没到' : `恢复后 ${(firstRealtime / 1000).toFixed(1)} s`)
   await sleep(5000)
-  const pts = await sp.history(sam, 'ir.t_max', cut - 10_000, restored + 10_000)
+  const pts = await sp.history(sam, 'us.amp', cut - 10_000, restored + 10_000)
   const span = (restored + 10_000 - (cut - 10_000)) / 2000
   check(maxGap(pts) <= 4_500, `断网期间 ${sam} 的数据补齐、无缺口`, `${pts.length} 点，最大间隔 ${(maxGap(pts) / 1000).toFixed(1)} s`)
   check(Math.abs(pts.length - span) / span < 0.03, '点数与 2 s 一个相符（没有重复、没有缺）', `应约 ${Math.round(span)}，实 ${pts.length}`)
   const selfPts = await sp.history(eg, 'eg.cpu', cut, restored)
   check(maxGap(selfPts) <= 10_000, 'EG 自身指标也补齐（子站能回看断网期间的 EG 状态）', `${selfPts.length} 点`)
+  // 重启识别（§8.1）：补传的 eg.agent_up_s 带原时间、单调增（子站据「变小」判重启，补传不能让它误判）
+  const upPts = await sp.history(eg, 'eg.agent_up_s', cut, restored)
+  const mono = upPts.every((p, i) => i === 0 || Number(p.value) >= Number(upPts[i - 1]!.value))
+  check(upPts.length > 0 && maxGap(upPts) <= 10_000 && mono, '重启识别量 eg.agent_up_s 按原时间补齐、单调增', `${upPts.length} 点${mono ? '' : '，有变小'}`)
   const bf = await sp.history(eg, 'eg.backfill_pct', restored - 5000, Date.now())
   // 积压要送 5 s 以上（一个上报周期）才一定看得到「补传中」；更短的一闪而过，只记不判
   const rate = cfg.local.outbox.backfillRate
@@ -105,11 +109,11 @@ async function main() {
     const t0 = Date.now()
     docker('restart', c)
     await until(async () => {
-      const p = (await sp.latest(sam, ['ir.t_max']))['ir.t_max']
+      const p = (await sp.latest(sam, ['us.amp']))['us.amp']
       return p && p.ts > t0 + 5_000
     }, 180_000)
     await sleep(15_000)
-    const h = await sp.history(sam, 'ir.t_max', t0 - 10_000, Date.now() - 5_000)
+    const h = await sp.history(sam, 'us.amp', t0 - 10_000, Date.now() - 5_000)
     check(maxGap(h) <= 4_500, `重启 ${label} 期间子站数据无断档`, `最大间隔 ${(maxGap(h) / 1000).toFixed(1)} s`)
   }
 

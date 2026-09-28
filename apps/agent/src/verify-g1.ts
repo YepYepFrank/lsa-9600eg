@@ -106,7 +106,7 @@ async function main() {
   check(!!(await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'agent')), `${cfg.eg.name} 有属性 agent（eg-agent 版本）`)
 
   console.log('\n5. EG 自身指标')
-  const egKeys = ['eg.state', 'eg.lat', 'eg.loss', 'eg.cpu', 'eg.mem', 'eg.ssd', 'eg.clk_offset']
+  const egKeys = ['eg.state', 'eg.lat', 'eg.loss', 'eg.cpu', 'eg.mem', 'eg.ssd', 'eg.clk_offset', 'eg.uptime_s', 'eg.agent_up_s']
   const eg = await tb.latest(cfg.eg.name, egKeys)
   for (const k of egKeys) {
     const p = eg[k]
@@ -114,6 +114,13 @@ async function main() {
     check(!!p && Date.now() - p.ts < limit, `${k} 新鲜`, p ? `${p.value}，${((Date.now() - p.ts) / 1000).toFixed(0)} s 前` : '没有（取不到时不发）')
   }
   check(eg['eg.state']?.value === 'online', 'eg.state = online')
+  // 重启识别（§8.1）：主机开机秒数 ≥ agent 运行秒数；客户端属性 hostBootId / agentBootId（开发机 Windows 上 hostBootId 为 null）
+  const upS = Number(eg['eg.uptime_s']?.value)
+  const agS = Number(eg['eg.agent_up_s']?.value)
+  check(upS >= agS && agS > 0, 'eg.uptime_s ≥ eg.agent_up_s > 0', `主机 ${upS} s，agent ${agS} s`)
+  const agentBoot = await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'agentBootId')
+  const hostBoot = await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'hostBootId')
+  check(typeof agentBoot === 'string' && /^[0-9a-f]{12}$/.test(agentBoot), '客户端属性 agentBootId（本次 agent 启动的 id）', `agentBootId=${agentBoot} hostBootId=${hostBoot ?? 'null'}`)
 
   console.log('\n6. 南向统计')
   const south = await tb.latest(samA, ['dev.req_24h', 'dev.timeout_24h', 'dev.rate_24h'])
