@@ -6,6 +6,7 @@
 #   sudo bash install.sh --rollback        回到上一个装好的版本（镜像还在本机；本地 TB 版本变过的不许回退）
 #
 # --lan1：摄像机网口名（如 enp2s0）。管理页对从它进来的请求一律 403（I5-2），记在 .env 里，以后不用再给。
+#   网口必须存在；本机只有一个对外网口时拒绝（那样唯一的网口也会被挡住，管理页谁都打不开），确实要这样加 --force。
 #
 # 分两轮是因为本地 TB 的设备、告警规则由子站跑 provision:eg 建（经 SSH 隧道连这台 EG 的 127.0.0.1:18080），
 # 它同时把本地 TB 账号写进 eg.yaml —— 所以：第一轮起本地 TB → 子站 provision:eg → 拷回 eg.yaml → 第二轮起全部。
@@ -14,11 +15,13 @@ cd "$(dirname "$0")"
 DC='docker compose'
 LAN1=''
 MODE='install'
+FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --status) MODE='status' ;;
     --rollback) MODE='rollback' ;;
     --lan1) LAN1="${2:?--lan1 后面给网口名}"; shift ;;
+    --force) FORCE=1 ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
@@ -127,7 +130,16 @@ EOF
 fi
 env_set EG_APP_IMAGE "lsa-eg-app:$VERSION"
 sed -i '/^EG_AGENT_IMAGE=/d' .env
-[ -n "$LAN1" ] && env_set EG_LAN1 "$LAN1"
+if [ -n "$LAN1" ]; then
+  [ -e "/sys/class/net/$LAN1" ] || { echo "没有网口 $LAN1（本机：$(ls /sys/class/net | tr '\n' ' ')）" >&2; exit 1; }
+  # 对外网口：物理网卡（有 device 链接），不算 lo、docker、网桥、veth
+  nics=$(for n in /sys/class/net/*; do [ -e "$n/device" ] && basename "$n"; done | wc -l)
+  if [ "$nics" -le 1 ] && [ "$FORCE" != 1 ]; then
+    echo "本机只有 $nics 个物理网口，--lan1 $LAN1 会把唯一的网口也挡掉（管理页谁都打不开）。单网口的机器不要给 --lan1；确实要这样加 --force" >&2
+    exit 1
+  fi
+  env_set EG_LAN1 "$LAN1"
+fi
 grep -q '^EG_LAN1=.' .env || echo '（提示：没给 --lan1：管理页在摄像机网口上也能打开，只能靠防火墙挡）'
 mkdir -p config/gateway/config config/mediamtx recordings
 

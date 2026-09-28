@@ -140,6 +140,8 @@ sudo bash /opt/lsa-eg/test/test.sh down
 
 造告警（emu 控制面只听本机 3190）：`curl -X POST "http://127.0.0.1:3190/emu/arc?intensity=450&ms=25"`（弧光）、`…/emu/cam/overtemp?region=R1&max=120&s=300`（区域过温）、`…/emu/dev/<设备>/dead?on=1`（整台停发）。
 
+**单网口的机器不要给 `--lan1`**：那样唯一的网口也被挡掉，管理页谁都打不开。install.sh 在只有一个物理网口时拒绝 `--lan1`（确实要这样加 `--force`）；给的网口名不存在也直接报错。单网口时靠防火墙挡摄像机网。
+
 **开发用开关**：`EG_PASSIVE=1`（旁观模式，只收不发）只给开发机并排验接口，发布件的 compose 与 install.sh 里没有；现场 agent 看到它会连打三条错误日志 —— 看到就去掉。
 
 ## 7. 排障速查

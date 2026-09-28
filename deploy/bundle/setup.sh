@@ -20,11 +20,13 @@ IP=''
 LAN1=''
 EGCFG=''
 YES=0
+FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE="${2:?}"; shift ;;
     --ip) IP="${2:?}"; shift ;;
     --lan1) LAN1="${2:?}"; shift ;;
+    --force) FORCE=1 ;;
     --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
@@ -234,7 +236,7 @@ install_eg() {
     echo "已拷入 $EGCFG 的 eg.yaml$([ -f "$EGCFG/sp-ca.pem" ] && echo '、sp-ca.pem')（权限 600）"
   fi
   say '安装（install.sh）'
-  if [ -n "$LAN1" ]; then bash "$DEST/install.sh" --lan1 "$LAN1"; else bash "$DEST/install.sh"; fi
+  if [ -n "$LAN1" ]; then bash "$DEST/install.sh" --lan1 "$LAN1" $([ "$FORCE" = 1 ] && echo --force); else bash "$DEST/install.sh"; fi
 }
 
 case "$ROLE" in
