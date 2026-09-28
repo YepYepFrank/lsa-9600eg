@@ -138,7 +138,7 @@ sed -i '/^EG_AGENT_IMAGE=/d' .env
 if [ -n "$LAN1" ]; then
   [ -e "/sys/class/net/$LAN1" ] || { echo "没有网口 $LAN1（本机：$(ls /sys/class/net | tr '\n' ' ')）" >&2; exit 1; }
   # 对外网口：物理网卡（有 device 链接），不算 lo、docker、网桥、veth
-  nics=$(for n in /sys/class/net/*; do [ -e "$n/device" ] && basename "$n"; done | wc -l)
+  nics=$(for n in /sys/class/net/*; do if [ -e "$n/device" ]; then basename "$n"; fi; done | wc -l)
   if [ "$nics" -le 1 ] && [ "$FORCE" != 1 ]; then
     echo "本机只有 $nics 个物理网口，--lan1 $LAN1 会把唯一的网口也挡掉（管理页谁都打不开）。单网口的机器不要给 --lan1；确实要这样加 --force" >&2
     exit 1
