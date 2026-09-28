@@ -1,7 +1,8 @@
 /* PUT /api/config —— 子站扩展服务下发配置（I4，§8.3）。鉴权：请求头 X-EG-Ticket 带子站签的服务票据（角色 station，60 s、一次性），
  * 不认浏览器会话（本地维护账号也不能改阈值与规则 —— 配置只有子站一个来源）。
  * 校验不过、写不进本地 TB 都回 200 + status FAILED 与原因（扩展服务照原因显示「失败」）；票据不对回 401。
- * 调试（EG_DEBUG=1）：POST /api/config/_debug?unavailable=1 让 PUT 回 503（扮演 EG 离线，测子站 PENDING 与恢复后自动重发），=0 恢复。 */
+ * 调试（EG_DEBUG=1）：POST /api/config/_debug?unavailable=1 让 PUT 回 503（扮演 EG 离线，测子站 PENDING 与恢复后自动重发），=0 恢复；
+ *   ?tbDown=1 假装本地 TB 没就绪（测 EG 回 PENDING、排队、就绪后自动应用），=0 恢复。 */
 import { Body, Controller, ForbiddenException, Headers, HttpCode, Post, Put, Query, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common'
 import { AuditService } from '../audit/audit.service.js'
 import { AuthService } from '../auth/auth.service.js'
@@ -34,9 +35,10 @@ export class ApplyController {
   @Public()
   @Post('_debug')
   @HttpCode(200)
-  debug(@Query('unavailable') unavailable?: string) {
+  debug(@Query('unavailable') unavailable?: string, @Query('tbDown') tbDown?: string) {
     if (process.env['EG_DEBUG'] !== '1') throw new ForbiddenException('只在调试模式（EG_DEBUG=1）开放')
     if (unavailable === '1' || unavailable === '0') this.unavailable = unavailable === '1'
-    return { unavailable: this.unavailable }
+    if (tbDown === '1' || tbDown === '0') this.apply.debugTbDown = tbDown === '1'
+    return { unavailable: this.unavailable, tbDown: this.apply.debugTbDown, pending: this.apply.pendingInfo() }
   }
 }

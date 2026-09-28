@@ -105,6 +105,20 @@ async function main() {
   const r7 = await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
   check(r7.body.status === 'APPLIED' && !('ignored' in r7.body), '都认识时回执不带 ignored（回到 v2）', JSON.stringify(r7.body))
 
+  console.log('\n4c. 本地 TB 没就绪（刚开机）：回 PENDING 排队，就绪后自动应用（调试开关扮演 TB 没起来）')
+  const dbg = (q: string) => fetch(`${AGENT}/api/config/_debug?${q}`, { method: 'POST' }).then(r => r.json() as Promise<{ tbDown: boolean; pending: { version: string; tries: number } | null }>)
+  await dbg('tbDown=1')
+  const v4 = `i4-${Date.now().toString(36)}-4`
+  const r8 = await put({ version: v4, thresholds: rows({ arc: 650 }), rules: allOn })
+  const b8 = r8.body as { status: string; retryable?: boolean; error?: string }
+  check(b8.status === 'PENDING' && b8.retryable === true, '本地 TB 没就绪 → PENDING、retryable: true（不是 FAILED）', JSON.stringify(b8))
+  check((await dbg('')).pending?.version === v4 && (await cfgAttr()) !== v4, `排着 ${v4}，cfg 属性还是旧版本`)
+  const t4 = Date.now()
+  await dbg('tbDown=0')
+  const auto = await until(async () => ((await cfgAttr()) === v4 ? true : null), 40_000, 1000)
+  check(!!auto && (await dbg('')).pending === null && limitOf(await alarmsOf(samProfile), '弧光异常', 'CRITICAL') === 650, 'TB 就绪后自动应用：cfg 属性变成新版本、排队清空、弧光限值 650 生效', auto ? `${((Date.now() - t4) / 1000).toFixed(1)} s` : '40 s 内没应用')
+  await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
+
   console.log('\n5. 失败要回原因，且不改本机')
   const bad = async (what: string, body: Record<string, unknown>, want: RegExp) => {
     const r = await put({ version: `bad-${Date.now().toString(36)}`, thresholds: rows({ arc: 600 }), rules: allOn, ...body })
