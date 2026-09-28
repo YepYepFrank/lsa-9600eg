@@ -7,6 +7,9 @@
 #
 # --lan1：摄像机网口名（如 enp2s0）。管理页对从它进来的请求一律 403（I5-2），记在 .env 里，以后不用再给。
 #   网口必须存在；本机只有一个对外网口时拒绝（那样唯一的网口也会被挡住，管理页谁都打不开），确实要这样加 --force。
+# --sp-key <子站公钥文件或公钥串>：给子站 provision-eg.sh 用的隧道账号 lsa-sp 授权（可反复给、不重复加）。
+#   lsa-sp 没有口令、没有 shell，authorized_keys 带 restrict,port-forwarding,permitopen="127.0.0.1:18080"：
+#   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完可以 userdel lsa-sp。
 #
 # 分两轮是因为本地 TB 的设备、告警规则由子站跑 provision:eg 建（经 SSH 隧道连这台 EG 的 127.0.0.1:18080），
 # 它同时把本地 TB 账号写进 eg.yaml —— 所以：第一轮起本地 TB → 子站 provision:eg → 拷回 eg.yaml → 第二轮起全部。
@@ -14,6 +17,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 DC='docker compose'
 LAN1=''
+SPKEY=''
 MODE='install'
 FORCE=0
 while [ $# -gt 0 ]; do
@@ -22,6 +26,7 @@ while [ $# -gt 0 ]; do
     --rollback) MODE='rollback' ;;
     --lan1) LAN1="${2:?--lan1 后面给网口名}"; shift ;;
     --force) FORCE=1 ;;
+    --sp-key) SPKEY="${2:?--sp-key 后面给子站公钥（文件或公钥串）}"; shift ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
@@ -143,6 +148,22 @@ fi
 grep -q '^EG_LAN1=.' .env || echo '（提示：没给 --lan1：管理页在摄像机网口上也能打开，只能靠防火墙挡）'
 mkdir -p config/gateway/config config/mediamtx recordings
 
+# ---------- 子站 provision-eg.sh 的隧道账号（--sp-key） ----------
+if [ -n "$SPKEY" ]; then
+  key="$SPKEY"; [ -f "$SPKEY" ] && key="$(head -1 "$SPKEY")"
+  echo "$key" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]+' || { echo "--sp-key 不像 SSH 公钥：$key" >&2; exit 1; }
+  id lsa-sp >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/lsa-sp --shell /usr/sbin/nologin lsa-sp
+  install -d -m 700 -o lsa-sp -g lsa-sp /var/lib/lsa-sp/.ssh
+  ak=/var/lib/lsa-sp/.ssh/authorized_keys
+  touch "$ak"
+  body="$(echo "$key" | awk '{print $1" "$2}')"
+  if ! grep -qF "$body" "$ak"; then
+    echo "restrict,port-forwarding,permitopen=\"127.0.0.1:18080\" $key" >> "$ak"
+    echo "已给子站公钥授权：lsa-sp 只能开隧道到本机 127.0.0.1:18080"
+  fi
+  chown lsa-sp:lsa-sp "$ak"; chmod 600 "$ak"
+fi
+
 # ---------- 5. 本地 TB：库是空的先建库 ----------
 $DC up -d --wait postgres
 if ! $DC exec -T postgres psql -U postgres -d thingsboard -tAc "select 1 from information_schema.tables where table_name='tb_user'" | grep -q 1; then
@@ -158,10 +179,14 @@ if [ ! -f config/eg.yaml ] || ! grep -q '^tb:' config/eg.yaml; then
   cat <<EOF
 
 本地 TB 已起。下一步（手册 §4）：
-  1. 在子站主机上开 SSH 隧道到这台 EG：ssh -N -L 18080:127.0.0.1:18080 <账号>@<这台 EG 的 LAN2 地址>
-  2. 在子站后端库跑：pnpm provision:eg -- --cabinet <柜号> --url http://127.0.0.1:18080 --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
-  3. 在子站后端库出这台的配置包：scripts/pack-eg.sh --sp <子站地址> --only <柜号>，把 dist/eg/<柜号>/ 里的 eg.yaml 与 sp-ca.pem 拷到这里的 config/
-  4. 再跑一次 sudo bash install.sh
+  1. 给子站授权开隧道（没给过的话）：把子站主机的 SSH 公钥拷过来，sudo bash install.sh --sp-key <公钥文件>
+     （建只能转发到本机 18080 的账号 lsa-sp，没有 shell）
+  2. 在子站主机上（/opt/lsa9600sp/lsa9600sp-backend）：
+       scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<这台 EG 的 LAN2 地址> [--ssh-key <私钥>] --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
+     可先加 --plan 只读核对一遍。它在容器里开隧道连这台 EG 的 127.0.0.1:18080，子站主机不用装 Node
+  3. 在子站主机上出这台的配置包：scripts/pack-eg.sh --sp <子站地址> --only <柜号>
+     → dist/eg/<柜号>/eg.yaml 与 sp-ca.pem（上送走 mqtts 8883）
+  4. 把这两个文件拷到这里的 /opt/lsa-eg/config/（用维护账号，lsa-sp 拷不了文件），再跑一次 sudo bash install.sh
 EOF
   exit 0
 fi

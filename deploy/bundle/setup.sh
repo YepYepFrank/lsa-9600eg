@@ -6,7 +6,7 @@
 #       子站主机：Docker（没有就装离线包）→ 导入镜像 → /opt/lsa9600sp → 首次自动生成 docker/.env（随机口令、
 #       本机 IP、证书 SAN）→ scripts/up.sh --prod（证书、建库、provision、扩展服务、Nginx、视频）→ TB 系统管理员改随机口令。
 #       已装过的按升级处理：保留 .env。
-#   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--eg-config <目录>] [--yes]
+#   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--sp-key <子站公钥>] [--eg-config <目录>] [--yes]
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
 #
@@ -21,12 +21,14 @@ LAN1=''
 EGCFG=''
 YES=0
 FORCE=0
+SPKEY=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE="${2:?}"; shift ;;
     --ip) IP="${2:?}"; shift ;;
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
+    --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
     --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
@@ -211,7 +213,7 @@ install_sp() {
   say '子站装好了'
   echo "  浏览器打开 http://$ip/    账号口令见 $SP_CRED（首次安装时生成，权限 600）"
   echo "  自检：curl -s http://127.0.0.1/ext/health"
-  echo "  接 EG：每台 EG 先用本安装文件 --role eg 装第一轮，再在本机 $SP_B 跑 provision:eg、pack-eg.sh（docs/子站部署手册.md §5b）"
+  echo "  接 EG：每台 EG 先用本安装文件 --role eg --sp-key <本机公钥> 装第一轮，再在 $SP_B 跑 scripts/provision-eg.sh --ssh lsa-sp@<EG> …、scripts/pack-eg.sh（docs/子站部署手册.md §5b）"
 }
 
 # ---------- EG ----------
@@ -236,7 +238,11 @@ install_eg() {
     echo "已拷入 $EGCFG 的 eg.yaml$([ -f "$EGCFG/sp-ca.pem" ] && echo '、sp-ca.pem')（权限 600）"
   fi
   say '安装（install.sh）'
-  if [ -n "$LAN1" ]; then bash "$DEST/install.sh" --lan1 "$LAN1" $([ "$FORCE" = 1 ] && echo --force); else bash "$DEST/install.sh"; fi
+  local args=()
+  [ -n "$LAN1" ] && args+=(--lan1 "$LAN1")
+  [ "$FORCE" = 1 ] && args+=(--force)
+  [ -n "$SPKEY" ] && args+=(--sp-key "$SPKEY")
+  bash "$DEST/install.sh" "${args[@]}"
 }
 
 case "$ROLE" in

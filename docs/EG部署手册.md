@@ -78,22 +78,36 @@ sudo mkdir -p /opt/lsa-eg && sudo cp -r eg-<版本>/* /opt/lsa-eg/ && cd /opt/ls
 sudo bash install.sh --lan1 <摄像机网口>   # 第一轮：没有 Docker 先装离线包、导入镜像、生成 .env（本地库口令）、建本地 TB 的库、起本地 TB
 ```
 
-第一轮结束时本地 TB 已起、但还是空的。**在子站主机上**给它建实体：
+第一轮结束时本地 TB 已起、但还是空的。由**子站主机**给它建实体（子站 0.9.1 起有现场入口，子站主机不用装 Node）。
+
+**1. 给子站授权开隧道**（每台 EG 一次）：把子站主机的 SSH 公钥（如 `~/.ssh/id_ed25519.pub`，没有就 `ssh-keygen -t ed25519` 生成）拷到 EG：
 
 ```bash
-# 子站主机：开隧道（EG 的本地 TB 只听 127.0.0.1）
-ssh -N -L 18080:127.0.0.1:18080 <账号>@<EG 的 LAN2 地址> &
-# 子站后端库：建本地租户、6 台设备（名字与子站一致）、带 7 类告警的设备配置、告警钩子，并更新 eg.yaml（加 tb: 本地 TB 账号）
-pnpm provision:eg -- --cabinet <柜号> --url http://127.0.0.1:18080 --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
+# 在 EG 上
+sudo bash install.sh --sp-key /tmp/sp_id_ed25519.pub     # 一键安装文件：--role eg --sp-key <公钥>
 ```
 
-provision:eg 同时把本地 TB 系统管理员的出厂口令改掉（新口令只留在子站 `tb/provision/out/eg/<柜号>/tb-sysadmin.json`）。然后出这台的配置包并拷到 EG：
+它建一个**只能开隧道**的账号 `lsa-sp`：没有口令、没有 shell，authorized_keys 带 `restrict,port-forwarding,permitopen="127.0.0.1:18080"` —— 只能从子站转发到 EG 本机的本地 TB（18080），拿不到 shell、转发不了别的端口、拷不了文件（虚拟样机 AH09 上实测）。同一把公钥反复给不会重复加；部署完可以 `sudo userdel -r lsa-sp`，以后再要 provision 重新授权。
+不预置共用账号：所有 EG 共用一把钥匙，丢一台就全丢。
+
+**2. 子站主机上建实体**（子站部署目录 `/opt/lsa9600sp/lsa9600sp-backend`）：
 
 ```bash
-# 子站后端库：dist/eg/<柜号>/ 下出 eg.yaml（station 改成 mqtts://<子站>:8883、https://<子站>）与 sp-ca.pem
-scripts/pack-eg.sh --sp <子站地址> --only <柜号>
-scp dist/eg/<柜号>/eg.yaml dist/eg/<柜号>/sp-ca.pem <账号>@<EG 的 LAN2 地址>:/opt/lsa-eg/config/
+# 先只读核对一遍
+scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<EG 的 LAN2 地址> [--ssh-key <私钥>] --hook http://host.docker.internal/hooks/alarm --sp <子站地址> --plan
+# 正式建：本地租户、下挂设备（名字与子站一致）、带告警规则的设备配置、告警钩子，并更新 eg.yaml（加 tb: 本地 TB 账号）
+scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<EG 的 LAN2 地址> [--ssh-key <私钥>] --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
 ```
+
+`--ssh` 在容器里开隧道连 EG 本机的 127.0.0.1:18080。provision-eg 同时把本地 TB 系统管理员的出厂口令改掉（新口令只留在子站 `tb/provision/out/eg/<柜号>/tb-sysadmin.json`）。
+
+**3. 出这台的配置包**（纯 bash，子站主机上直接跑）：
+
+```bash
+scripts/pack-eg.sh --sp <子站地址> --only <柜号>     # → dist/eg/<柜号>/eg.yaml（station 改成 mqtts://<子站>:8883）与 sp-ca.pem
+```
+
+**4. 拷到 EG**：用 EG 的维护账号（`lsa-sp` 拷不了文件）把 `eg.yaml`、`sp-ca.pem` 放到 `/opt/lsa-eg/config/`（权限 600）；或者用一键安装文件 `--role eg --eg-config <放这两个文件的目录>`。
 
 然后在 EG 上：
 

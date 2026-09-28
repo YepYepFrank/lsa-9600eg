@@ -156,8 +156,9 @@ writeFileSync(
 整个系统就这一个文件，子站主机和各柜 EG 都用它，装的时候选角色。目标机：x86_64，Ubuntu 24.04（其它发行版先自行装好 Docker）。
 
   子站主机：sudo bash ${NAME}.run --role sp            （本机站内 IP 自动取，或 --ip 指定；口令随机生成，见 /opt/lsa9600sp/初始账号口令.txt）
-  EG：      sudo bash ${NAME}.run --role eg --lan1 <摄像机网口>
-            → 子站对这台 EG 跑 provision:eg、pack-eg.sh，拿到 eg.yaml 与 sp-ca.pem 后：
+  EG：      sudo bash ${NAME}.run --role eg --lan1 <摄像机网口>（单网口不给）
+            → 给子站授权开隧道：sudo bash ${NAME}.run --role eg --sp-key <子站公钥>
+            → 子站主机上 scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<EG> …、scripts/pack-eg.sh --sp <子站> --only <柜号>，拿到 eg.yaml 与 sp-ca.pem 后：
             sudo bash ${NAME}.run --role eg --eg-config <放 eg.yaml 的目录>
   只解包：  bash ${NAME}.run --extract <目录>
 
