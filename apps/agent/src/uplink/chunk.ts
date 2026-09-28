@@ -19,6 +19,30 @@ export function topicOf(r: OutRow, self: string): string {
   return r.dev === self ? 'v1/devices/me/attributes' : 'v1/gateway/attributes'
 }
 
+/** 属性去旧的键：设备 + 属性名 */
+export const attrKey = (dev: string, key: string): string => `${dev}\u0000${key}`
+
+/** 补传里的属性行去掉已经送过更新值的键（newer：键 → 送出的那条的 seq，直接发的记 Infinity）。
+ *  上送是实时先走、补传后走，属性又不带时间戳、子站 TB 按到达顺序覆盖 —— 不去掉的话，
+ *  连上前的旧值（如部署时的 cfg、上一次开机的 agentBootId）会在补传时盖掉刚发的新值（现场流程验收 EG2 发现）。
+ *  整行的键都旧了就整行不发（dropped，调用方直接确认删掉）。 */
+export function dropStaleAttrs(rows: OutRow[], newer: ReadonlyMap<string, number>): { rows: OutRow[]; dropped: number[] } {
+  const out: OutRow[] = []
+  const dropped: number[] = []
+  for (const r of rows) {
+    if (r.kind !== 'a') {
+      out.push(r)
+      continue
+    }
+    const attrs = JSON.parse(r.body) as Record<string, unknown>
+    const keep = Object.entries(attrs).filter(([k]) => !((newer.get(attrKey(r.dev, k)) ?? -1) > r.seq))
+    if (keep.length === Object.keys(attrs).length) out.push(r)
+    else if (keep.length) out.push({ ...r, body: JSON.stringify(Object.fromEntries(keep)) })
+    else dropped.push(r.seq)
+  }
+  return { rows: out, dropped }
+}
+
 /** 同一主题的一组行 → 载荷 */
 export function payloadOf(topic: string, rows: OutRow[]): string {
   if (topic === 'v1/devices/me/telemetry') return JSON.stringify(rows.map(r => ({ ts: r.ts, values: JSON.parse(r.body) as unknown })))

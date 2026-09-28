@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { chunkRows, MAX_PAYLOAD_BYTES, MAX_SAMPLES } from '../uplink/chunk.js'
+import { attrKey, chunkRows, dropStaleAttrs, MAX_PAYLOAD_BYTES, MAX_SAMPLES } from '../uplink/chunk.js'
 import { OutboxStore } from '../uplink/outbox.store.js'
 
 type Check = (ok: boolean, name: string, detail?: string) => unknown
@@ -62,6 +62,19 @@ export function checkChunking(check: Check): void {
     check(maxSamples <= MAX_SAMPLES, '每次发布 ≤ 500 条', `最多 ${maxSamples} 条`)
     check(dropped === 1, '单条就超上限的那一条丢弃、不卡队列', `丢 ${dropped} 条`)
     s.close()
+
+    // 补传里的旧属性不盖新值：实时先送了 cfg=c-2（seq 20），直接发了 agentBootId（Infinity）
+    const newer = new Map([[attrKey('EG-X', 'cfg'), 20], [attrKey('EG-X', 'agentBootId'), Infinity]])
+    const hist = [
+      { seq: 3, dev: 'EG-X', kind: 'a' as const, ts: t0, body: JSON.stringify({ cfg: 'c-1', fw: 'v1', agentBootId: 'old' }) },
+      { seq: 4, dev: 'EG-X', kind: 'a' as const, ts: t0, body: JSON.stringify({ agentBootId: 'old' }) },
+      { seq: 5, dev: 'EG-X', kind: 't' as const, ts: t0, body: JSON.stringify({ 'eg.cpu': 1 }) },
+      { seq: 25, dev: 'EG-X', kind: 'a' as const, ts: t0, body: JSON.stringify({ cfg: 'c-3' }) },
+    ]
+    const f = dropStaleAttrs(hist, newer)
+    const kept = f.rows.map(r => `${r.seq}:${r.body}`).join(' ')
+    check(f.rows.length === 3 && f.rows[0]!.body === '{"fw":"v1"}' && f.dropped.join() === '4' && f.rows[2]!.body === '{"cfg":"c-3"}',
+      '补传的旧属性不盖已送出的新值（cfg、agentBootId 去掉，其余照送，整行都旧的直接确认）', kept)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

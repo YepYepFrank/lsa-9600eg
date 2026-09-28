@@ -17,7 +17,7 @@ import { stationToken, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { OutboxStore, type OutRow, type RowKind } from './outbox.store.js'
-import { chunkRows, MAX_PAYLOAD_BYTES } from './chunk.js'
+import { attrKey, chunkRows, dropStaleAttrs, MAX_PAYLOAD_BYTES } from './chunk.js'
 import { AuditService } from '../audit/audit.service.js'
 
 export type UplinkState = 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'none' | 'unknown'
@@ -72,6 +72,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   // 发送游标：mark = 连上那一刻 outbox 的最大 seq；> mark 的是实时，≤ mark 的是补传
   private mark = 0
   private rtCursor = 0
+  // 这次连接里已送出的属性：设备 + 键 → 那条的 seq（直接发的记 Infinity）；补传时比它旧的不再送（chunk.ts dropStaleAttrs）
+  private attrSent = new Map<string, number>()
   private histCursor = 0
   private histTotal = 0
   private histSent = 0
@@ -233,7 +235,10 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     // 声明子设备在线（TB 网关接口）；EG 自己是网关本身，不用声明
     for (const d of this.cfg.devices) this.client!.publish('v1/gateway/connect', JSON.stringify({ device: d.name }), { qos: 1 })
     // 重启识别（§8.1）：每次连上子站发一次
-    this.client!.publish('v1/devices/me/attributes', JSON.stringify(this.bootAttrs()), { qos: 1 })
+    const boot = this.bootAttrs()
+    this.attrSent.clear()
+    for (const k of Object.keys(boot)) this.attrSent.set(attrKey(this.cfg.eg.name, k), Infinity)
+    this.client!.publish('v1/devices/me/attributes', JSON.stringify(boot), { qos: 1 })
   }
 
   private onDown(): void {
@@ -285,6 +290,16 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
 
   /** 按主题分组、按条数与字节切批（chunk.ts：≤ 500 条且 ≤ 48 KB）发出去；每批 PUBACK 后删掉对应的行 */
   private send(c: MqttClient, rows: OutRow[], history: boolean): void {
+    if (history) {
+      const f = dropStaleAttrs(rows, this.attrSent)
+      if (f.dropped.length) {
+        this.store?.ack(f.dropped)
+        this.histSent += f.dropped.length
+      }
+      rows = f.rows
+    } else {
+      for (const r of rows) if (r.kind === 'a') for (const k of Object.keys(JSON.parse(r.body) as object)) this.attrSent.set(attrKey(r.dev, k), r.seq)
+    }
     const { publishes, oversized } = chunkRows(rows, this.cfg.eg.name)
     for (const r of oversized) this.dropOversized(r)
     for (const g of publishes) {

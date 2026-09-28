@@ -206,7 +206,11 @@ export class ApplyService {
     const hash = createHash('sha256').update(JSON.stringify([input.thresholds, input.rules, input.extras])).digest('hex').slice(0, 16)
     const ign = input.ignored.length ? { ignored: input.ignored } : {}
     if (input.ignored.length) this.log.warn(`版本 ${input.version}：这台 EG 不认识规则 ${input.ignored.join('、')}（EG 版本比子站旧），跳过，其余照常应用`)
-    if (this.applied?.version === input.version && this.applied.hash === hash) return { version, status: 'APPLIED', changed: 0, ...ign }
+    if (this.applied?.version === input.version && this.applied.hash === hash) {
+      // 内容相同的重发：不动本地 TB，但把 cfg 再报一次 —— 子站重发多半是因为它看到的 cfg 不对
+      this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
+      return { version, status: 'APPLIED', changed: 0, ...ign }
+    }
     if (!this.tb.available) return fail('eg.yaml 里没有本地 TB 账号，写不了设备配置')
 
     // 生成新规则（先全部算好再写，阈值缺项等在这一步就报出来）
