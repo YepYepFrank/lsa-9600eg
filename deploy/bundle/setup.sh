@@ -188,10 +188,17 @@ install_sp() {
   if [ "$(cat "$SP_DEST/.loaded" 2>/dev/null)" = "$(cat VERSION)" ]; then echo '这一版的镜像已导入过，跳过'
   else gunzip -c sp/images.tar.gz | docker load | sed 's/^/  /'; fi
 
+  # 站内 CA（docker/tls/sp-ca.pem）变了，各 EG 手上的 sp-ca.pem 就全部失效、连不上 8883：升级前后必须一致
+  local ca="$SP_B/docker/tls/sp-ca.pem" ca0=''
+  [ -f "$ca" ] && ca0="$(sha256sum < "$ca" | cut -c1-64)"
+  if [ -f "$SP_ENV" ] && [ -z "$ca0" ] && [ "$FORCE" != 1 ]; then
+    die "已有 docker/.env 却没有 docker/tls/sp-ca.pem：继续的话 up.sh 会新生成站内 CA，所有 EG 的 sp-ca.pem 失效。先把原来的 docker/tls 放回 $SP_B/docker/tls/；确实要换 CA（之后每台 EG 重出配置包）加 --force"
+  fi
+
   say "放置文件到 $SP_DEST"
   mkdir -p "$SP_B"
-  # 部署文件整体覆盖（docker/.env、docker/tls、备份不在安装包里，不会被动到）
-  cp -a sp/lsa9600sp-backend/. "$SP_B/"
+  # 部署文件整体覆盖；docker/.env 与 docker/tls（站内 CA、服务端证书与私钥）一律不碰，安装包里万一带了也跳过
+  tar -C sp/lsa9600sp-backend --exclude=./docker/.env --exclude=./docker/tls -cf - . | tar -C "$SP_B" -xf -
   # 前端原地换内容、不换目录：Nginx 绑定挂载的是目录本身，删了重建的话没被重建的 Nginx 看到的是已删除的空目录，
   # 整站 403（0.9.2 升级验证踩到）。先拷新的再删新版本里没有的旧文件（旧的带哈希的 assets）。
   mkdir -p "$SP_DEST/web"
@@ -216,6 +223,10 @@ install_sp() {
   if ! docker exec lsa-nginx test -f /usr/share/nginx/html/index.html 2>/dev/null; then
     echo 'Nginx 看不到前端文件（挂着已删除的旧目录），重启 Nginx'
     docker restart lsa-nginx >/dev/null
+  fi
+  if [ -n "$ca0" ]; then
+    if [ "$(sha256sum < "$ca" 2>/dev/null | cut -c1-64)" = "$ca0" ]; then echo "站内 CA 未变（sha256 ${ca0:0:16}…），各 EG 的 sp-ca.pem 照常可用"
+    else die "站内 CA 在升级中变了（原 sha256 ${ca0:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls 换回去再跑 up.sh --prod"; fi
   fi
   cat VERSION > "$SP_DEST/.loaded"
   sp_sysadmin
