@@ -286,7 +286,9 @@ install_sp() {
     else die "站内 CA 在升级中变了（证书 ${ca0:0:16}… → ${ca1:0:16}…，私钥 ${k0:0:16}… → ${k1:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls、docker/tls-ca 换回去再跑 up.sh --prod"; fi
   fi
   cat VERSION > "$SP_DEST/.loaded"
-  sp_sysadmin
+  # TB 系统管理员出厂口令改随机：子站 up.sh 自己会改（rotate_sysadmin，与后端会话商定只留那一份）时不再做，
+  # 否则这里用出厂口令登不进去会误报「请手工改」；老包的 up.sh 没有这一步，照旧由这里改
+  if grep -q 'rotate_sysadmin' "$SP_B/scripts/up.sh" 2>/dev/null; then :; else sp_sysadmin; fi
 
   ip="$(envget "$SP_ENV" SP_HOST_IP)"
   say '子站装好了'
