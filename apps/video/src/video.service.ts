@@ -45,7 +45,7 @@ export class VideoService {
   private mtxError: string | null = null
   private paths: MtxPath[] = []
   private lastBytes: { at: number; bytes: number } | null = null
-  private metrics: Record<string, number> = {}
+  private metrics: Record<string, number | string> = {}
   // 测温
   private measure: { ok: boolean; error: string | null; at: number | null; count: number } = { ok: false, error: null, at: null, count: 0 }
   private lastTemps: Record<string, number> = {}
@@ -130,9 +130,16 @@ export class VideoService {
   }
 
   /** 测温一次（驱动能测温时）：温度发遥测，区域配置变了发属性，原生报警变了（或满 60 s）发 cam.alarm */
+  /** 测温接口的状态（cam.rest）：驱动不测温（纯 RTSP）为 undefined、不发；还没测过也不发 */
+  private restState(): 'OK' | 'FAIL' | undefined {
+    if (!this.driver?.measure) return undefined
+    return this.measure.error ? 'FAIL' : this.measure.ok ? 'OK' : undefined
+  }
+
   async measureOnce(): Promise<void> {
     if (this.measuring || !this.driver?.measure) return
     this.measuring = true
+    const restBefore = this.restState()
     try {
       const m = await this.driver.measure()
       this.measure = { ok: true, error: null, at: Date.now(), count: this.measure.count + 1 }
@@ -153,6 +160,9 @@ export class VideoService {
       this.measure = { ...this.measure, ok: false, error: (e as Error).message }
     } finally {
       this.measuring = false
+      // 测温接口好 / 坏变了：马上发 cam.rest（视频照常，测温量由 agent 的质量码看护标 invalid）
+      const rest = this.restState()
+      if (rest && rest !== restBefore) this.pub({ 'cam.rest': rest }, Date.now())
     }
   }
 
@@ -213,7 +223,17 @@ export class VideoService {
     else if (this.paths.length && this.paths.every(p => !p.ready)) bitrate = 0
     this.lastBytes = { at: now, bytes }
     const fps = this.probes.visible?.fps
-    this.metrics = { 'cam.online': results.filter(([, p]) => p?.ok).length, ...(fps !== undefined ? { 'cam.fps': fps } : {}), ...(bitrate !== null ? { 'cam.bitrate': bitrate } : {}) }
+    // 阶段 A（V3.0 §13）：三路分开 —— cam.vis / cam.ir = 主子码流都通 OK、一路通 DEGRADED、都不通 FAIL；cam.rest = 测温接口（驱动不测温不发）
+    const pair = (a?: { ok: boolean }, b?: { ok: boolean }) => {
+      const have = [a, b].filter(Boolean)
+      if (!have.length) return undefined
+      const ok = have.filter(p => p!.ok).length
+      return ok === have.length ? 'OK' : ok ? 'DEGRADED' : 'FAIL'
+    }
+    const vis = pair(this.probes.visible, this.probes.visibleSub)
+    const ir = pair(this.probes.thermal, this.probes.thermalSub)
+    const rest = this.restState()
+    this.metrics = { 'cam.online': results.filter(([, p]) => p?.ok).length, ...(fps !== undefined ? { 'cam.fps': fps } : {}), ...(bitrate !== null ? { 'cam.bitrate': bitrate } : {}), ...(vis ? { 'cam.vis': vis } : {}), ...(ir ? { 'cam.ir': ir } : {}), ...(rest ? { 'cam.rest': rest } : {}) }
     this.pub(this.metrics, now)
   }
 

@@ -11,7 +11,11 @@
  *   这份配置落盘（pending-config.json）排队，15 s 起退避到 60 s 自己重试，应用成功后照常更新 cfg 属性（§8.3 的「实际版本」即最终状态）；
  *   配置内容本身的问题（校验不过、阈值表不全、设备清单不同）才回 FAILED。新的一次下发（不论结果）顶替排着的。
  * 不认识的规则 id（子站比这台 EG 新，滚动升级时常见）：跳过、记警告，其余照常应用，回执带 ignored:[…]（§8.3）。
- * 设备清单（devices）在线改暂不支持：与本机 eg.yaml 一致就忽略，不一致回 FAILED（要在子站重新生成 eg.yaml 部署）。 */
+ * 设备清单（devices）在线改暂不支持：与本机 eg.yaml 一致就忽略，不一致回 FAILED（要在子站重新生成 eg.yaml 部署）。
+ * 阶段 A（接口 v1.1）：体里另带 caps / capKeys（能力清单，caps/caps.ts）与 devComm（下挂设备离线判据），一并算进内容哈希、
+ *   存进 applied-config.json，应用后交给 CapsService；老子站不带 = 全部照旧。
+ * 规则停用或告警类型改名（如 EG-rh「环境」→「柜内湿度高」）后，本地 TB 上该类型挂着的活动告警没有规则来清了 ——
+ *   写完设备配置后把「之前有、现在没有」的告警类型的活动告警清掉（经钩子 / 对账照常给子站送 CLEARED）。 */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -22,6 +26,8 @@ import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
 import { BusService } from '../bus/bus.service.js'
 import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
+import { parseCaps, type CapsConfig } from '../caps/caps.js'
+import { CapsService, type DevCommParams } from '../caps/caps.service.js'
 
 export interface ApplyReceipt {
   version: string
@@ -43,16 +49,20 @@ export interface Applied {
   thresholds: ThresholdRow[]
   rules: { id: string; on: boolean }[]
   extras: ThresholdExtras
+  /** 阶段 A：本柜能力清单（没下发过为 null / 缺省） */
+  caps?: CapsConfig | null
+  devComm?: DevCommParams | null
 }
 
-/** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别 */
-export const RULE_ALARM: Record<string, { type: string; severity?: string }> = {
+/** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别；alias = 改名前的类型（@lsa/model 的模板还没跟上时照样认） */
+export const RULE_ALARM: Record<string, { type: string; severity?: string; alias?: string[] }> = {
   'EG-rise': { type: '过温', severity: 'MAJOR' },
   'EG-rise2': { type: '过温', severity: 'CRITICAL' },
   'EG-tabs': { type: '绝对超温' },
   'EG-pd': { type: '局放异常' },
   'EG-arc': { type: '弧光异常' },
-  'EG-rh': { type: '环境' },
+  // 用户 2026-10-08 拍板（§6 第 6 条）：改名「柜内湿度高」，子站缺省下 on:false
+  'EG-rh': { type: '柜内湿度高', alias: ['环境'] },
   'EG-ol': { type: '过载' },
   'EG-pm': { type: '烟气' },
   // G4：摄像机区域温差（ir.dmax > dphase 持续 5 min，设备配置 cam_*）
@@ -105,6 +115,7 @@ export class ApplyService {
     private readonly tb: LocalTbService,
     private readonly bus: BusService,
     private readonly audit: AuditService,
+    private readonly caps: CapsService,
   ) {
     this.file = resolve(cfg.dir, 'applied-config.json')
     this.pendingFile = resolve(cfg.dir, 'pending-config.json')
@@ -113,6 +124,7 @@ export class ApplyService {
     } catch (e) {
       this.log.warn(`applied-config.json 读不了：${(e as Error).message}`)
     }
+    this.caps.set(this.applied?.caps ?? null, this.applied?.devComm ?? null)
     // 上次没应用成的（比如断电重启时本地 TB 还没起来）：接着重试
     try {
       if (existsSync(this.pendingFile)) {
@@ -196,14 +208,17 @@ export class ApplyService {
       return { version, status: 'FAILED', error }
     }
     const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}` })
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[] }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null }
     try {
       input = this.parse(body)
     } catch (e) {
       if (e instanceof Invalid) return fail(e.message)
       throw e
     }
-    const hash = createHash('sha256').update(JSON.stringify([input.thresholds, input.rules, input.extras])).digest('hex').slice(0, 16)
+    // 老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，升级后同一份配置不会被当成新内容
+    const parts: unknown[] = [input.thresholds, input.rules, input.extras]
+    if (input.caps || input.devComm) parts.push(input.caps, input.devComm)
+    const hash = createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
     const ign = input.ignored.length ? { ignored: input.ignored } : {}
     if (input.ignored.length) this.log.warn(`版本 ${input.version}：这台 EG 不认识规则 ${input.ignored.join('、')}（EG 版本比子站旧），跳过，其余照常应用`)
     if (this.applied?.version === input.version && this.applied.hash === hash) {
@@ -251,17 +266,41 @@ export class ApplyService {
       return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`)
     }
 
-    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras }
+    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm }
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
+    this.caps.set(input.caps, input.devComm)
+    // 规则停用 / 类型改名后，没有规则来清的活动告警：清掉
+    const typesOf = (ps: TbProfile[]) => new Set(ps.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
+    const before = typesOf(profiles)
+    const after = typesOf(profiles.map(x => plan.find(y => y.before === x)?.after ?? x))
+    const gone = [...before].filter(t => !after.has(t))
+    const cleared = gone.length ? await this.clearActive(gone) : 0
     this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
     const off = input.rules.filter(r => !r.on).map(r => r.id)
-    const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}`
+    const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}`
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: retry ? '应用子站配置（排队后自动）' : '应用子站配置', target: input.version, ok: true, detail })
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign }
   }
 
-  /** 校验请求体（§8.3）：{ version, thresholds: ThresholdRow[], rules: [{ id, on }], devices?, extras? } */
+  /** 本地 TB 上这些类型的活动告警清掉（规则已没了，不清就一直挂着）；失败只记日志，不影响这次应用 */
+  private async clearActive(types: string[]): Promise<number> {
+    let n = 0
+    for (const t of types) {
+      try {
+        const r = await this.tb.get<{ data: { id: { id: string } }[] }>(`/api/v2/alarms?pageSize=500&page=0&statusList=ACTIVE&typeList=${encodeURIComponent(t)}`)
+        for (const a of r.data) {
+          await this.tb.req('POST', `/api/alarm/${a.id.id}/clear`)
+          n++
+        }
+      } catch (e) {
+        this.log.warn(`清「${t}」的活动告警失败：${(e as Error).message}`)
+      }
+    }
+    return n
+  }
+
+  /** 校验请求体（§8.3）：{ version, thresholds: ThresholdRow[], rules: [{ id, on }], devices?, extras?, caps?, capKeys?, devComm? } */
   private parse(b: unknown) {
     if (!isObj(b)) throw new Invalid('请求体要是 JSON 对象')
     const version = b['version']
@@ -319,7 +358,25 @@ export class ApplyService {
         throw new Invalid(`设备清单与本机不同（${[add.length ? `多 ${add.join('、')}` : '', del.length ? `少 ${del.join('、')}` : ''].filter(Boolean).join('，') || '类型不同'}）：设备清单变更要在子站重新生成 eg.yaml 部署到这台 EG，在线改暂不支持`)
       }
     }
-    return { version, thresholds, rules, extras, ignored }
+    // 阶段 A：能力清单（本柜那一份）与下挂设备离线判据
+    let caps: CapsConfig | null
+    try {
+      caps = parseCaps(b, this.cfg.cabinet.code)
+    } catch (e) {
+      throw new Invalid((e as Error).message)
+    }
+    let devComm: DevCommParams | null = null
+    if (b['devComm'] !== undefined) {
+      const d = b['devComm']
+      if (!isObj(d)) throw new Invalid('devComm 要是对象 { failN, minMs, periods }')
+      const pos = (v: unknown, k: string, dflt: number) => {
+        if (v === undefined) return dflt
+        if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw new Invalid(`devComm.${k} 要是正数`)
+        return v
+      }
+      devComm = { failN: pos(d['failN'], 'failN', 5), minMs: pos(d['minMs'], 'minMs', 30_000), periods: pos(d['periods'], 'periods', 5) }
+    }
+    return { version, thresholds, rules, extras, ignored, caps, devComm }
   }
 }
 
@@ -332,7 +389,7 @@ export function filterRules(alarms: TbAlarmDef[], rules: { id: string; on: boole
     for (const r of rules) {
       if (r.on) continue
       const m = RULE_ALARM[r.id]
-      if (!m || m.type !== a.alarmType) continue
+      if (!m || (m.type !== a.alarmType && !m.alias?.includes(a.alarmType))) continue
       if (m.severity) delete createRules[m.severity]
       else drop = true
     }

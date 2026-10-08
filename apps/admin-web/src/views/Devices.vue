@@ -3,7 +3,7 @@
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { refreshConfig, store } from '../store'
-import { dt, QTEXT } from '../utils/fmt'
+import { COMMTEXT, dt, QTEXT } from '../utils/fmt'
 import { KIND, type Dev } from '../types'
 
 const router = useRouter()
@@ -64,6 +64,18 @@ function copy(t: string) {
           <dd><code>lsa/{{ r.conf.name }}/telemetry</code> <a @click="copy(`lsa/${r.conf.name}/telemetry`)">复制</a></dd>
           <dt>属性主题</dt>
           <dd><code>lsa/{{ r.conf.name }}/attributes</code></dd>
+          <dt>通信状态</dt>
+          <dd v-if="r.dev?.comm" :class="COMMTEXT[r.dev.comm.comm]?.[1]">
+            {{ COMMTEXT[r.dev.comm.comm]?.[0] ?? r.dev.comm.comm }}
+            · 最近成功 {{ r.dev.comm.lastOk ? dt(r.dev.comm.lastOk) : '—' }}
+            <template v-if="r.dev.comm.fails"> · 连续失败 {{ r.dev.comm.fails }}{{ r.dev.comm.err ? `（${r.dev.comm.err}）` : '' }}</template>
+            <span v-if="r.dev.comm.fromSource.fails || r.dev.comm.fromSource.err" class="t2">（失败计数由同事程序自报）</span>
+          </dd>
+          <dd v-else>—</dd>
+          <template v-if="r.dev && r.dev.capsEnabled === false">
+            <dt>能力</dt>
+            <dd class="t2">子站能力清单里这台对应的能力都没启用：本地照常采集，不上送子站</dd>
+          </template>
           <dt>测点</dt>
           <dd>{{ r.dev?.keys ?? 0 }} 个已收到 · 最近 {{ r.dev?.lastTs ? dt(r.dev.lastTs) : '—' }}</dd>
           <dt>质量码</dt>

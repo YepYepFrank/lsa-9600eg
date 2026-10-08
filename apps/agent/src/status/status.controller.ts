@@ -12,6 +12,7 @@ import { SouthService } from '../south/south.service.js'
 import { Public } from '../auth/guard.js'
 import { AGENT_VERSION } from '../attrs/attrs.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
+import { CapsService } from '../caps/caps.service.js'
 
 const STARTED = Date.now()
 
@@ -22,6 +23,7 @@ export class StatusController {
     private readonly bus: BusService,
     private readonly quality: QualityService,
     private readonly south: SouthService,
+    private readonly caps: CapsService,
     private readonly self: SelfService,
     private readonly derive: DeriveService,
     private readonly uplink: UplinkService,
@@ -55,6 +57,9 @@ export class StatusController {
           lastTs: lastTs || null,
           ageSec: lastTs ? Math.round((now - lastTs) / 1000) : null,
           dead: dead.has(d.name),
+          // 阶段 A：通信状态（§13）与能力（整台不启用 = 不上送）
+          comm: this.quality.commOf(d.name, now),
+          capsEnabled: this.caps.deviceEnabled(d.name),
           q: this.quality.qualityOf(d.name, now),
           south: this.south.rowOf(d.name, now),
           southBySource: this.south.bySource(d.name),

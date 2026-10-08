@@ -19,6 +19,7 @@ import { BusService } from '../bus/bus.service.js'
 import { OutboxStore, type OutRow, type RowKind } from './outbox.store.js'
 import { attrKey, chunkRows, dropStaleAttrs, MAX_PAYLOAD_BYTES } from './chunk.js'
 import { AuditService } from '../audit/audit.service.js'
+import { CapsService } from '../caps/caps.service.js'
 
 export type UplinkState = 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'none' | 'unknown'
 
@@ -91,7 +92,17 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
     private readonly audit: AuditService,
+    private readonly caps: CapsService,
   ) {}
+
+  private readonly upListeners: (() => void)[] = []
+  /** 已在子站声明在线（v1/gateway/connect）的子设备 */
+  private announced = new Set<string>()
+
+  /** 每次连上子站时调用（caps.actual 等「连上时报」的属性） */
+  whenUp(fn: () => void): void {
+    this.upListeners.push(fn)
+  }
 
   get configured(): boolean {
     return !!this.cfg.station.mqtt && !!stationToken(this.cfg)
@@ -114,10 +125,19 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     this.store = new OutboxStore(resolve(this.cfg.dir, 'outbox.db'))
     const s = this.store.stats()
     if (s.depth) this.log.log(`outbox 里有上次没送完的 ${s.depth} 条，连上后补传`)
+    // 能力全都不启用的设备（阶段 A caps）：源头丢，不进 outbox —— 改成启用后从那一刻起送，以前的不补传
     this.bus.onTelemetry((dev, entries) => {
+      if (!this.caps.deviceEnabled(dev)) return
       for (const e of entries) this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(e.values) })
     })
-    this.bus.onAttributes((dev, attrs) => this.pending.push({ dev, kind: 'a', ts: Date.now(), body: JSON.stringify(attrs) }))
+    this.bus.onAttributes((dev, attrs) => {
+      if (!this.caps.deviceEnabled(dev)) return
+      this.pending.push({ dev, kind: 'a', ts: Date.now(), body: JSON.stringify(attrs) })
+    })
+    // 能力清单变了：新启用的设备马上声明在线
+    this.caps.onChange(() => {
+      if (this.client?.connected) this.announce()
+    })
     this.timers.push(setInterval(() => this.flush(), FLUSH_MS))
     this.timers.push(setInterval(() => this.pump(), TICK_MS))
     this.timers.push(setInterval(() => this.trim(), TRIM_EVERY_MS))
@@ -220,6 +240,16 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     c.on('error', e => this.log.warn(`子站 MQTT：${e.message}`))
   }
 
+  /** 声明子设备在线（TB 网关接口）；EG 自己是网关本身，不用声明；能力全都不启用的不声明（免得子站 TB 自动建出设备） */
+  private announce(): void {
+    for (const d of this.cfg.devices) {
+      if (d.kind === 'eg' || d.name === this.cfg.eg.name) continue
+      if (!this.caps.deviceEnabled(d.name) || this.announced.has(d.name)) continue
+      this.client!.publish('v1/gateway/connect', JSON.stringify({ device: d.name }), { qos: 1 })
+      this.announced.add(d.name)
+    }
+  }
+
   private onUp(): void {
     this.flush()
     this.mark = this.store!.maxSeq()
@@ -232,13 +262,14 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     const was = this.downSince
     this.downSince = null
     this.log.log(`已连子站 ${this.cfg.station.mqtt}${this.histTotal ? `，补传 ${this.histTotal} 条` : ''}${was ? `（断了 ${Math.round((Date.now() - was) / 1000)} s）` : ''}`)
-    // 声明子设备在线（TB 网关接口）；EG 自己是网关本身，不用声明
-    for (const d of this.cfg.devices) this.client!.publish('v1/gateway/connect', JSON.stringify({ device: d.name }), { qos: 1 })
+    this.announced = new Set()
+    this.announce()
     // 重启识别（§8.1）：每次连上子站发一次
     const boot = this.bootAttrs()
     this.attrSent.clear()
     for (const k of Object.keys(boot)) this.attrSent.set(attrKey(this.cfg.eg.name, k), Infinity)
     this.client!.publish('v1/devices/me/attributes', JSON.stringify(boot), { qos: 1 })
+    for (const fn of this.upListeners) fn()
   }
 
   private onDown(): void {

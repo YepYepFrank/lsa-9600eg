@@ -58,4 +58,15 @@ export const QTEXT: Record<string, [string, string]> = {
   invalid: ['无效', 'crit'],
   stale: ['陈旧', 'minor'],
   backfill: ['补传', 'info'],
+  // 阶段 A：转换程序给的传感器状态（EG 透传）
+  warmup: ['预热中', 'info'],
+  calibrating: ['校准中', 'info'],
+}
+
+/** 下挂设备通信状态（§13 dev.comm） */
+export const COMMTEXT: Record<string, [string, string]> = {
+  ONLINE: ['在线', 'good'],
+  DEGRADED: ['部分量异常', 'minor'],
+  OFFLINE: ['离线', 'crit'],
+  UNKNOWN: ['刚启动、未判', ''],
 }

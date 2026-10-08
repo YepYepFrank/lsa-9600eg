@@ -27,7 +27,18 @@ async function fullscreen() {
   try { await camera.value?.requestFullscreen() } catch { ElMessage.warning('当前浏览器无法进入全屏') }
 }
 
-const { m, cam, sams, meter, pm, labelOf, num, text, series, has } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
+const { m, cam, sams, meter, pm, labelOf, num, text, series, has, card } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
+/* 阶段 A：卡片 → 能力（子站下发的能力清单）。演示模式照旧全显示；实测时 confirmed 显示、pending 显示「待定」、unsupported 隐藏 */
+const CARD_CAPS = {
+  camera: ['camVideo', 'thermalRegions'],
+  pd: ['pdAmplitude', 'pdCount', 'pdType', 'pdLevel', 'tev'],
+  smoke: ['smokePpm', 'pm6'],
+  climate: ['envTH'],
+  arc: ['arcIntensity', 'arcEvents'],
+  meter: ['meterBasic', 'meterHarmonics', 'meterThd', 'meterDemand'],
+} as const
+const show = (k: keyof typeof CARD_CAPS) => props.demo || card(...CARD_CAPS[k]) === 'show'
+const pendingCard = (k: keyof typeof CARD_CAPS) => !props.demo && card(...CARD_CAPS[k]) === 'pending'
 const cab = computed(() => store.status?.cabinet.code)
 /** 页面上的单位一律取点表；局放幅值按子站与现场口径写 dBμV（点表目前写的是 dB，已报后端统一） */
 const UNIT_FIX: Record<string, string> = { 'us.amp': 'dBμV', 'uv.int': 'a.u.' }
@@ -256,7 +267,8 @@ async function download(id: string, label: string) {
     <div v-else-if="topAlarm" class="cab-warning" :class="'sev-' + topAlarm.severity"><span class="warning-tag">{{ SEV[topAlarm.severity]?.[0] ?? topAlarm.severity }}</span>{{ topAlarm.type }} · {{ detailOf(topAlarm) }} · {{ time(topAlarm.occurredAt) }} <button @click="emit('navigate', 'events')">查看事件 ›</button></div>
 
     <div v-if="tab === 'overview'" class="monitor-grid">
-      <section class="monitor-card camera-card">
+      <section v-if="pendingCard('camera')" class="monitor-card camera-card cap-pending"><div class="monitor-card-heading"><b>双光摄像头</b><span class="grow"/><span class="pending">待定</span></div><div class="monitor-empty"><span class="empty-symbol">◌</span><strong>能力待定</strong><span>子站确认这项能力后接入，现在不显示数据</span></div></section>
+      <section v-if="show('camera')" class="monitor-card camera-card">
         <div class="monitor-card-heading"><b>双光摄像头</b><span v-if="!demo && cam" class="muted">{{ labelOf(cam) }}</span><span class="grow"/><select v-model="palette" aria-label="热像调色板" :disabled="!demo" :title="demo ? '' : '实况热像的伪彩由摄像机出'"><option value="iron">铁红</option><option value="white">白热</option><option value="rainbow">彩虹</option></select><label><input v-model="boxes" type="checkbox" :disabled="!demo && !rois.length" />测温标注</label><button @click="fullscreen">全屏</button></div>
         <div ref="camera" class="camera-frame">
           <DualLightPlayer v-if="demo" fill big mode="side" :palette="palette" :boxes="boxes ? [62.2, 78.6, 62.4] : false" :box-labels="['R1', 'R2', 'R3']" :tmax="78.6" :env-t="26.5" />
@@ -265,13 +277,15 @@ async function download(id: string, label: string) {
         <div class="camera-summary"><div>最高温 <b>{{ demo ? '78.6' : f1(tmax) }}</b><small>℃</small></div><div>温升 <b>{{ demo ? '52.1' : f1(rise) }}</b><small>K</small></div></div>
       </section>
       <div class="sensor-stack">
-      <section class="monitor-card pd-card">
+      <section v-if="pendingCard('pd')" class="monitor-card pd-card cap-pending"><div class="monitor-card-heading"><b>超声局放</b><span class="grow"/><span class="pending">待定</span></div><div class="monitor-empty"><span class="empty-symbol">◌</span><strong>能力待定</strong><span>子站确认这项能力后接入，现在不显示数据</span></div></section>
+      <section v-if="show('pd')" class="monitor-card pd-card">
         <div class="monitor-card-heading"><b>超声局放</b><span v-if="!demo && pdAmp && sams.length > 1" class="muted" :title="'各隔室取大，当前最大在 ' + labelOf(pdAmp.s)">{{ shortSam(pdAmp.s) }} 最大</span><span class="grow"/><span class="muted">近 24h</span></div>
         <div class="sensor-values"><div><span>局放幅值</span><b>{{ demo ? '6.2' : f1(pdAmp?.v ?? null) }} <small>{{ demo ? 'dBμV' : ampUnit }}</small></b></div><div><span>局放次数</span><b>{{ demo ? '2' : f1(pdCnt?.v ?? null, 0) }} <small>{{ demo ? '次' : cntUnit }}</small></b></div></div>
         <MultiUnitTrend v-if="demo || hasPd" :series="dischargeSeries" :units="dischargeUnits" :height="125" compact hide-legend center-unit-names :scales="dischargeScales" :axis-colors="pdAxisColors" />
         <div v-else class="monitor-empty">尚未接入局放监测数据</div>
       </section>
-      <section class="monitor-card smoke-card">
+      <section v-if="pendingCard('smoke')" class="monitor-card smoke-card cap-pending"><div class="monitor-card-heading"><b>烟雾 / 气体监测</b><span class="grow"/><span class="pending">待定</span></div><div class="monitor-empty"><span class="empty-symbol">◌</span><strong>能力待定</strong><span>子站确认这项能力后接入，现在不显示数据</span></div></section>
+      <section v-if="show('smoke')" class="monitor-card smoke-card">
         <div class="monitor-card-heading"><b>烟雾 / 气体监测</b><span class="grow"/><span class="pending" :title="demo ? '颗粒物通道用于演示，待实际传感器选型后调整' : '按点表 pm 设备的 key 与单位接入；传感器型号待确认'">{{ demo ? '模拟 · μg/m³' : pm ? '实测 · 型号待确认' : '选型待定' }}</span></div>
         <template v-if="demo">
           <div class="preview-readings smoke-readings"><div v-for="s in smokeSeries" :key="s.name"><span><i :style="{ background: s.color }"/>{{ s.name }}</span><b>{{ s.data[s.data.length - 1][1] }}</b></div></div>
@@ -284,11 +298,13 @@ async function download(id: string, label: string) {
         <div v-else class="monitor-empty"><span class="empty-symbol">◌</span><strong>传感器待确认</strong><span>确定型号与接口后接入</span></div>
       </section>
       </div>
-      <section class="monitor-card climate-card">
+      <section v-if="pendingCard('climate')" class="monitor-card climate-card cap-pending"><div class="monitor-card-heading"><b>柜内温湿度</b><span class="grow"/><span class="pending">待定</span></div><div class="monitor-empty"><span class="empty-symbol">◌</span><strong>能力待定</strong><span>子站确认这项能力后接入，现在不显示数据</span></div></section>
+      <section v-if="show('climate')" class="monitor-card climate-card">
         <div class="monitor-card-heading"><b>柜内温湿度</b><select v-if="!demo && sams.length > 1" v-model="samSel" aria-label="隔室" class="sam-sel"><option v-for="s in sams" :key="s" :value="s">{{ labelOf(s) }}</option></select><span class="grow"/><div class="climate-legend"><button v-for="s in climate" :key="s.name" :aria-pressed="selected[s.name] !== false" :class="{ inactive: selected[s.name] === false }" @click="selected = { ...selected, [s.name]: selected[s.name] === false }"><i :style="{ background: s.color }"/>{{ s.name }}</button></div></div>
         <div class="climate-layout"><div class="dial-column"><ThermoHygroDial compact :temperature="demo ? 26.5 : envT" :humidity="demo ? 56 : envRh" :min="0" :max="100" /><div class="dew-reading">计算露点 <b>{{ demo ? dewPoint(26.5, 56) : f1(dew) }}<small> ℃</small></b><el-tooltip content="计算露点由柜内空气温度和相对湿度计算得到。壳体表面温度低于此温度时，有凝露风险。" placement="bottom" :popper-style="{ maxWidth: '320px', lineHeight: '1.6' }"><button aria-label="计算露点说明">?</button></el-tooltip></div></div><MultiUnitTrend v-if="demo || climate.some(s => s.data.length)" :series="climate" :height="215" compact hide-legend center-unit-names :selected="selected" :scales="{ '℃': { min: 0, max: 100, interval: 20 }, '%': { min: 0, max: 100, interval: 20 } }" :axis-colors="{ '℃': 'var(--s2)', '%': 'var(--s1)' }" /><div v-else class="monitor-empty">等待温湿度数据</div></div>
       </section>
-      <section class="monitor-card arc-card">
+      <section v-if="pendingCard('arc')" class="monitor-card arc-card cap-pending"><div class="monitor-card-heading"><b>UV 弧光监测</b><span class="grow"/><span class="pending">待定</span></div><div class="monitor-empty"><span class="empty-symbol">◌</span><strong>能力待定</strong><span>子站确认这项能力后接入，现在不显示数据</span></div></section>
+      <section v-if="show('arc')" class="monitor-card arc-card">
         <div class="monitor-card-heading"><b>UV 弧光监测</b><span class="grow"/><span v-if="!demo && hasArc" class="muted">当前 {{ f1(arcNow?.v ?? null, 0) }} a.u.</span><span class="pending" title="相对强度使用任意单位 a.u.，待实际产品确定后调整">{{ demo ? '模拟 · 近 24h' : hasArc ? '实测 · 近 24h' : '接口待确认' }}</span></div>
         <template v-if="demo">
           <div class="preview-readings arc-readings"><div><span>峰值强度</span><b>{{ Math.max(...arcPreview.pulses.map(p => p.value)) }}<small> a.u.</small></b></div><div><span>脉冲次数</span><b>{{ arcPreview.pulses.length }}<small> 次</small></b></div></div>
@@ -302,6 +318,8 @@ async function download(id: string, label: string) {
       </section>
     </div>
 
+    <section v-else-if="tab === 'electric' && pendingCard('meter')" class="monitor-card cap-pending"><div class="monitor-card-heading"><b>电气量</b><span class="grow"/><span class="pending">待定</span></div><div class="monitor-empty"><span class="empty-symbol">◌</span><strong>能力待定</strong><span>子站确认电表能力后接入，现在不显示数据</span></div></section>
+    <section v-else-if="tab === 'electric' && !show('meter')" class="monitor-card"><div class="monitor-empty"><strong>本柜不配电表</strong><span>子站能力清单里电表各项都是「不具备」</span></div></section>
     <template v-else-if="tab === 'electric'">
       <div v-if="!demo && !meter" class="monitor-card"><div class="monitor-empty">本柜没有配置电表（eg.yaml 设备清单里没有 meter）</div></div>
       <template v-else>

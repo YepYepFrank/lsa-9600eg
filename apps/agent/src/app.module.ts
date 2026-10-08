@@ -26,15 +26,19 @@ import { VideoClient, VideoController } from './video/video.controller.js'
 import { EvidenceController } from './evidence/evidence.controller.js'
 import { EvidenceService } from './evidence/evidence.service.js'
 import { HistoryController } from './history/history.controller.js'
+import { CapsService } from './caps/caps.service.js'
+import { CapsActualService } from './caps/caps-actual.service.js'
+import { CapsController } from './caps/caps.controller.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController, HistoryController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController, HistoryController, CapsController],
   providers: [
     configProvider,
     AuditService,
     AuthService,
     { provide: APP_GUARD, useClass: AuthGuard },
     BusService,
+    CapsService,
     AttrsService,
     QualityService,
     DeriveService,
@@ -47,6 +51,7 @@ import { HistoryController } from './history/history.controller.js'
     ApplyService,
     VideoClient,
     EvidenceService,
+    CapsActualService,
   ],
 })
 export class AppModule {}

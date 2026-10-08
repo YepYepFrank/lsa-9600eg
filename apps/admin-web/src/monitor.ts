@@ -3,6 +3,7 @@
  *   趋势     GET history?device=&keys=…   60 s，近 24 h 按 5 min 一桶（弧光脉冲 uv.pulse 原样取）
  *   测温区   GET video/status              30 s（区域定义与画面尺寸：按摄像机坐标画框）
  *   事件     GET alarms、GET evidence      10 s（事件与录像页）
+ *   能力     GET caps                      60 s（阶段 A：子站下发的能力清单；pending 卡片显示「待定」、unsupported 隐藏，不拿演示值充数）
  * 设备按种类找：camera（双光摄像机）、sam（按名字排序，A / B 隔室）、meter（多功能电表）、pm（颗粒物 / 烟气）。 */
 import { computed, onBeforeUnmount, onMounted, reactive, watch, type Ref } from 'vue'
 import { api } from './session'
@@ -53,6 +54,21 @@ interface History {
 const HOURS = 24
 const POINTS = 288
 
+/** 子站下发的能力清单（GET caps）；没下发过 delivered = false，页面照旧 */
+export interface CapsInfo {
+  delivered: boolean
+  caps: Record<string, 'confirmed' | 'pending' | 'unsupported'> | null
+  actual: Record<string, 'ok' | 'nodata' | 'absent'> | null
+}
+/** 卡片该怎么显示：任一能力 confirmed 显示；都不 confirmed 但有 pending 显示「待定」；全都 unsupported 隐藏；子站没写的能力不影响 */
+export function cardState(info: CapsInfo | null, caps: string[]): 'show' | 'pending' | 'hidden' {
+  if (!info?.delivered || !info.caps) return 'show'
+  const states = caps.map(k => info.caps![k]).filter(Boolean)
+  if (!states.length) return 'show'
+  if (states.includes('confirmed')) return 'show'
+  return states.includes('pending') ? 'pending' : 'hidden'
+}
+
 export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   const m = reactive({
     live: {} as Record<string, Live>,
@@ -62,6 +78,7 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
     evidence: [] as EvidenceItem[],
     error: '',
     histAt: 0,
+    caps: null as CapsInfo | null,
   })
 
   const devs = computed(() => store.status?.devices ?? [])
@@ -137,6 +154,16 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
       m.regions = []
     }
   }
+  async function loadCaps() {
+    try {
+      m.caps = await api<CapsInfo>('caps')
+    } catch {
+      m.caps = null
+    }
+  }
+  /** 卡片显示状态（按能力） */
+  const card = (...caps: string[]) => cardState(m.caps, caps)
+
   async function loadEvents() {
     const [a, e] = await Promise.allSettled([api<{ alarms: AlarmRow[] }>('alarms?limit=200'), api<{ items: EvidenceItem[] }>('evidence?limit=500')])
     if (a.status === 'fulfilled') m.alarms = a.value.alarms
@@ -163,12 +190,13 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
     every(loadRegions, 30_000)
     // 总览顶上的事件条也要用活动告警
     every(loadEvents, 10_000)
+    every(loadCaps, 60_000)
   }
   onMounted(start)
   onBeforeUnmount(stop)
   watch([tab, enabled, () => !!store.status], start)
 
-  return { m, cam, sams, meter, pm, labelOf, num, text, series, has, refresh: start }
+  return { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, refresh: start }
 }
 
 /** 露点（Magnus 公式，与领导原型同一组系数） */

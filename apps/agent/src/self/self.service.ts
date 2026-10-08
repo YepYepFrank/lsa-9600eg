@@ -6,7 +6,9 @@
  *
  *   eg.state        online / degraded（有下挂设备整台失效，来自质量码看护）
  *   eg.lat eg.loss  到子站的 TCP 建连时延 / 失败率（连子站 TB 的 MQTT 口，即上送走的口；ICMP 要 root，不用）
- *   eg.clk_offset   本机时钟 − 时钟源，SNTP 每分钟测一次（local.yaml ntp.server，空 = 子站主机）
+ *   eg.clk_offset   本机时钟 − 时钟源，SNTP 每分钟测一次（local.yaml ntp.server，空 = 子站主机）；测不出来不发（不填 0）
+ *   eg.time_sync    synced（5 分钟内测成功且 |偏差| < 500 ms）/ unsynced / unknown（从没测成功过）—— 阶段 A，V3.0 §13；
+ *                   时间存疑放在 EG 一级（子站见 unsynced 把这台的数据视为时间存疑），不按点标 q
  *   eg.cpu eg.mem eg.ssd       CPU、内存、数据分区占用
  *   eg.temp         机内温度：/sys/class/thermal 与 hwmon 里最高的一个
  *   eg.up_kbps      上行网口发送速率（/proc/net/dev）；读不到网卡计数时退回上送服务实际发出的字节
@@ -29,6 +31,9 @@ const PERIOD_MS = 5_000
 const DEFAULT_PROBE_PORT = 1883
 const PROBE_WINDOW = 12
 const NTP_EVERY_MS = 60_000
+/** |偏差| 在这以内算对上了 */
+const SYNC_MAX_MS = 500
+export type TimeSync = 'synced' | 'unsynced' | 'unknown'
 
 @Injectable()
 export class SelfService implements OnModuleInit, OnModuleDestroy {
@@ -87,8 +92,15 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  clock(): { server: string; offsetMs: number | null; measuredAt: number | null } {
-    return { server: this.ntpServer(), offsetMs: this.clkOffset, measuredAt: this.clkAt || null }
+  clock(): { server: string; offsetMs: number | null; measuredAt: number | null; sync: TimeSync } {
+    return { server: this.ntpServer(), offsetMs: this.clkOffset, measuredAt: this.clkAt || null, sync: this.timeSync() }
+  }
+
+  /** 对时状态（eg.time_sync） */
+  timeSync(now = Date.now()): TimeSync {
+    if (!this.clkAt) return 'unknown'
+    if (now - this.clkAt > 5 * NTP_EVERY_MS || this.clkOffset === null || Math.abs(this.clkOffset) >= SYNC_MAX_MS) return 'unsynced'
+    return 'synced'
   }
 
   /** 探测目标：子站上送口（station.mqtt），没配就是子站主机的 1883 */
@@ -119,6 +131,7 @@ export class SelfService implements OnModuleInit, OnModuleDestroy {
       'eg.lat': ok.length ? Math.round(median(ok.slice(-3))) : null,
       'eg.loss': this.probes.length ? round((1 - ok.length / this.probes.length) * 100) : null,
       'eg.clk_offset': this.clkOffset,
+      'eg.time_sync': this.timeSync(),
       'eg.cpu': all > 0 ? round((busy / all) * 100) : 0,
       'eg.mem': round((1 - freemem() / totalmem()) * 100),
       'eg.ssd': diskUsedPct(this.cfg.dir),

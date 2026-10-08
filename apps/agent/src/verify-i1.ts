@@ -13,7 +13,8 @@ import { BUS_TOPIC, loadConfig } from '@lsa-eg/config'
 import { agent, BUS, check, containerMemMb, docker, done, EMU, env, post, sleep, Tb, until } from './verify/lib.js'
 
 const LOCAL_TB = env('EG_TB_HTTP', 'http://127.0.0.1:18080')
-const ALARM_TYPES = ['过温', '绝对超温', '局放异常', '弧光异常', '环境', '过载', '烟气']
+// 湿度规则（EG-rh，原「环境」、2026-10-08 改名「柜内湿度高」）子站缺省下 on:false，设备配置里可以没有，不在必查之列
+const ALARM_TYPES = ['过温', '绝对超温', '局放异常', '弧光异常', '过载', '烟气']
 
 async function main() {
   console.log('I1 自检：EG 样机的本地 ThingsBoard\n')

@@ -14,6 +14,10 @@ export interface Dev {
   southBySource: boolean
   rated: number | null
   epBackwards: number
+  /** 阶段 A：通信状态（§13）；fromSource = 转换程序自报的项 */
+  comm?: { comm: 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'UNKNOWN'; lastOk: number | null; fails: number; err: string; fromSource: { lastOk: boolean; fails: boolean; err: boolean } }
+  /** 阶段 A：能力全都不启用 = false（不上送子站） */
+  capsEnabled?: boolean
 }
 
 export interface Status {
