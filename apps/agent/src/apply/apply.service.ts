@@ -111,6 +111,8 @@ export class ApplyService {
   private timer: NodeJS.Timeout | null = null
   /** 开机后的遗留告警清扫做完了没有（本地 TB 没就绪时下一轮再试） */
   private swept = false
+  private sweptResolve: () => void = () => undefined
+  private readonly sweptP = new Promise<void>(r => (this.sweptResolve = r))
   /** 调试（EG_DEBUG）：假装本地 TB 没就绪，测 PENDING → 自动应用 */
   debugTbDown = false
 
@@ -290,6 +292,11 @@ export class ApplyService {
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign }
   }
 
+  /** 等开机清扫做完（告警事件开机重发要等它）；本地 TB 一直没就绪就等到 ms 为止 */
+  sweepDone(ms: number): Promise<void> {
+    return Promise.race([this.sweptP, new Promise<void>(r => setTimeout(r, ms).unref?.())])
+  }
+
   /** 开机清扫（排进应用队列，不与下发并发）：EG 规则的告警类型里，本地设备配置已经没有的，活动告警清掉 */
   private sweepOnce(): Promise<void> {
     if (!this.tb.available || this.debugTbDown) return Promise.resolve()
@@ -307,6 +314,7 @@ export class ApplyService {
         this.log.log(`开机清扫：规则已停用 / 改名、还挂着的活动告警清掉 ${n} 条（不再有规则的类型 ${gone.join('、')}）`)
         this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '清除遗留告警', target: gone.join('、'), ok: true, detail: `开机清扫：清掉 ${n} 条` })
       }
+      this.sweptResolve()
     })
     this.chain = p.catch(() => undefined)
     return p.catch(() => undefined)

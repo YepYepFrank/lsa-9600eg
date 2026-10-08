@@ -111,9 +111,11 @@ async function main() {
     check(s3.status === 200 && !!s3.cfg, `PUT → ${s3.status}；子站配置 ${s3.cfg?.want ?? '—'} ${s3.cfg?.status ?? '没等到 APPLIED'}`)
     const e3 = await egCaps()
     check(!e3.notUploaded.includes(pm6) && !e3.notLocal.includes(pm6), `EG：${pm6} 上送、进本地`)
-    const p3 = await until(spPoint, 180_000, 5000)
+    // 实时点的 changedAt 可能是改 unsupported 之前留在子站的旧值：要等改后的新值
+    const p3 = await until(async () => { const p = await spPoint(); return p && (p.changedAt ?? 0) >= t3 ? p : null }, 180_000, 5000)
     check(!!p3, `子站实时点有 ${pm6}/${KEY}（${p3 ? `${Math.round(((p3.changedAt ?? 0) - t3) / 1000)} s 于改后` : '没等到'}）`)
-    const tr3 = await trend(t1 - 60_000)
+    // 趋势按桶聚合，最后一个桶要等数据到了才有：等到有点再看最早一条
+    const tr3 = (await until(async () => { const t = await trend(t1 - 60_000); return t.data?.some(d => d[1] !== null) ? t : null }, 180_000, 10_000)) ?? (await trend(t1 - 60_000))
     const tss = (tr3?.data ?? []).filter(d => d[1] !== null).map(d => d[0])
     const first = tss.length ? Math.min(...tss) : 0
     check(tss.length > 0 && first >= t3 - (tr3.step || 0) - 5000, `子站趋势（从 pending 前 1 min 起）${tss.length} 条，最早 ${first ? `${Math.round((first - t3) / 1000)} s 于改 confirmed 后` : '—'}，桶宽 ${Math.round((tr3.step || 0) / 1000)} s（pending 期间的不补传）`)

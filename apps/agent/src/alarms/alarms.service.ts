@@ -139,11 +139,18 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     }
     this.log.log(this.sendEnabled ? `告警事件送 ${this.target}` : '告警事件只记本地、不送子站（EG_UPLINK=off 或 EG_EVENTS=off）')
     if (this.sendEnabled) {
-      // 启动时（上送目标也只在启动时会变）把活动告警按当前版本重发一遍：之前送错了地方、或子站丢了的，这里补上
+      // 启动时（上送目标也只在启动时会变）把活动告警按当前版本重发一遍：之前送错了地方、或子站丢了的，这里补上。
+      // 先等开机清扫（规则已停用 / 改名的遗留活动告警清掉）和一次对账（把清掉的记成 CLEARED）再重发 ——
+      // 不然会把子站已对账清掉的告警又送一遍 ACTIVE，子站另起一条（0.10 在 AH12 上验出来的）
       const last = this.store.getMeta('target')
-      const n = this.store.requeueActive()
-      if (n) this.log.log(`重发 ${n} 条活动告警${last && last !== this.target ? `（上送目标从 ${last} 改成了 ${this.target}）` : ''}`)
-      this.store.setMeta('target', this.target)
+      void this.applySvc.sweepDone(120_000).then(() =>
+        this.serial(async () => {
+          await this.reconcile().catch(() => undefined)
+          const n = this.store.requeueActive()
+          if (n) this.log.log(`重发 ${n} 条活动告警${last && last !== this.target ? `（上送目标从 ${last} 改成了 ${this.target}）` : ''}`)
+          this.store.setMeta('target', this.target)
+        }),
+      )
     }
     this.timers.push(setTimeout(() => this.reconcileSoon(), 5000))
     this.timers.push(setInterval(() => this.reconcileSoon(), RECONCILE_MS))

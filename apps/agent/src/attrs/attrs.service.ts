@@ -18,7 +18,7 @@ export const AGENT_VERSION = (() => {
   try {
     return (JSON.parse(readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8')) as { version: string }).version
   } catch {
-    return '0.2.1'
+    return '0.2.2'
   }
 })()
 
