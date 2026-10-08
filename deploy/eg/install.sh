@@ -12,6 +12,8 @@
 #   lsa-sp 没有口令、没有 shell，authorized_keys 带 restrict,port-forwarding,permitopen="127.0.0.1:18080"：
 #   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完用 --drop-sp-key 删掉（以后要再建实体重新 --sp-key）。
 # --drop-sp-key：删掉隧道账号 lsa-sp（连同它的 authorized_keys），别的不动。
+# 给过 --lan1 时同时加 LAN1 防火墙（nftables 表 inet lsa_eg：摄像机网只出不进，22 / 80 / 8554 都连不上，开机自起）；
+#   --fw-off 关掉并记住，--fw-on 重新打开；--status 显示它；回退到不管它的老版本时自动清掉。
 # 装完与 --status 都会列「安全提醒」：初始口令文件还在、lsa-sp 还在、SSH 允许口令登录等（只提醒，不替你改系统配置）。
 #
 # 分两轮是因为本地 TB 的设备、告警规则由子站跑 provision:eg 建（经 SSH 隧道连这台 EG 的 127.0.0.1:18080），
@@ -31,15 +33,88 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1 ;;
     --sp-key) SPKEY="${2:?--sp-key 后面给子站公钥（文件或公钥串）}"; shift ;;
     --drop-sp-key) MODE='drop-sp' ;;
+    --fw-off) MODE='fw-off' ;;
+    --fw-on) MODE='fw-on' ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
 done
 
+# ---------- LAN1（摄像机网）防火墙：只出不进 ----------
+# --lan1 时装：LAN1 进来的只放已建立 / 相关连接的回包（EG 主动拉摄像机的 RTSP / HTTP 回包），其余一律丢 —— 22、80、8554 都连不上。
+# 拉摄像机一律 RTSP over TCP（mtx.ts rtspTransport: tcp、抓帧 -rtsp_transport tcp），不用 ONVIF 组播发现，所以不需要摄像机主动进来。
+# input 管宿主机网络上的服务（sshd、agent、mediamtx），forward 管 Docker 发布到容器的端口（DNAT 后走 forward、不经 input）；
+# 优先级 filter - 10，比 Docker 的 iptables-nft 规则先判。单独一张表 inet lsa_eg，不碰系统其它规则。
+# 持久化：systemd 单元 lsa-eg-fw.service 开机 nft -f 加载。--fw-off 关掉并记住（.env EG_LAN1_FW=off），--fw-on 重新打开。
+FW_NFT=/etc/lsa-eg/lan1-fw.nft
+FW_UNIT=/etc/systemd/system/lsa-eg-fw.service
+fw_status() {
+  local nic; nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2-)"
+  if [ "$(id -u)" != 0 ]; then echo "LAN1 防火墙：要 sudo 才看得到"; return 0; fi
+  if nft list table inet lsa_eg >/dev/null 2>&1; then
+    local n; n="$(nft list chain inet lsa_eg input 2>/dev/null | grep -oE 'counter packets [0-9]+' | awk '{s+=$3} END {print s+0}')"
+    echo "LAN1 防火墙：开（$(nft list chain inet lsa_eg input | grep -oE 'iifname "[^"]+"' | head -1 | cut -d'"' -f2) 只出不进；开机自起 $(systemctl is-enabled lsa-eg-fw.service 2>/dev/null)；已丢弃入站 $n 个包）"
+  elif [ -n "$nic" ]; then
+    echo "LAN1 防火墙：没开（摄像机网 $nic 上 22 / 80 / 8554 都能连；sudo bash install.sh --fw-on 打开）"
+  else
+    echo "LAN1 防火墙：没开（没给 --lan1）"
+  fi
+}
+fw_apply() {
+  local nic="$1"
+  command -v nft >/dev/null 2>&1 || { echo "!! 没有 nft 命令：摄像机网 $nic 上只有管理页 403 这一道（装 nftables 后重跑）" >&2; return 0; }
+  mkdir -p "$(dirname "$FW_NFT")"
+  cat > "$FW_NFT" <<EOF
+#!/usr/sbin/nft -f
+# LSA-9600EG（install.sh --lan1 写）：摄像机网 $nic 只出不进。不要手改，重跑 install.sh 会重写；关掉用 install.sh --fw-off
+table inet lsa_eg
+delete table inet lsa_eg
+table inet lsa_eg {
+  chain input {
+    type filter hook input priority filter - 10; policy accept;
+    iifname "$nic" ct state established,related accept
+    iifname "$nic" counter drop comment "LAN1 新入站一律丢（22 / 80 / 8554 …）"
+  }
+  chain forward {
+    type filter hook forward priority filter - 10; policy accept;
+    iifname "$nic" ct state established,related accept
+    iifname "$nic" counter drop comment "LAN1 进 Docker 发布端口的也丢"
+  }
+}
+EOF
+  cat > "$FW_UNIT" <<EOF
+[Unit]
+Description=LSA-9600EG：摄像机网 LAN1 只出不进（nftables 表 inet lsa_eg）
+Before=network-pre.target docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f $FW_NFT
+ExecStop=/usr/sbin/nft delete table inet lsa_eg
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable lsa-eg-fw.service >/dev/null 2>&1
+  systemctl restart lsa-eg-fw.service
+  nft list table inet lsa_eg >/dev/null 2>&1 && echo "LAN1 防火墙已开：摄像机网 $nic 只出不进（22 / 80 / 8554 从 $nic 都连不上；EG 主动拉摄像机照常）" ||
+    echo "!! LAN1 防火墙没加载上（systemctl status lsa-eg-fw）" >&2
+}
+fw_remove() {
+  if [ -f "$FW_UNIT" ]; then systemctl disable --now lsa-eg-fw.service >/dev/null 2>&1 || true; rm -f "$FW_UNIT"; systemctl daemon-reload; fi
+  rm -f "$FW_NFT"
+  if command -v nft >/dev/null 2>&1; then nft delete table inet lsa_eg 2>/dev/null || true; fi
+  true
+}
+
 status() {
   $DC ps --format 'table {{.Name}}\t{{.Status}}'
   [ -f .installed/VERSION ] && echo "已装版本：$(cat .installed/VERSION)"
   [ -f .previous/VERSION ] && echo "可回退到：$(cat .previous/VERSION)"
+  fw_status
   true
 }
 # 安全提醒（只提醒，不改系统配置：自动关 SSH 口令登录可能把维护人员锁在外面）
@@ -51,6 +126,9 @@ security_notes() {
     msg+=('SSH 允许口令登录：维护账号改用密钥登录后建议关掉（/etc/ssh/sshd_config.d/ 下写 PasswordAuthentication no，再 systemctl reload ssh）')
   fi
   grep -q '^EG_PASSIVE=.' .env 2>/dev/null && msg+=('.env 里有 EG_PASSIVE：那是开发用的旁观模式，现场要删掉')
+  if grep -q '^EG_LAN1=.' .env 2>/dev/null && [ "$(id -u)" = 0 ] && ! nft list table inet lsa_eg >/dev/null 2>&1; then
+    msg+=('LAN1 防火墙没开：摄像机网上 22 / 80 / 8554 都能连（只有管理页 403）—— sudo bash install.sh --fw-on')
+  fi
   [ "${#msg[@]}" -gt 0 ] || return 0
   echo
   echo '安全提醒：'
@@ -74,6 +152,16 @@ fi
 env_set() {
   if grep -q "^$1=" .env 2>/dev/null; then sed -i "s#^$1=.*#$1=$2#" .env; else echo "$1=$2" >> .env; fi
 }
+if [ "$MODE" = 'fw-off' ]; then
+  fw_remove; env_set EG_LAN1_FW off
+  echo 'LAN1 防火墙已关并记住（以后重跑 install.sh 也不再加；要重新打开：sudo bash install.sh --fw-on）'
+  exit 0
+fi
+if [ "$MODE" = 'fw-on' ]; then
+  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2-)"
+  [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
+  env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
+fi
 # 本地 TB 的版本（compose.yaml 里 tb-node 的缺省标签）：回退不能跨它（库结构只升不降）
 tb_version() { grep -o 'tb-node:\${TB_VERSION:-[^}]*}' "$1" | head -1 | sed 's/.*:-//; s/}//'; }
 # 部署文件（升级时整个发布件覆盖过来的那些）
@@ -95,6 +183,8 @@ if [ "$MODE" = 'rollback' ]; then
   env_set EG_APP_IMAGE "lsa-eg-app:$prev"
   $DC up -d --remove-orphans
   rm -rf .installed && mv .previous .installed && mv .rollback-tmp .previous
+  # 回到的版本不管 LAN1 防火墙（早于它）：把规则清掉，与那个版本一致；它也管的话留着
+  grep -q 'lsa-eg-fw' install.sh || { fw_remove; echo '（回到的版本不管 LAN1 防火墙，规则已清掉）'; }
   echo; status
   exit 0
 fi
@@ -186,6 +276,8 @@ if [ -n "$LAN1" ]; then
   env_set EG_LAN1 "$LAN1"
 fi
 grep -q '^EG_LAN1=.' .env || echo '（提示：没给 --lan1：管理页在摄像机网口上也能打开，只能靠防火墙挡）'
+lan1_now="$(grep -E '^EG_LAN1=' .env | cut -d= -f2- || true)"
+if [ -n "$lan1_now" ] && ! grep -q '^EG_LAN1_FW=off' .env; then fw_apply "$lan1_now"; fi
 mkdir -p config/gateway/config config/mediamtx recordings
 
 # ---------- 子站 provision-eg.sh 的隧道账号（--sp-key） ----------
