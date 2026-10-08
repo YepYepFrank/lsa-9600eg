@@ -17,7 +17,8 @@
     "verify:g4": "node --import @swc-node/register/esm-register src/verify-g4.ts",
     "verify:g5": "node --import @swc-node/register/esm-register src/verify-g5.ts",
     "verify:ui": "node --import @swc-node/register/esm-register src/verify-ui.ts",
-    "verify:a": "node --import @swc-node/register/esm-register src/verify-a.ts"
+    "verify:a": "node --import @swc-node/register/esm-register src/verify-a.ts",
+    "verify:a:prod": "node --import @swc-node/register/esm-register src/verify-a-prod.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",
