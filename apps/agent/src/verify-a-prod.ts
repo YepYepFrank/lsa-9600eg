@@ -5,7 +5,8 @@
  * production 口径（@lsa/model caps.ts CAP_DEFAULT_PRODUCTION）：局放次数 / 类型 / 等级、弧光、烟雾、谐波 / THD / 需量、开关位置 pending；
  * pm6、tev unsupported；其余 confirmed。规则：某柜对应能力（RULE_CAP）不是 confirmed 的进 offCabs；EG-rh 缺省停用。
  * 期望（本柜）：EG-arc（弧光 pending）、EG-pm（pm6 unsupported）关；EG-pd 开且只看 us.amp；PM6 整台不进本地 TB、不上送；SAM 照常。
- * 跑完不恢复 —— 由子站重发它自己的配置（网关页「下发配置」或 POST /ext/gateways/<柜>/sync）。 */
+ * 跑完不恢复 —— 由子站重发它自己的配置（网关页「下发配置」或 POST /ext/gateways/<柜>/sync）。
+ * EG_A_READONLY=1：不下发，只看 EG 上现在生效的（真子站 0.10 下发的）是不是这个口径。 */
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { CAP_DEFAULT_PRODUCTION, CAP_KEYMAP, RULE_CAP, loadModel } from '@lsa/model'
@@ -37,8 +38,14 @@ async function main() {
   const body = { version: process.env['EG_A_VERSION'] ?? `prod-${Date.now().toString(36)}`, thresholds: model.thresholds, rules, extras: model.thresholdExtras, caps, capKeys, devComm: { failN: 5, minMs: 30_000, periods: 5 } }
   const now = Date.now()
   const ticket = signTicket(stationToken(cfg), { c: code, u: 'ext', n: '现场口径自检', r: 'station', iat: now, exp: now + 60_000, j: randomBytes(8).toString('hex') })
-  const r = (await (await fetch(`${AGENT}/api/config`, { method: 'PUT', headers: { 'content-type': 'application/json', 'X-EG-Ticket': ticket }, body: JSON.stringify(body) })).json()) as { status: string; error?: string; changed?: number }
-  check(r.status === 'APPLIED', `下发 production 口径 → ${r.status}${r.error ? `：${r.error}` : ''}（改了 ${r.changed ?? 0} 个设备配置）`)
+  const RO = process.env["EG_A_READONLY"] === "1"
+  const r = RO
+    ? { status: "APPLIED" as const, error: undefined, changed: 0 }
+    : (await (await fetch(`${AGENT}/api/config`, { method: 'PUT', headers: { 'content-type': 'application/json', 'X-EG-Ticket': ticket }, body: JSON.stringify(body) })).json()) as { status: string; error?: string; changed?: number }
+  if (RO) {
+    const st = await agent<{ applied?: { version?: string; by?: string; rulesOff?: string[] } }>(dir, '/api/config')
+    console.log(`   只读：看 EG 上现在生效的配置 ${st.applied?.version ?? '?'}（${st.applied?.by ?? '?'}，停用 ${st.applied?.rulesOff?.join('、') || '—'}）`)
+  } else check(r.status === 'APPLIED', `下发 production 口径 → ${r.status}${r.error ? `：${r.error}` : ''}（改了 ${r.changed ?? 0} 个设备配置）`)
   console.log(`   规则：${rules.map(x => `${x.id}${x.on ? '' : '(停)'}${'offCabs' in x ? `[offCabs ${x.offCabs!.join(',')}]` : ''}`).join(' ')}`)
 
   type Alarm = { alarmType: string; createRules: Record<string, { condition: { condition: { key: { key: string } }[] } }> }
