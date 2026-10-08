@@ -71,6 +71,8 @@ async function main() {
   const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-pm', 'EG-dphase', 'EG-devlost']
   const rules = (off: string[] = []) => RULES.map(id => ({ id, on: !off.includes(id) }))
   const stamp = Date.now().toString(36)
+  // 版本号：缺省 a-<时间>；对着接了子站的 EG 跑时设 EG_A_VERSION=<子站的期望版本>，免得子站看到版本不一致中途重发、把自检的配置盖掉
+  const ver = (i: number) => process.env['EG_A_VERSION'] ?? `a-${stamp}-${i}`
   const capsBody = (states: Record<string, string>) => ({
     caps: { [code]: states },
     capKeys: {
@@ -83,7 +85,7 @@ async function main() {
   const ALL_ON = { thermalRegions: 'confirmed', camVideo: 'confirmed', envTH: 'confirmed', pdAmplitude: 'confirmed', pdCount: 'confirmed', arcIntensity: 'confirmed', arcEvents: 'confirmed', meterBasic: 'confirmed', meterHarmonics: 'pending' }
 
   console.log('\n1. 能力下发：pm6 / smokePpm 不启用（PM6 整台不上送），电表谐波 pending')
-  const r1 = await put({ version: `a-${stamp}-1`, thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  const r1 = await put({ version: ver(1), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
   check(r1.status === 'APPLIED', `PUT /api/config 带 caps / capKeys / devComm → ${r1.status}${r1.error ? `：${r1.error}` : ''}`)
   const ci = await agent<{ delivered: boolean; caps: Record<string, string>; actual: Record<string, string> | null; devComm: { failN: number } }>(dir, '/api/caps')
   check(ci.delivered && ci.caps['pm6'] === 'unsupported' && ci.devComm.failN === 5, `GET /api/caps 照下发的：${JSON.stringify(ci.caps)}`)
@@ -104,11 +106,11 @@ async function main() {
   }, 90_000, 3000)
   check(!!comm && ['ONLINE', 'DEGRADED'].includes(String(comm['dev.comm']?.value)) && String(comm['dev.link']?.value) === '1', `${sam}：dev.comm = ${comm?.['dev.comm']?.value}、dev.link = ${comm?.['dev.link']?.value}、last_ok ${comm?.['dev.last_ok']?.value}、fails ${comm?.['dev.fails']?.value}`)
   if (pm6) {
+    // 比 EG 自己的时间戳（EG 的钟跟子站，与跑自检的机器可能差几十秒）：65 s 里最近一条没往前走 = 没再发
     const l = await tb.latest(pm6, ['dev.comm'])
-    const t0 = Date.now()
     await sleep(65_000)
     const l2 = await tb.latest(pm6, ['dev.comm'])
-    check(!l2['dev.comm'] || (l2['dev.comm'].ts ?? 0) < t0, `${pm6}（能力不启用）不发 dev.*：最近一条 ${l2['dev.comm'] ? new Date(l2['dev.comm'].ts).toISOString() : '无'}（自检开始前 ${l['dev.comm'] ? '有' : '无'}）`)
+    check(!l2['dev.comm'] || l2['dev.comm'].ts === l['dev.comm']?.ts, `${pm6}（能力不启用）不发 dev.*：最近一条 ${l2['dev.comm'] ? new Date(l2['dev.comm'].ts).toISOString() : '无'}（自检开始前 ${l['dev.comm'] ? '有' : '无'}）`)
   }
   console.log(`   ${sam} 整台停发 → 应 OFFLINE（fails ≥ 5 且 > max(30 s, 5 周期)），恢复 → ONLINE`)
   await post(`${EMU}/emu/dev/${sam}/dead?on=1`)
@@ -141,13 +143,13 @@ async function main() {
     return null
   }, 60_000, 2000)
   check(!!arcOn, `打弧光 → 本地 TB 活动告警「弧光异常」（${arcOn?.d ?? '没出来'}）`)
-  const r4 = await put({ version: `a-${stamp}-2`, thresholds: base, rules: rules(['EG-rh', 'EG-arc']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  const r4 = await put({ version: ver(2), thresholds: base, rules: rules(['EG-rh', 'EG-arc']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
   check(r4.status === 'APPLIED', `停用 EG-arc → ${r4.status}`)
   const cleared = await until(async () => (arcOn && !(await tb.activeAlarms(arcOn.d)).some(x => x.type === '弧光异常') ? true : null), 30_000, 2000)
   check(!!cleared, '停用后「弧光异常」活动告警被清掉（没有规则了，不清就一直挂着）')
 
   console.log('\n5. 恢复：不带能力的配置（全部照旧上送）')
-  const r5 = await put({ version: `a-${stamp}-3`, thresholds: base, rules: rules(['EG-rh']) })
+  const r5 = await put({ version: ver(3), thresholds: base, rules: rules(['EG-rh']) })
   check(r5.status === 'APPLIED', `恢复 → ${r5.status}`)
   const ci2 = await agent<{ delivered: boolean }>(dir, '/api/caps')
   check(!ci2.delivered, '/api/caps：delivered = false（页面照旧）')
