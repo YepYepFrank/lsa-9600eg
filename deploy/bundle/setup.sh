@@ -128,7 +128,7 @@ sp_new_env() {
   setv "$SP_ENV" EXT_SEED_PASSWORD "$seed"
   setv "$SP_ENV" SCREEN_PASSWORD "$screen"
   setv "$SP_ENV" EXT_JWT_SECRET "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  setv "$SP_ENV" WEB_DIST_DIR "$SP_DEST/web"
+  if grep -q '^WEB_ROOT=' "$SP_ENV"; then setv "$SP_ENV" WEB_ROOT "$SP_DEST/web-root"; else setv "$SP_ENV" WEB_DIST_DIR "$SP_DEST/web"; fi
   setv "$SP_ENV" BACKUP_DIR /data/lsa9600sp/backup
   # TB 系统管理员：tb-install 建出来是出厂口令，provision 首次建租户要用它登录 —— 先留出厂值，up.sh 之后再改（sp_sysadmin）
   grep -q '改成强口令' "$SP_ENV" && die '模板里还有没替换的「改成强口令」（安装包与本脚本不配套）'
@@ -179,6 +179,15 @@ sp_sysadmin() {
   echo "ThingsBoard 系统管理员出厂口令已改成随机口令（见 $SP_CRED）"
 }
 
+# 站内 CA 私钥的 sha256：0.9.3 起在 docker/tls-ca/，更早在 docker/tls/；都没有输出空
+ca_key_sum() {
+  local f
+  for f in "$SP_B/docker/tls-ca/sp-ca.key" "$SP_B/docker/tls/sp-ca.key"; do
+    [ -f "$f" ] && { sha256sum < "$f" | cut -c1-64; return 0; }
+  done
+  return 0
+}
+
 install_sp() {
   local mem_gb ver ip
   mem_gb=$(( $(awk '/MemTotal/ { print $2 }' /proc/meminfo) / 1024 / 1024 ))
@@ -188,24 +197,19 @@ install_sp() {
   if [ "$(cat "$SP_DEST/.loaded" 2>/dev/null)" = "$(cat VERSION)" ]; then echo '这一版的镜像已导入过，跳过'
   else gunzip -c sp/images.tar.gz | docker load | sed 's/^/  /'; fi
 
-  # 站内 CA（docker/tls/sp-ca.pem）变了，各 EG 手上的 sp-ca.pem 就全部失效、连不上 8883：升级前后必须一致
-  local ca="$SP_B/docker/tls/sp-ca.pem" ca0=''
+  # 站内 CA 变了，各 EG 手上的 sp-ca.pem 就全部失效、连不上 8883：证书与私钥升级前后都必须一致。
+  # 私钥 0.9.3 起在 docker/tls-ca/（不挂进容器），更早在 docker/tls/；up.sh 会自动迁，所以两处都认。
+  local ca="$SP_B/docker/tls/sp-ca.pem" ca0='' k0=''
   [ -f "$ca" ] && ca0="$(sha256sum < "$ca" | cut -c1-64)"
-  if [ -f "$SP_ENV" ] && [ -z "$ca0" ] && [ "$FORCE" != 1 ]; then
-    die "已有 docker/.env 却没有 docker/tls/sp-ca.pem：继续的话 up.sh 会新生成站内 CA，所有 EG 的 sp-ca.pem 失效。先把原来的 docker/tls 放回 $SP_B/docker/tls/；确实要换 CA（之后每台 EG 重出配置包）加 --force"
+  k0="$(ca_key_sum)"
+  if [ -f "$SP_ENV" ] && { [ -z "$ca0" ] || [ -z "$k0" ]; } && [ "$FORCE" != 1 ]; then
+    die "已有 docker/.env，但站内 CA 不全（docker/tls/sp-ca.pem $([ -n "$ca0" ] && echo 在 || echo 缺)；私钥 docker/tls-ca/ 或 docker/tls/ 下的 sp-ca.key $([ -n "$k0" ] && echo 在 || echo 缺)）：继续的话 up.sh 会新生成 CA，所有 EG 的 sp-ca.pem 失效。先把原来的 docker/tls、docker/tls-ca 放回 $SP_B/docker/；确实要换 CA（之后每台 EG 重出配置包）加 --force"
   fi
 
   say "放置文件到 $SP_DEST"
   mkdir -p "$SP_B"
-  # 部署文件整体覆盖；docker/.env 与 docker/tls（站内 CA、服务端证书与私钥）一律不碰，安装包里万一带了也跳过
-  tar -C sp/lsa9600sp-backend --exclude=./docker/.env --exclude=./docker/tls -cf - . | tar -C "$SP_B" -xf -
-  # 前端原地换内容、不换目录：Nginx 绑定挂载的是目录本身，删了重建的话没被重建的 Nginx 看到的是已删除的空目录，
-  # 整站 403（0.9.2 升级验证踩到）。先拷新的再删新版本里没有的旧文件（旧的带哈希的 assets）。
-  mkdir -p "$SP_DEST/web"
-  cp -a sp/web/. "$SP_DEST/web/"
-  (cd "$SP_DEST/web" && find . -mindepth 1 -depth -print0) | while IFS= read -r -d '' f; do
-    [ -e "sp/web/$f" ] || rm -rf "${SP_DEST:?}/web/$f"
-  done
+  # 部署文件整体覆盖；docker/.env、docker/tls（服务端证书、CA 证书）、docker/tls-ca（CA 私钥）一律不碰，安装包里万一带了也跳过
+  tar -C sp/lsa9600sp-backend --exclude=./docker/.env --exclude=./docker/tls --exclude=./docker/tls-ca -cf - . | tar -C "$SP_B" -xf -
   find "$SP_B/scripts" -name '*.sh' -exec chmod +x {} +
   cp -a docs "$SP_DEST/" 2>/dev/null || true
 
@@ -217,16 +221,33 @@ install_sp() {
     sp_new_env
   fi
 
+  say '前端'
+  if [ -f "$SP_B/scripts/install-web.sh" ]; then
+    # 0.9.3 起交给子站自己的 install-web.sh：WEB_ROOT/releases/<版本> + current 符号链接原子切换（--rollback 可回退）；
+    # 网页检查留给 up.sh 收尾时做
+    bash "$SP_B/scripts/install-web.sh" --no-check "$PWD/sp/web"
+  else
+    # 早先的包：原地换内容、不换目录 —— Nginx 绑定挂载的是目录本身，删了重建的话没被重建的 Nginx 看到的是已删除的空目录，
+    # 整站 403（0.9.2 升级验证踩到）。先拷新的再删新版本里没有的旧文件（旧的带哈希的 assets）。
+    mkdir -p "$SP_DEST/web"
+    cp -a sp/web/. "$SP_DEST/web/"
+    (cd "$SP_DEST/web" && find . -mindepth 1 -depth -print0) | while IFS= read -r -d '' f; do
+      [ -e "sp/web/$f" ] || rm -rf "${SP_DEST:?}/web/$f"
+    done
+  fi
+
   say '启动（证书 → 建库 → provision → 扩展服务、Nginx、视频）'
   bash "$SP_B/scripts/up.sh" --prod
   # 早先版本的安装文件升级时换过前端目录，Nginx 可能还挂着已删除的旧目录：看不到 index.html 就重启它（重新挂载）
-  if ! docker exec lsa-nginx test -f /usr/share/nginx/html/index.html 2>/dev/null; then
+  if ! docker exec lsa-nginx sh -c 'test -f /usr/share/nginx/web-root/current/index.html || test -f /usr/share/nginx/html/index.html' 2>/dev/null; then
     echo 'Nginx 看不到前端文件（挂着已删除的旧目录），重启 Nginx'
     docker restart lsa-nginx >/dev/null
   fi
   if [ -n "$ca0" ]; then
-    if [ "$(sha256sum < "$ca" 2>/dev/null | cut -c1-64)" = "$ca0" ]; then echo "站内 CA 未变（sha256 ${ca0:0:16}…），各 EG 的 sp-ca.pem 照常可用"
-    else die "站内 CA 在升级中变了（原 sha256 ${ca0:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls 换回去再跑 up.sh --prod"; fi
+    local ca1 k1
+    ca1="$(sha256sum < "$ca" 2>/dev/null | cut -c1-64)"; k1="$(ca_key_sum)"
+    if [ "$ca1" = "$ca0" ] && [ "$k1" = "$k0" ]; then echo "站内 CA 未变（证书 sha256 ${ca0:0:16}…、私钥 sha256 ${k0:0:16}…），各 EG 的 sp-ca.pem 照常可用"
+    else die "站内 CA 在升级中变了（证书 ${ca0:0:16}… → ${ca1:0:16}…，私钥 ${k0:0:16}… → ${k1:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls、docker/tls-ca 换回去再跑 up.sh --prod"; fi
   fi
   cat VERSION > "$SP_DEST/.loaded"
   sp_sysadmin
