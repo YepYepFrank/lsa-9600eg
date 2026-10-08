@@ -13,7 +13,9 @@
  *   - EG 自己（lsa/EG-<柜号>/…）不能走这个连接器 —— 设备名与网关同名时平台会断开网关会话（G0 实测，当时本地是 TB Edge），
  *     交给自定义连接器 LsaSelfConnector 经网关自己的会话发（deploy/tb-gateway/extensions/lsa）。
  *
- * 配置由 agent 按 eg.yaml / local.yaml 生成，IoT Gateway 的远程配置关掉（配置只有一个来源）。 */
+ * 配置由 agent 按 eg.yaml / local.yaml 生成，IoT Gateway 的远程配置关掉（配置只有一个来源）。
+ * 阶段 A v1.2：能力全都是 unsupported 的设备不订阅（不进本地 TB）—— skip 由 GatewayConfigService 按能力清单给；
+ * IoT Gateway 每 60 s 查一次连接器配置（checkConnectorsConfigurationInSeconds），文件变了自己重载，不用重启容器。 */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { BUS_TOPIC, type EgConfig } from '@lsa-eg/config'
@@ -36,7 +38,7 @@ function writeIfChanged(file: string, text: string): boolean {
   return true
 }
 
-export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'gateway/config')): RenderResult {
+export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'gateway/config'), skip: (device: string) => boolean = () => false): RenderResult {
   mkdirSync(outDir, { recursive: true })
   const tb = new URL(cfg.local.mqtt.tb)
   const bus = new URL(cfg.local.mqtt.bus)
@@ -95,7 +97,7 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
       sessionExpiryInterval: SESSION_EXPIRY_S,
       security: busSecurity,
     },
-    mapping: cfg.devices.flatMap(d => [
+    mapping: cfg.devices.filter(d => !skip(d.name)).flatMap(d => [
       {
         topicFilter: BUS_TOPIC.telemetry(d.name),
         subscriptionQos: 1,

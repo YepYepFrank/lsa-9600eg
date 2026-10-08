@@ -60,6 +60,8 @@ export class StatusController {
           // 阶段 A：通信状态（§13）与能力（整台不启用 = 不上送）
           comm: this.quality.commOf(d.name, now),
           capsEnabled: this.caps.deviceEnabled(d.name),
+          // v1.2：能力全都是 unsupported = 不进本地 TB
+          capsLocal: this.caps.deviceLocal(d.name),
           q: this.quality.qualityOf(d.name, now),
           south: this.south.rowOf(d.name, now),
           southBySource: this.south.bySource(d.name),

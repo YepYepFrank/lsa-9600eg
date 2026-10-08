@@ -2,7 +2,7 @@
  * ApplyService 应用配置后（含启动时读 applied-config.json）调 set()；上送（UplinkService）、质量码（QualityService）、
  * caps.actual（CapsActualService）、本地页（/api/caps）来读。 */
 import { Injectable, Logger } from '@nestjs/common'
-import { capEnabled, deviceEnabled, type CapsConfig } from './caps.js'
+import { capEnabled, deviceEnabled, deviceLocal, type CapsConfig } from './caps.js'
 
 /** 下挂设备离线判据（§13）：fails ≥ failN 且距 last_ok 超过 max(minMs, periods × 周期) */
 export interface DevCommParams {
@@ -49,6 +49,11 @@ export class CapsService {
 
   capEnabled(cap: string): boolean {
     return capEnabled(cap, this.current)
+  }
+
+  /** 这台设备是否进 EG 本地 TB（v1.2：匹配上的能力全都是 unsupported = 不进） */
+  deviceLocal(device: string): boolean {
+    return deviceLocal(device, this.current)
   }
 
   /** 这台设备是否上送（整台匹配上的能力都不启用 = 不上送） */

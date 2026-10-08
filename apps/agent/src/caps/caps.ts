@@ -7,9 +7,11 @@
  *
  * EG 怎么用：
  *   - 规则：不看能力（子站对不启用能力的规则直接下 on:false）
- *   - 数据：照常采、照常进本地 TB；**一台设备匹配上的能力全都不启用**（至少匹配上一条）时，这台不进 v1/gateway/connect、
- *     不上送（源头丢，不进 outbox），免得子站 TB 自动建出设备；改成启用后从那一刻起送，以前的不补传
- *   - 本地页：pending 显示「待定」，unsupported 隐藏
+ *   - 上送：**一台设备匹配上的能力全都不启用**（至少匹配上一条）时，这台不进 v1/gateway/connect、不上送（源头丢，不进 outbox），
+ *     免得子站 TB 自动建出设备；改成 confirmed 后从那一刻起送，以前的不补传
+ *   - 本地库（v1.2，协调会话 2026-10-08）：匹配上的能力**全都是 unsupported** 的设备不进 EG 本地 TB（IoT Gateway 不订阅它）；
+ *     有 pending 的照常进本地 TB —— pending 多是装了传感器、型号 / 口径没定，现场调试要先看到真实读数才能定 confirmed 还是 unsupported
+ *   - 本地页：pending 照常显示数据、标「待定（数据仅供调试核对）」，unsupported 隐藏
  *   - 上报 caps.actual（EG-<柜号> 的属性，JSON 串）：ok = 配了该设备且窗口内有有效值；nodata = 配了但没有；absent = 没配
  *     窗口 = max(10 min, 3 × 该 key 的周期)
  * 子站没下发过能力（老子站、首次部署）= 全部照旧，不过滤。 */
@@ -87,6 +89,13 @@ export function deviceEnabled(device: string, c: CapsConfig | null): boolean {
   if (!c) return true
   const mine = capsOfDevice(device, c)
   return !mine.length || mine.some(cap => capEnabled(cap, c))
+}
+
+/** 设备是否进 EG 本地 TB（v1.2）：至少匹配上一条能力、且匹配上的全都是 unsupported → 不进；有 pending / confirmed 或一条都匹配不上的照常 */
+export function deviceLocal(device: string, c: CapsConfig | null): boolean {
+  if (!c) return true
+  const mine = capsOfDevice(device, c)
+  return !mine.length || mine.some(cap => c.caps[cap] !== 'unsupported')
 }
 
 /** caps.actual：对每个下发了 capKeys 的能力判 ok / nodata / absent。

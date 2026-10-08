@@ -74,7 +74,7 @@ function copy(t: string) {
           <dd v-else>—</dd>
           <template v-if="r.dev && r.dev.capsEnabled === false">
             <dt>能力</dt>
-            <dd class="t2">子站能力清单里这台对应的能力都没启用：本地照常采集，不上送子站</dd>
+            <dd class="t2">{{ r.dev.capsLocal === false ? '子站能力清单里这台对应的能力都「不具备」：不进本地 TB、不上送子站' : '子站能力清单里这台的能力「待定」：只进本地 TB（供调试核对），不上送子站' }}</dd>
           </template>
           <dt>测点</dt>
           <dd>{{ r.dev?.keys ?? 0 }} 个已收到 · 最近 {{ r.dev?.lastTs ? dt(r.dev.lastTs) : '—' }}</dd>

@@ -18,6 +18,8 @@ export interface Dev {
   comm?: { comm: 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'UNKNOWN'; lastOk: number | null; fails: number; err: string; fromSource: { lastOk: boolean; fails: boolean; err: boolean } }
   /** 阶段 A：能力全都不启用 = false（不上送子站） */
   capsEnabled?: boolean
+  /** v1.2：能力全都是 unsupported = false（不进 EG 本地 TB） */
+  capsLocal?: boolean
 }
 
 export interface Status {

@@ -1,4 +1,4 @@
-/* 阶段 A 自检（EG 侧，接口 v1.1）：能力下发与上报、§13 下挂设备状态、摄像机三路、eg.time_sync、规则停用 / 改名清活动告警。
+/* 阶段 A 自检（EG 侧，接口 v1.2：pending 进本地 TB 不上送，unsupported 全不进）：能力下发与上报、§13 下挂设备状态、摄像机三路、eg.time_sync、规则停用 / 改名清活动告警。
  *
  *   pnpm --filter @lsa-eg/agent verify:a
  * 对着一台在跑的 EG（本机开发环境或虚拟样机）：
@@ -14,7 +14,7 @@ import { resolve } from 'node:path'
 import { loadModel, type ThresholdRow } from '@lsa/model'
 import { loadConfig, repoRoot, stationToken } from '@lsa-eg/config'
 import { signTicket } from './auth/ticket.js'
-import { capsActual, cardState, deviceEnabled, keyMatch, parseCaps, prefixOf, type CapsConfig } from './caps/caps.js'
+import { capsActual, cardState, deviceEnabled, deviceLocal, keyMatch, parseCaps, prefixOf, type CapsConfig } from './caps/caps.js'
 import { AGENT, agent, check, done, EMU, env, post, sleep, Tb, until } from './verify/lib.js'
 
 const LOCAL_TB = env('EG_TB_HTTP', 'http://127.0.0.1:18080')
@@ -30,6 +30,7 @@ function unit(): void {
   }
   check(deviceEnabled('SAM-AH12-A', c) && !deviceEnabled('PM6-AH12', c) && deviceEnabled('PM-AH12', c) && deviceEnabled('CAM-AH12', c) && deviceEnabled('EG-AH12', c), '整台不启用：PM6（pm6 unsupported、smokePpm pending）；PM 有一项 confirmed 照常；匹配不上的照常')
   check(deviceEnabled('PM6-X', null), '没下发能力 = 全部启用')
+  check(deviceLocal('PM6-AH12', c) && !deviceLocal('PM6-AH12', { ...c, caps: { ...c.caps, smokePpm: 'unsupported' } }) && deviceLocal('PM6-X', null), 'v1.2 本地库：有 pending 的进本地 TB；全都 unsupported 的不进')
   const act = capsActual(c, ['SAM-AH12-A', 'PM-AH12', 'PM6-AH12'], (d, k) => d === 'SAM-AH12-A' && k === 'us.cnt')
   check(act['pdCount'] === 'ok' && act['pm6'] === 'nodata' && act['meterBasic'] === 'nodata', `caps.actual 判 ok / nodata：${JSON.stringify(act)}`)
   check(capsActual(c, ['SAM-AH12-A'], () => true)['pm6'] === 'absent', 'eg.yaml 里没有 PM6 → absent')
@@ -98,6 +99,29 @@ async function main() {
   }, 60_000, 3000)
   check(!!act && act['pdCount'] === 'ok' && act['envTH'] === 'ok', `caps.actual 属性进了本地 TB：${JSON.stringify(act)}`)
   if (pm6) check(act?.['pm6'] === 'ok', `PM6 照常采（本地有数）→ pm6 = ok（与下发的 unsupported 不一致，子站据此提示）`)
+
+  if (pm6) {
+    console.log('\n1b. v1.2 本地库：pending 的设备照常进本地 TB（供调试核对）；全都 unsupported 的不进（IoT Gateway 约 60 s 内重载）')
+    const pmKey = 'pm.2.5'
+    const tsOf = async () => (await tb.latest(pm6, [pmKey]))[pmKey]?.ts ?? 0
+    const a0 = await tsOf()
+    await sleep(25_000)
+    const a1 = await tsOf()
+    check(a1 > a0, `${pm6}（pm6 unsupported、smokePpm pending）本地 TB 照常有数：${pmKey} 最新时刻前进了 ${Math.round((a1 - a0) / 1000)} s`)
+    const rx = await put({ version: ver(9), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'unsupported' }) })
+    const nl = await agent<{ notLocal: string[] }>(dir, '/api/caps')
+    check(rx.status === 'APPLIED' && nl.notLocal.includes(pm6), `pm6、smokePpm 都改成 unsupported → APPLIED，/api/caps notLocal = ${JSON.stringify(nl.notLocal)}`)
+    // IoT Gateway 60 s 查一次配置：等它不再往本地 TB 写（连续 30 s 最新时刻不动）
+    const stopped = await until(async () => {
+      const b0 = await tsOf()
+      await sleep(30_000)
+      return (await tsOf()) === b0 ? b0 : null
+    }, 180_000, 1000)
+    check(!!stopped, `本地 TB 不再收 ${pmKey}（最后一条 ${stopped ? new Date(stopped).toISOString() : '—'}）`)
+    const ry = await put({ version: ver(10), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+    const again = await until(async () => ((await tsOf()) > (stopped || 0) ? true : null), 150_000, 5000)
+    check(ry.status === 'APPLIED' && !!again, '改回 pending → 本地 TB 又开始收（从那一刻起）')
+  }
 
   console.log('\n2. §13 下挂设备状态')
   const comm = await until(async () => {

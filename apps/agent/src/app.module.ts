@@ -29,6 +29,7 @@ import { HistoryController } from './history/history.controller.js'
 import { CapsService } from './caps/caps.service.js'
 import { CapsActualService } from './caps/caps-actual.service.js'
 import { CapsController } from './caps/caps.controller.js'
+import { GatewayConfigService } from './gateway/gateway-config.service.js'
 
 @Module({
   controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController, HistoryController, CapsController],
@@ -52,6 +53,7 @@ import { CapsController } from './caps/caps.controller.js'
     VideoClient,
     EvidenceService,
     CapsActualService,
+    GatewayConfigService,
   ],
 })
 export class AppModule {}
