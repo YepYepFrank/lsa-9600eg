@@ -3,7 +3,8 @@
  *     → 一组证据：可见光 + 热像各一段视频（循环录像里裁，前 preS 后 postS）、告警瞬间各一张图、一份录波（前 wavePreS 后 wavePostS）
  *   生产：到了窗口末尾再做（RECORDING → READY / MISSING / EXPIRED）；双光按实际起点配对，记 pairOffsetMs
  *   上送：索引 POST /ext/eg/<柜号>/evidence（回执、只留最新一版，同告警事件）；重要的文件 PUT …/evidence/<id>/file（子站按 sha256 校验）
- *   保留：锁定的本地副本 lockedDays，已上传的再留 uploadedKeepDays；数据盘超 fullWater 报满（eg.evid_full）、新锁定标缺证 */
+ *   保留：锁定的本地副本 lockedDays，已上传的再留 uploadedKeepDays；数据盘超 fullWater 报满（eg.evid_full）、新锁定标缺证
+ *   要上传的（重要 / 子站要的）没等到子站确认归档（UPLOADED）前，到期也不删本地这唯一一份（V3 A12）；只占盘，盘满照常报 eg.evid_full */
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -360,10 +361,10 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
     return this.store.update(id, { uploadWanted: true, uploadNext: 0 })
   }
 
-  /** 到期清本地副本：已上传的只删文件（位置改 station），其余状态改 DELETED */
+  /** 到期清本地副本：已上传的只删文件（位置改 station），其余状态改 DELETED；要上传、还没确认归档的不删（唯一副本） */
   private clean(): void {
     const now = Date.now()
-    for (const r of this.store.where('expires_at is not null and expires_at < ? and file is not null', now)) {
+    for (const r of this.store.where("expires_at is not null and expires_at < ? and file is not null and not (upload_wanted = 1 and status = 'READY')", now)) {
       // 同一文件被别的证据引用（本实现每条证据一份文件，这里按文件名查，将来共用时也成立）
       if (this.store.where('file = ? and id != ? and (expires_at is null or expires_at >= ?)', r.file, r.evidenceId, now).length) continue
       try {
