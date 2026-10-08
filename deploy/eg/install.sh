@@ -352,11 +352,19 @@ RUN="$DC run --rm --no-deps"
 $RUN agent node --import @swc-node/register/esm-register src/gateway/cli.ts
 $RUN video node --import @swc-node/register/esm-register src/render.ts
 $DC up -d --remove-orphans
+# eg.yaml / sp-ca.pem 换过（改设备清单 §5b、换令牌、换证书）：compose 不看挂载文件的内容，镜像没变时容器不会重建，
+# agent / video 还拿着旧配置（agentBootId 也不变，子站据它判断「重新部署过」）—— 跟上次装好时比，变了就重启这三个
+cfg_sum="$(cat config/eg.yaml config/sp-ca.pem 2>/dev/null | sha256sum | cut -c1-64)"
+if [ "$(cat .installed/config.sha256 2>/dev/null)" != "$cfg_sum" ]; then
+  echo "config/eg.yaml（或 sp-ca.pem）与上次装好时不同：重启 agent / video / gateway，读新配置"
+  $DC restart agent video gateway >/dev/null
+fi
 
 # 装好了：部署文件留一份，下次升级时作回退用
 rm -rf .installed && mkdir .installed
 for f in $DEPLOY_FILES; do [ -e "$f" ] && cp -a "$f" .installed/; done
 echo "$VERSION" > .installed/VERSION
+echo "$cfg_sum" > .installed/config.sha256
 # 更早的 lsa-eg-app 镜像（既不是现在的也不是可回退的）清掉
 keep="lsa-eg-app:$VERSION lsa-eg-app:$(cat .previous/VERSION 2>/dev/null || echo -)"
 for img in $(docker image ls lsa-eg-app --format '{{.Repository}}:{{.Tag}}'); do

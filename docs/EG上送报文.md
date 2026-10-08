@@ -68,7 +68,8 @@
 | SAM | `env.t`、`env.rh` | 数，℃、%RH | 同事程序 | 柜内温湿度（能力 envTH） |
 | SAM | `us.amp` | 数，dBμV | 同事程序 | 局放幅值，**已换算**；寄存器 258 → 25.8。EG 不换算（能力 pdAmplitude） |
 | SAM | `us.cnt`、`us.type`、`us.level` | 数 | 同事程序 | 局放次数 / 类型码 / 等级（production 下为 pending） |
-| SAM | `uv.int`、`uv.pulse` | 数 | 同事程序 | 弧光强度 / 事件（pending） |
+| SAM | `uv.int` | 数 a.u. | 同事程序 | 弧光强度（arcIntensity，pending） |
+| SAM | `uv.pulse` | **串**（JSON 对象 `{"peak":数,"ms":数}`：峰值、持续毫秒） | 同事程序 | 弧光脉冲，事件型：检测到放电立即发一条，同时带 uv.int = 峰值（arcEvents，pending）。《EG 内部 MQTT 格式》§3 |
 | SAM | `tev.*`、`smoke.*`、`sw.*` | 数 | 同事程序 | 地电波（unsupported）、烟雾、开关位置（pending）；目前没有点 |
 | PM / PM2 | `el.Ua` `el.Ub` `el.Uc` `el.Ia` `el.Ib` `el.Ic` `el.P` `el.Q` `el.S` `el.PF` `el.F` `el.Ep` | 数，V / A / kW / kvar / kVA / — / Hz / kWh | 同事程序 | 电表基础量（meterBasic） |
 | PM / PM2 | `el.load_pct` | 数，% | **EG 派生**：max(Ia, Ib, Ic) ÷ attrs.rated × 100 | 负荷率 |
