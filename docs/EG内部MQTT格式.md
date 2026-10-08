@@ -74,7 +74,7 @@
 | `ir.t_avg` | 红外平均温 | ℃ | 快 | |
 | `ir.rise` | 温升 | K | 快 | = 本隔室最高温 − 本隔室环境温度 `env.t` |
 | `ir.box.A` `ir.box.B` `ir.box.C` | 各框最高温 | ℃ | 快 | 低压柜另有 `ir.box.N`；框的定义见属性 `ir.boxes` |
-| `us.amp` | 超声局放幅值 | dB | 快 | |
+| `us.amp` | 超声局放幅值 | dBμV | 快 | 与点表一致（2026-10-08 由 dB 统一为 dBμV） |
 | `us.cnt` | 超声局放次数 | 次/min | 快 | |
 | `uv.int` | 紫外弧光强度 | — | 快 | **没有放电也要每 2 s 发背景值**（弧光告警靠它恢复） |
 | `uv.pulse` | 弧光脉冲 | — | 事件 | 检测到放电**立即**发一条：`uv.int` = 峰值，同时带 `uv.pulse` = `"{\"peak\":463,\"ms\":21}"`（JSON 字符串：峰值、持续毫秒） |
@@ -134,7 +134,7 @@
 ```bash
 # SAM 快档（2 s 一条）
 mosquitto_pub -h 127.0.0.1 -p 1884 -q 1 -t lsa/SAM-AH03-B/telemetry \
-  -m '{"ts":1790155214000,"values":{"ir.t_max":82.4,"ir.t_avg":70.1,"ir.rise":55.9,"ir.box.A":70.2,"ir.box.B":82.4,"ir.box.C":70.5,"us.amp":12.3,"us.cnt":4,"uv.int":3}}'
+  -m '{"ts":1790155214000,"values":{"env.t":27.6,"env.rh":44,"us.amp":12.3,"us.cnt":4,"uv.int":3}}'
 
 # 弧光放电（立即）
 mosquitto_pub -h 127.0.0.1 -p 1884 -q 1 -t lsa/SAM-AH03-B/telemetry \
