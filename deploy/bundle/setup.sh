@@ -192,7 +192,13 @@ install_sp() {
   mkdir -p "$SP_B"
   # 部署文件整体覆盖（docker/.env、docker/tls、备份不在安装包里，不会被动到）
   cp -a sp/lsa9600sp-backend/. "$SP_B/"
-  rm -rf "$SP_DEST/web.new" && cp -a sp/web "$SP_DEST/web.new" && rm -rf "$SP_DEST/web" && mv "$SP_DEST/web.new" "$SP_DEST/web"
+  # 前端原地换内容、不换目录：Nginx 绑定挂载的是目录本身，删了重建的话没被重建的 Nginx 看到的是已删除的空目录，
+  # 整站 403（0.9.2 升级验证踩到）。先拷新的再删新版本里没有的旧文件（旧的带哈希的 assets）。
+  mkdir -p "$SP_DEST/web"
+  cp -a sp/web/. "$SP_DEST/web/"
+  (cd "$SP_DEST/web" && find . -mindepth 1 -depth -print0) | while IFS= read -r -d '' f; do
+    [ -e "sp/web/$f" ] || rm -rf "${SP_DEST:?}/web/$f"
+  done
   find "$SP_B/scripts" -name '*.sh' -exec chmod +x {} +
   cp -a docs "$SP_DEST/" 2>/dev/null || true
 
@@ -206,6 +212,11 @@ install_sp() {
 
   say '启动（证书 → 建库 → provision → 扩展服务、Nginx、视频）'
   bash "$SP_B/scripts/up.sh" --prod
+  # 早先版本的安装文件升级时换过前端目录，Nginx 可能还挂着已删除的旧目录：看不到 index.html 就重启它（重新挂载）
+  if ! docker exec lsa-nginx test -f /usr/share/nginx/html/index.html 2>/dev/null; then
+    echo 'Nginx 看不到前端文件（挂着已删除的旧目录），重启 Nginx'
+    docker restart lsa-nginx >/dev/null
+  fi
   cat VERSION > "$SP_DEST/.loaded"
   sp_sysadmin
 
