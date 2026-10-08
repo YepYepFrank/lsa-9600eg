@@ -187,6 +187,12 @@ sp_sysadmin() {
 # 0.9.3 现场流程里发现子站的 chrony 只有 Ubuntu 的公网 pool、不 allow 客户端 —— EG 对不上时，
 # 各自漂（10 天差到 1 分钟）、断电重启后差更多，子站下发配置的票据因「时间在未来」被拒。
 sp_chrony() {
+  # 子站离线包自带对时脚本时用它（与后端会话商定：同名同内容，另管防火墙、chrony 3.x / 麒麟的主配置块、--check）；
+  # 老包没有就用下面这份
+  if [ -f "$SP_B/scripts/setup-ntp.sh" ]; then
+    bash "$SP_B/scripts/setup-ntp.sh" ${NTP:+--ntp "$NTP"} || echo '提醒：子站对时脚本报错（见上）—— 不处理的话 EG 对不上时，子站下发配置会被拒'
+    return 0
+  fi
   [ -d /etc/chrony ] || { echo '提醒：本机没有 chrony，子站主机不能给 EG 对时'; return 0; }
   local conf=/etc/chrony/conf.d/lsa9600sp.conf src=/etc/chrony/sources.d/lsa9600sp.sources
   mkdir -p /etc/chrony/conf.d /etc/chrony/sources.d
