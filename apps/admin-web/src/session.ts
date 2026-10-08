@@ -13,6 +13,8 @@ export interface Me {
   name: string
   role: 'maint' | 'view'
   via: 'local' | 'sp'
+  /** 本地登录才有：本地维护账号概况（initialPasswordFile = 初始口令文件还在） */
+  account?: { initialPasswordFile: boolean } | null
 }
 
 const KEY = `lsa-eg-session:${location.pathname}`

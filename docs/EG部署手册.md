@@ -1,7 +1,7 @@
 # LSA-9600EG 部署手册
 
 > 适用：I 阶段起（EG 跑独立 ThingsBoard CE，后端库 `docs/EG独立TB调整方案.md`）。子站侧的安装见后端库 `docs/子站部署手册.md`。
-> 状态（2026-09-27）：G6 起发布件含视频（eg-video + mediamtx）、Docker / chrony 离线包、升级回退、磁盘检查；**Hyper-V 虚拟样机（Ubuntu 24.04、4 GB / 4 核）验收进行中**，本手册随之修订。
+> 状态（2026-10-08）：G6 起发布件含视频（eg-video + mediamtx）、Docker / chrony 离线包、升级回退、磁盘检查；Hyper-V 虚拟样机（Ubuntu 24.04、4 GB）已验收：裸系统安装、2 h 长跑、硬断电、升级 / 回退、子站现场流程（一键安装 0.9.1–0.9.3）、连续运行 10 天。X26A 实机与麒麟 / UOS 待复测。
 > 两样东西配套装：**本库的通用发布件**（`pnpm pack:eg`，各台一样、不含凭据）+ **子站出的每台配置包**（后端库 `scripts/pack-eg.sh`：这台的 `eg.yaml` 与站内 CA 证书 `sp-ca.pem`）。
 
 ## 1. 组成与端口
@@ -87,7 +87,7 @@ sudo bash install.sh --lan1 <摄像机网口>   # 第一轮：没有 Docker 先�
 sudo bash install.sh --sp-key /tmp/sp_id_ed25519.pub     # 一键安装文件：--role eg --sp-key <公钥>
 ```
 
-它建一个**只能开隧道**的账号 `lsa-sp`：没有口令、没有 shell，authorized_keys 带 `restrict,port-forwarding,permitopen="127.0.0.1:18080"` —— 只能从子站转发到 EG 本机的本地 TB（18080），拿不到 shell、转发不了别的端口、拷不了文件（虚拟样机 AH09 上实测）。同一把公钥反复给不会重复加；部署完可以 `sudo userdel -r lsa-sp`，以后再要 provision 重新授权。
+它建一个**只能开隧道**的账号 `lsa-sp`：没有口令、没有 shell，authorized_keys 带 `restrict,port-forwarding,permitopen="127.0.0.1:18080"` —— 只能从子站转发到 EG 本机的本地 TB（18080），拿不到 shell、转发不了别的端口、拷不了文件（虚拟样机 AH09 上实测）。同一把公钥反复给不会重复加；**部署完删掉**：`sudo bash install.sh --drop-sp-key`（以后再要 provision 重新 `--sp-key`）。install.sh 装完与 `--status` 会在「安全提醒」里提示它还在。
 不预置共用账号：所有 EG 共用一把钥匙，丢一台就全丢。
 
 **2. 子站主机上建实体**（子站部署目录 `/opt/lsa9600sp/lsa9600sp-backend`）：
@@ -134,6 +134,17 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 
 `local.yaml`（EG 本地，本地管理页「系统」里可改）：对时服务器（空 = `sp.host`）、上行网口名（空 = 按缺省路由自动找）、摄像机地址与账号。其余（总线、本地 TB 地址、端口、容器名）按 compose 的缺省即可，不要改。
 
+## 5b. 改设备清单（换传感器、加减下挂设备）
+
+配置下发只改阈值与规则开关；**下挂设备清单不能在线改**（I4-1，协调会话 2026-10-08 定）：子站下发的设备清单与本机 `eg.yaml` 不一致时回 FAILED。改设备清单走这一遍：
+
+1. 子站改 `tb/model.yaml` 里这面柜的设备（型号、数量），重跑子站 provision（子站 TB 上增删设备）；
+2. EG 授权隧道（删过 lsa-sp 的话）：EG 上 `sudo bash install.sh --sp-key <子站公钥>`；
+3. 子站主机 `scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<EG> … --plan` 核对，再正式跑（本地 TB 增删设备、更新 `eg.yaml`）；
+4. `scripts/pack-eg.sh --sp <子站> --only <柜号>` 重出配置包，拷到 EG 的 `config/`；
+5. EG 上 `sudo bash install.sh`（第二轮，重生成 IoT Gateway 映射、重启 agent）；
+6. 子站网关页对这台点「下发配置」（或等自动重发），回执 APPLIED；删掉 lsa-sp。
+
 ## 6. 升级与回滚
 
 - **升级**：新发布件直接解压覆盖到 `/opt/lsa-eg`（`config/`、`recordings/`、`.env` 不在发布件里、不会被覆盖），`sudo bash install.sh`。install.sh 把上一次装好的部署文件（`.installed/`）挪成 `.previous/`、`.env` 的 `EG_APP_IMAGE` 改成新版本；更早的 `lsa-eg-app` 镜像清掉，只留现在的与可回退的。
@@ -141,6 +152,17 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 - **回滚**：`sudo bash install.sh --rollback` —— 部署文件换回 `.previous/`、镜像改回旧版本、`docker compose up -d`；再跑一次 `--rollback` 又回到新版。本地 TB 版本（`compose.yaml` 里 tb-node 的标签）变过的不许回退（库结构只升不降）。
 - `sudo bash install.sh --status`：容器状态、已装版本、可回退到哪个版本。
 - 升级期间 agent 停几秒：同事的数据由 Mosquitto 持久会话排着，上送 outbox 在磁盘上，都不丢（I2 实测重启无断档）。
+
+**断网与补传**（`local.yaml` 的 `outbox` 段，本地管理页「系统」里看）：
+
+| 项 | 缺省 | 说明 |
+|---|---|---|
+| `backfillRate` | 2000 条 / s | 恢复后补传限速（实时数据先走、不限速）。30 面柜同时恢复子站约 6 万条 / s，规模测试总吞吐约 4.1 万条 / s 子站扛得住（I2-1，协调会话定维持 2000）；**子站主机偏弱时降到 1000** |
+| `maxAgeDays` / `maxMb` | 7 天 / 2048 MB | outbox 只留这么多；超了丢最旧的，丢掉的时段记进「数据缺口」（`eg.lost`，子站可见） |
+
+- 断上行期间告警照常在本地判、存事件库，恢复后补送，**事件不受 7 天限制**（等子站回执才删）。
+- 对账窗口（本地 TB 告警 → 事件库）= 上次对账以来，**上限 7 天**（与 outbox 保留期一致，I3-2）；首次部署看 24 h。
+- 实测（虚拟样机 AH09，2026-10-08）：子站侧停了 9.3 天，恢复后补传 225 万条；超出 7 天的约 2.3 天（75 万条）按设计丢弃并记缺口；outbox 文件不会自动缩小（SQLite），上限内无害。
 
 ## 6b. 测试件（只在虚拟样机 / 实验台上用，**现场不装**）
 
@@ -158,6 +180,37 @@ sudo bash /opt/lsa-eg/test/test.sh down
 **单网口的机器不要给 `--lan1`**：那样唯一的网口也被挡掉，管理页谁都打不开。install.sh 在只有一个物理网口时拒绝 `--lan1`（确实要这样加 `--force`）；给的网口名不存在也直接报错。单网口时靠防火墙挡摄像机网。
 
 **开发用开关**：`EG_PASSIVE=1`（旁观模式，只收不发）只给开发机并排验接口，发布件的 compose 与 install.sh 里没有；现场 agent 看到它会连打三条错误日志 —— 看到就去掉。
+
+## 6c. 换机、逐台升级与批量升级
+
+**换机（EG 坏了换一台新的，柜号不变）**——子站上这面柜的设备、令牌、历史数据都不动：
+
+| # | 步骤 | 检查 |
+|---|---|---|
+| 1 | 新机按 §2 装系统、配网（LAN2 用**原来的地址**；地址变了要在子站网关页改「现场配置」或重跑 provision-eg.sh） | `ip -br a` |
+| 2 | 一键安装文件 `--role eg --lan1 <摄像机网口> --sp-key <子站公钥>`（第一轮） | 结束时提示子站侧 4 步 |
+| 3 | 子站主机 `provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<新机> …`（本地 TB 是新的，按子站重建）→ `pack-eg.sh --only <柜号>` | 「完成：新建 …」 |
+| 4 | 配置包拷到新机 `config/`（600），第二轮 `--role eg` | 7 个容器 Up |
+| 5 | 摄像机：本地管理页「视频与测温」核对地址、账号（`local.yaml` 不在配置包里，要重填） | cam.online = 4 |
+| 6 | 子站网关页：这台在线、积压 0、配置版本与期望一致（不一致点「下发配置」） | APPLIED |
+| 7 | 改 maint 口令、删 `initial-password.txt`、`install.sh --drop-sp-key` | 「安全提醒」为空 |
+
+旧机上没送出去的 outbox、本地录像与未上传的证据**不迁移**（坏机一般也取不出来）；能开机的旧机可先接回上行网等积压送完（诊断页积压 0）再拆。新机的 `hostBootId` 会变，子站按「重启」记一次。
+
+**逐台升级**（现在的做法）：每台 EG 跑新的一键安装文件 `--role eg`（或把新发布件拷进 `/opt/lsa-eg` 再 `install.sh`，§6）。每台约 30 s、agent 中断 1–2 s，不丢数据。建议顺序：先 1 台跑一天 → 再按母线段分批；每台装完看 `install.sh --status` 与子站网关页（在线、积压 0、版本对）。出问题 `install.sh --rollback`（约 11 s）。
+
+**批量升级（建议，未做工具）**：30 面柜逐台登录太慢时，可在子站主机上用一个只做「拷文件 + 跑 install.sh」的脚本，经维护账号的 SSH（不是 lsa-sp，lsa-sp 只能开隧道）逐台执行、串行、遇错即停；要先定维护账号的密钥怎么管（每台独立还是共用）。等实机和规模定了再决定做不做（协调会话 2026-10-08）。
+
+## 6d. 安全
+
+| 项 | 做法 |
+|---|---|
+| 本地维护账号 maint | 初始口令随机，在 `config/initial-password.txt`；登录后到「系统」改口令，再删这个文件。文件还在时管理页每页顶上有提醒条，install.sh 的「安全提醒」也会列 |
+| 隧道账号 lsa-sp | 只在部署 / 改设备清单时需要；用完 `install.sh --drop-sp-key` |
+| SSH | 维护账号改用密钥登录后，建议关掉口令登录（`/etc/ssh/sshd_config.d/` 下写 `PasswordAuthentication no`，`systemctl reload ssh`）。install.sh 只提醒、不替你改（免得把自己锁在外面）；防火墙可只放子站主机与维护笔记本访问 22 |
+| 对外端口 | 只有 22、80（管理页）、8554（RTSP，mediamtx 只许子站主机与本机读）、8189/UDP（WebRTC）听所有网口；本地 TB 18080、本机总线 1884、mediamtx API / 回放、eg-video 都只绑 127.0.0.1（虚拟样机 `ss -tulnp` 核对过）。LAN1 进来的管理页请求一律 403（`--lan1`） |
+| 本机总线不鉴权（I5-4） | 只绑 127.0.0.1 与容器网络，站内网摸不到；同事的采集程序在本机直连。结论：维持不鉴权 |
+| `EG_PASSIVE` | 开发用旁观模式，发布件里没有；现场 `.env` 里出现会被「安全提醒」列出、agent 也会打错误日志 |
 
 ## 7. 排障速查
 
@@ -177,5 +230,5 @@ sudo bash /opt/lsa-eg/test/test.sh down
 | I5-1 | 本地 TB 的实体由子站经 SSH 隧道跑 provision:eg 建 —— 现场要给子站开 EG 的 SSH | 按此；以后可改为 agent 按 eg.yaml 自建（I4 已有生成告警规则的代码） |
 | I5-2 | ~~agent 用宿主机网络听 0.0.0.0:80，LAN1（摄像机网）也能访问管理页~~ | 已解决（G6）：`install.sh --lan1 <网口>` → 从该网口进来的请求 403（按网口现有地址判，不 bind 地址，免得开机时地址没配上起不来）；也可在 `local.yaml http.denyOn` 列网口名 |
 | I5-3 | ~~本地 TB 的系统管理员沿用出厂口令~~ | 已解决：provision:eg 建完租户后改掉（后端 01a28c5） |
-| I5-4 | 本机总线不鉴权（只绑 127.0.0.1 与容器网络） | 按此 |
-| I5-5 | 镜像与整套安装未在 Linux 上跑过 | G6 虚拟样机验收（进行中） |
+| I5-4 | ~~本机总线不鉴权~~ | 已定：维持不鉴权（只绑 127.0.0.1 与容器网络，见 §6d） |
+| I5-5 | ~~镜像与整套安装未在 Linux 上跑过~~ | 已解决：虚拟样机（Ubuntu 24.04）全套验过；X26A 实机与麒麟 / UOS 待复测 |

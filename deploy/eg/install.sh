@@ -10,7 +10,9 @@
 # 升级在原安装目录（/opt/lsa-eg）里跑：在别的目录跑、而本机已装在别处时拒绝（会生成另一份 .env 把本地库按新口令重建），--force 才另装。
 # --sp-key <子站公钥文件或公钥串>：给子站 provision-eg.sh 用的隧道账号 lsa-sp 授权（可反复给、不重复加）。
 #   lsa-sp 没有口令、没有 shell，authorized_keys 带 restrict,port-forwarding,permitopen="127.0.0.1:18080"：
-#   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完可以 userdel lsa-sp。
+#   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完用 --drop-sp-key 删掉（以后要再建实体重新 --sp-key）。
+# --drop-sp-key：删掉隧道账号 lsa-sp（连同它的 authorized_keys），别的不动。
+# 装完与 --status 都会列「安全提醒」：初始口令文件还在、lsa-sp 还在、SSH 允许口令登录等（只提醒，不替你改系统配置）。
 #
 # 分两轮是因为本地 TB 的设备、告警规则由子站跑 provision:eg 建（经 SSH 隧道连这台 EG 的 127.0.0.1:18080），
 # 它同时把本地 TB 账号写进 eg.yaml —— 所以：第一轮起本地 TB → 子站 provision:eg → 拷回 eg.yaml → 第二轮起全部。
@@ -28,6 +30,7 @@ while [ $# -gt 0 ]; do
     --lan1) LAN1="${2:?--lan1 后面给网口名}"; shift ;;
     --force) FORCE=1 ;;
     --sp-key) SPKEY="${2:?--sp-key 后面给子站公钥（文件或公钥串）}"; shift ;;
+    --drop-sp-key) MODE='drop-sp' ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
@@ -39,8 +42,33 @@ status() {
   [ -f .previous/VERSION ] && echo "可回退到：$(cat .previous/VERSION)"
   true
 }
-[ "$MODE" = 'status' ] && { status; exit 0; }
+# 安全提醒（只提醒，不改系统配置：自动关 SSH 口令登录可能把维护人员锁在外面）
+security_notes() {
+  local msg=()
+  [ -f config/initial-password.txt ] && msg+=('本地维护账号 maint 的初始口令文件还在（config/initial-password.txt）：登录管理页改掉口令后删除它')
+  id lsa-sp >/dev/null 2>&1 && msg+=('隧道账号 lsa-sp 还在：子站 provision-eg.sh 跑完后可删 —— sudo bash install.sh --drop-sp-key（以后要再建实体重新 --sp-key）')
+  if command -v sshd >/dev/null 2>&1 && sshd -T 2>/dev/null | grep -x 'passwordauthentication yes' >/dev/null; then  # 不用 -q：提前退出会让 sshd 收 SIGPIPE，pipefail 下判成假
+    msg+=('SSH 允许口令登录：维护账号改用密钥登录后建议关掉（/etc/ssh/sshd_config.d/ 下写 PasswordAuthentication no，再 systemctl reload ssh）')
+  fi
+  grep -q '^EG_PASSIVE=.' .env 2>/dev/null && msg+=('.env 里有 EG_PASSIVE：那是开发用的旁观模式，现场要删掉')
+  [ "${#msg[@]}" -gt 0 ] || return 0
+  echo
+  echo '安全提醒：'
+  local m
+  for m in "${msg[@]}"; do echo "  - $m"; done
+}
+[ "$MODE" = 'status' ] && { status; security_notes; exit 0; }
 [ "$(id -u)" = 0 ] || { echo '要用 sudo 跑' >&2; exit 1; }
+if [ "$MODE" = 'drop-sp' ]; then
+  if id lsa-sp >/dev/null 2>&1; then
+    pkill -u lsa-sp 2>/dev/null || true   # 子站隧道正开着的话断掉
+    userdel -r lsa-sp 2>/dev/null || userdel lsa-sp
+    echo '已删除隧道账号 lsa-sp（以后要让子站再建本地实体：sudo bash install.sh --sp-key <子站公钥>）'
+  else
+    echo '没有隧道账号 lsa-sp，不用删'
+  fi
+  exit 0
+fi
 
 # .env 里设一项（有就改、没有就加）
 env_set() {
@@ -234,3 +262,4 @@ status
 echo
 echo "装好了。本地管理页：http://<这台 EG 的 LAN2 地址>/（本地维护账号 maint，初始口令在 config/initial-password.txt，登录后改掉并删掉这个文件）"
 echo "磁盘容量 / 写入量：sudo bash diskcheck.sh"
+security_notes
