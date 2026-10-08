@@ -40,7 +40,8 @@
 
 - 系统：Ubuntu Server 24.04 LTS 最小安装（开发计划 §1；G6 定稿）。
 - Docker Engine + compose 插件、chrony：**不用先装** —— 发布件的 `debs/`（`pack:eg -- --debs`）带离线包，install.sh 发现没有就装：先卸与 chrony 冲突的 systemd-timesyncd，再 `dpkg -i` 一次装本机没有 / 比本机新的那些（不联网；不用 `apt-get install ./debs/*.deb` —— 机器上留着装系统时的源索引时 apt 会报「Pathname to install is not absolute」，虚拟样机实测）。发布件的 `IMAGES.txt` 列各镜像的 tag / digest / ID，导入后逐个核对。
-- 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`（子站再对站内时钟源）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
+- 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`，并把 `chrony.conf` 的 `makestep` 改成 `1 -1`（**X26A 没有 RTC 电池**，断电后开机时钟是错的；缺省只在头 3 次更新里跳，之后差几分钟也要追几小时）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
+- **子站主机当时间服务器**：一键安装 `--role sp` 给子站的 chrony 加 `allow` 站内私网与 `local stratum 10 orphan`（没有上级时全站至少跟子站一致），站内时钟源用 `--ntp <地址>` 给（记住，升级不用再给）；子站防火墙放 UDP 123。**EG 与子站时钟差超过 60 s 时，子站下发配置、单点登录的票据会被 EG 拒收**（「票据时间在未来」，0.9.3 无 AVX 样机上踩到：实验网里没有任何对时，跑了 10 天的 VM 漂了 63 s）。
 - 系统日志：install.sh 写 `/etc/systemd/journald.conf.d/lsa-eg.conf`，journald 封顶 200 MB。
 - 网卡：LAN1 静态地址（与摄像机同段），LAN2 静态地址（站内网），缺省路由走 LAN2。
 - 数据盘：本地 TB 留 7 天、上送 outbox 最多 2 GB、**循环录像**（两路子码流常录，按 1 Mbit/s 估每天约 10.8 GB，留 24 h）、锁定的证据片段（30 天，按每次告警约 12 MB 估），按 128 GB 工业级 mSATA 准备（开发计划 §1）。

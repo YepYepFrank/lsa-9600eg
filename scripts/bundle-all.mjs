@@ -5,6 +5,7 @@
 //   --sp   后端库 scripts/pack-offline.sh --web <前端 dist> 的产物（images.tar.gz、lsa9600sp-backend/、web/）—— 由后端会话打
 //   --eg   本库 pnpm pack:eg -- --images --debs 的产物；不给就现打一份（当前提交）
 //   --out  缺省 dist/bundle/
+//   --tag  版本号后缀（同一天重打用，如 r2 → 0.9.3-20261008-r2）
 //
 // 负载 lsa9600sp-bundle/：setup.sh（安装入口）、sp/、eg/、debs/（Docker、compose 插件、chrony；两种角色共用）、docs/、
 //   VERSION、MANIFEST.txt、SHA256SUMS（覆盖负载里每个文件）。
@@ -107,7 +108,10 @@ const spRev = (() => {
 })()
 const feRev = existsSync(join(SP, 'web/FRONTEND_REV')) ? readFileSync(join(SP, 'web/FRONTEND_REV'), 'utf8').trim() : '?'
 const day = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-const VERSION = `${spVer}-${day}`
+// --tag：同一天重打时区分（如 r2），免得覆盖已发出去的同名文件
+const tag = opt('tag')
+if (tag && !/^[A-Za-z0-9]+$/.test(tag)) throw new Error(`--tag 只能是字母数字：${tag}`)
+const VERSION = `${spVer}-${day}${tag ? `-${tag}` : ''}`
 const NAME = `LSA-9600SP-${VERSION}-offline`
 const OUT = resolve(opt('out') ?? resolve(ROOT, 'dist', 'bundle'))
 const STAGE = resolve(ROOT, 'dist', '.stage-bundle')

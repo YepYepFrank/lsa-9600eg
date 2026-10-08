@@ -237,8 +237,16 @@ sp_host="$(awk '/^sp:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="host:"{gsub(/["'\'']/,"
 if [ -n "$sp_host" ] && [ -d /etc/chrony ]; then
   mkdir -p /etc/chrony/sources.d
   echo "server $sp_host iburst prefer" > /etc/chrony/sources.d/lsa-eg.sources
-  systemctl enable --now chrony >/dev/null 2>&1 || true
-  chronyc reload sources >/dev/null 2>&1 || true
+  # X26A 没有 RTC 电池：断电后开机时钟是错的，子站又可能比 EG 晚起来 —— 缺省的 makestep 1 3 只在头 3 次更新里跳，
+  # 之后差几分钟也只慢慢追（几小时），这期间子站下发配置 / 单点登录的票据会因时钟差被拒。改成任何时候差 > 1 s 就跳。
+  # 要改 chrony.conf 本身那一行：conf.d 在文件开头被引入，后面的 makestep 1 3 会盖掉 conf.d 里写的（Ubuntu 24.04 实测）
+  if grep -q '^makestep ' /etc/chrony/chrony.conf; then
+    sed -i 's/^makestep .*/makestep 1 -1   # LSA-9600EG install.sh：没有 RTC 电池，差 > 1 s 随时跳/' /etc/chrony/chrony.conf
+  else
+    echo 'makestep 1 -1   # LSA-9600EG install.sh：没有 RTC 电池，差 > 1 s 随时跳' >> /etc/chrony/chrony.conf
+  fi
+  systemctl enable chrony >/dev/null 2>&1 || true
+  systemctl restart chrony >/dev/null 2>&1 || true
 fi
 
 # 先生成 IoT Gateway 与 mediamtx 的配置（agent / video 每次启动也会生成；先生成一次，免得它们先起来拿默认配置）

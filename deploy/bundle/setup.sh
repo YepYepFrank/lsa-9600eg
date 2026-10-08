@@ -2,10 +2,12 @@
 # LSA-9600SP 一键安装入口（在解包目录里；通常由 .run 自解压后调用）。
 #
 #   sudo bash setup.sh                                  交互选角色
-#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--yes]
+#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--yes]
 #       子站主机：Docker（没有就装离线包）→ 导入镜像 → /opt/lsa9600sp → 首次自动生成 docker/.env（随机口令、
 #       本机 IP、证书 SAN）→ scripts/up.sh --prod（证书、建库、provision、扩展服务、Nginx、视频）→ TB 系统管理员改随机口令。
 #       已装过的按升级处理：保留 .env。
+#       对时：子站主机给各 EG 当时间服务器（chrony allow 站内私网、local stratum 10 orphan —— 没有上级时全站至少跟子站一致）；
+#       --ntp 给站内时钟源（GPS / 北斗授时或上级 NTP），记住，以后升级不用再给。
 #   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--sp-key <子站公钥>] [--eg-config <目录>] [--yes]
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
@@ -22,17 +24,19 @@ EGCFG=''
 YES=0
 FORCE=0
 SPKEY=''
+NTP=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE="${2:?}"; shift ;;
     --ip) IP="${2:?}"; shift ;;
+    --ntp) NTP="${2:?--ntp 后面给站内时钟源地址}"; shift ;;
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
     --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
     --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
-    --help | -h) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help | -h) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -179,6 +183,29 @@ sp_sysadmin() {
   echo "ThingsBoard 系统管理员出厂口令已改成随机口令（见 $SP_CRED）"
 }
 
+# 子站主机当站内时间服务器：各 EG 的 chrony 指向 eg.yaml 的 sp.host（EG install.sh 写）。
+# 0.9.3 现场流程里发现子站的 chrony 只有 Ubuntu 的公网 pool、不 allow 客户端 —— EG 对不上时，
+# 各自漂（10 天差到 1 分钟）、断电重启后差更多，子站下发配置的票据因「时间在未来」被拒。
+sp_chrony() {
+  [ -d /etc/chrony ] || { echo '提醒：本机没有 chrony，子站主机不能给 EG 对时'; return 0; }
+  local conf=/etc/chrony/conf.d/lsa9600sp.conf src=/etc/chrony/sources.d/lsa9600sp.sources
+  mkdir -p /etc/chrony/conf.d /etc/chrony/sources.d
+  # --ntp 没给就沿用上次记下的
+  [ -n "$NTP" ] || NTP="$(awk '$1 == "server" { print $2; exit }' "$src" 2>/dev/null || true)"
+  cat > "$conf" <<'EOF'
+# LSA-9600SP（一键安装 setup.sh 写）：子站主机给站内各 EG 对时（UDP 123）
+allow 10.0.0.0/8
+allow 172.16.0.0/12
+allow 192.168.0.0/16
+# 没有上级时钟源、或暂时连不上时，用本机时钟继续服务：全站至少都跟子站一致
+local stratum 10 orphan
+EOF
+  if [ -n "$NTP" ]; then echo "server $NTP iburst prefer" > "$src"; else rm -f "$src"; fi
+  systemctl enable chrony >/dev/null 2>&1 || true
+  systemctl restart chrony
+  echo "对时：子站主机给站内 EG 当时间服务器（UDP 123）；上级时钟源 ${NTP:-未给（以后 --ntp <地址> 补上），先用本机时钟、全站跟子站一致}"
+}
+
 # 站内 CA 私钥的 sha256：0.9.3 起在 docker/tls-ca/，更早在 docker/tls/；都没有输出空
 ca_key_sum() {
   local f
@@ -235,6 +262,9 @@ install_sp() {
       [ -e "sp/web/$f" ] || rm -rf "${SP_DEST:?}/web/$f"
     done
   fi
+
+  say '对时'
+  sp_chrony
 
   say '启动（证书 → 建库 → provision → 扩展服务、Nginx、视频）'
   bash "$SP_B/scripts/up.sh" --prod
