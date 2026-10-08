@@ -31,8 +31,8 @@
 | 出站 → 子站 | **8883/TCP**（MQTT over TLS） | 遥测上送（`station.mqtt`） |
 | 出站 → 子站 | **443/TCP**（HTTPS） | 告警事件与回执（`station.http`） |
 | 出站 → 子站 | 123/UDP | 对时（chrony 与 agent 的 SNTP 测量） |
-| 入站 LAN1 | 应全关 | 摄像机网只出不进。**现状（2026-10-08 实测）**：`install.sh --lan1` 只在应用层挡 —— 80 管理页 403（「本地管理页只在 LAN2 上开放」），8554 RTSP 读 401（只许子站主机）；但 **22 SSH 在 LAN1 上照样能连**、80 / 8554 的 TCP 也能建连。要真关需在 EG 上加防火墙（LAN1 只放已建立连接的回包），拉摄像机要改走 RTSP over TCP（UDP 的 RTP 回包会被挡）—— 待定，见评审记录「11 LAN1」 |
-| 出站 → LAN1 | 554、80 | 拉摄像机 RTSP、ONVIF / 测温接口 |
+| 入站 LAN1 | **全关**（install.sh 加） | 摄像机网只出不进。`install.sh --lan1 <网口>` 时装 nftables 表 `inet lsa_eg`：LAN1 进来的只放已建立 / 相关连接的回包，其余丢 —— 22 / 80 / 8554 从摄像机网都连不上（超时）；Docker 发布到容器的端口走 forward 链，同样挡。开机由 `lsa-eg-fw.service` 加载；`install.sh --status` 看状态与丢包数；`--fw-off` 关掉并记住、`--fw-on` 重开；回退到不管它的老版本时自动清掉。管理页对 LAN1 另有应用层 403 兜底 |
+| 出站 → LAN1 | 554、80 | 拉摄像机 RTSP、ONVIF / 测温接口。**一律 RTSP over TCP**（mediamtx `rtspTransport: tcp`、抓帧 `-rtsp_transport tcp`，sim / onvif / rtsp 三种驱动一样）：UDP 的 RTP 是摄像机主动发来的，LAN1 防火墙下不保证能进。**不用 ONVIF 组播发现**：摄像机地址在「视频与测温」里静态配置 |
 
 容器之间走 docker 网络 `lsa-eg`；本地 TB 的告警钩子经 `host.docker.internal`（宿主机网关地址）推给宿主机网络上的 agent 的 80 口 —— 防火墙要允许 docker 网段访问本机 80。
 
@@ -209,6 +209,7 @@ sudo bash /opt/lsa-eg/test/test.sh down
 | 本地维护账号 maint | 初始口令随机，在 `config/initial-password.txt`；登录后到「系统」改口令，再删这个文件。文件还在时管理页每页顶上有提醒条，install.sh 的「安全提醒」也会列 |
 | 隧道账号 lsa-sp | 只在部署 / 改设备清单时需要；用完 `install.sh --drop-sp-key` |
 | SSH | 维护账号改用密钥登录后，建议关掉口令登录（`/etc/ssh/sshd_config.d/` 下写 `PasswordAuthentication no`，`systemctl reload ssh`）。install.sh 只提醒、不替你改（免得把自己锁在外面）；防火墙可只放子站主机与维护笔记本访问 22 |
+| LAN1 防火墙 | `--lan1` 时自动加（见 §1）：摄像机网上 22 / 80 / 8554 都连不上。实测（无 AVX 样机）：从摄像机网全部超时；EG 主动连摄像机网、经 LAN1 拉 RTSP（TCP）照常；重启后 28 s 内规则在；回退到老版本清掉、再升回来又加上 |
 | 对外端口 | 只有 22、80（管理页）、8554（RTSP，mediamtx 只许子站主机与本机读）、8189/UDP（WebRTC）听所有网口；本地 TB 18080、本机总线 1884、mediamtx API / 回放、eg-video 都只绑 127.0.0.1（虚拟样机 `ss -tulnp` 核对过）。LAN1 进来的管理页请求一律 403（`--lan1`） |
 | 本机总线不鉴权（I5-4） | 只绑 127.0.0.1 与容器网络，站内网摸不到；同事的采集程序在本机直连。结论：维持不鉴权 |
 | `EG_PASSIVE` | 开发用旁观模式，发布件里没有；现场 `.env` 里出现会被「安全提醒」列出、agent 也会打错误日志 |
