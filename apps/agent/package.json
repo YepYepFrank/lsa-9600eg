@@ -1,6 +1,6 @@
 {
   "name": "@lsa-eg/agent",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,7 +19,8 @@
     "verify:ui": "node --import @swc-node/register/esm-register src/verify-ui.ts",
     "verify:a": "node --import @swc-node/register/esm-register src/verify-a.ts",
     "verify:a:prod": "node --import @swc-node/register/esm-register src/verify-a-prod.ts",
-    "verify:a:e2e": "node --import @swc-node/register/esm-register src/verify-a-e2e.ts"
+    "verify:a:e2e": "node --import @swc-node/register/esm-register src/verify-a-e2e.ts",
+    "verify:a11": "node --import @swc-node/register/esm-register src/verify-a11.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",

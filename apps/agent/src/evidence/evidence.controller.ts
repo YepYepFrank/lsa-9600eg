@@ -23,7 +23,7 @@ export class EvidenceController {
     const ticket = req.headers['x-eg-ticket'] as string | undefined
     if (ticket) {
       const c = this.auth.verifyService(ticket)
-      if ('error' in c) throw new UnauthorizedException({ code: 'bad_ticket', message: c.error })
+      if ('error' in c) throw new UnauthorizedException({ code: c.code, message: c.error })
       return `子站 ${c.n}`
     }
     const h = req.headers.authorization
@@ -38,7 +38,7 @@ export class EvidenceController {
   @HttpCode(200)
   async lock(@Headers('x-eg-ticket') ticket: string | undefined, @Body() body: LockRequest, @ClientIp() ip: string) {
     const c = this.auth.verifyService(ticket)
-    if ('error' in c) throw new UnauthorizedException({ code: 'bad_ticket', message: c.error })
+    if ('error' in c) throw new UnauthorizedException({ code: c.code, message: c.error })
     const start = Number(body?.start)
     const end = Number(body?.end)
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new BadRequestException({ code: 'bad_request', message: 'start / end 要是毫秒、且 end > start' })

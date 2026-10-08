@@ -1,6 +1,8 @@
 /* PUT /api/config —— 子站扩展服务下发配置（I4，§8.3）。鉴权：请求头 X-EG-Ticket 带子站签的服务票据（角色 station，60 s、一次性），
  * 不认浏览器会话（本地维护账号也不能改阈值与规则 —— 配置只有子站一个来源）。
  * 校验不过、写不进本地 TB 都回 200 + status FAILED 与原因（扩展服务照原因显示「失败」）；票据不对回 401。
+ * 阶段 A11：回执原样带回请求体的 requestId，FAILED / PENDING 另带 errorCode（apply.service.ts ErrorCode）；
+ *   401 响应体 { code: TICKET_TIME（两边时钟差）| TICKET_INVALID（其余）, message }（以前 code 一律 bad_ticket）。
  * 调试（EG_DEBUG=1）：POST /api/config/_debug?unavailable=1 让 PUT 回 503（扮演 EG 离线，测子站 PENDING 与恢复后自动重发），=0 恢复；
  *   ?tbDown=1 假装本地 TB 没就绪（测 EG 回 PENDING、排队、就绪后自动应用），=0 恢复。 */
 import { Body, Controller, ForbiddenException, Headers, HttpCode, Post, Put, Query, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common'
@@ -25,7 +27,7 @@ export class ApplyController {
     const c = this.auth.verifyService(ticket)
     if ('error' in c) {
       this.audit.write({ user: '?', name: '?', via: 'sp', ip, action: '应用子站配置', target: '?', ok: false, detail: c.error })
-      throw new UnauthorizedException({ code: 'bad_ticket', message: c.error })
+      throw new UnauthorizedException({ code: c.code, message: c.error })
     }
     return this.apply.apply(body, { user: c.u, name: c.n, ip })
   }

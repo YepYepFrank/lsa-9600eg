@@ -34,23 +34,28 @@ export function signTicket(egToken: string, claims: TicketClaims): string {
   return `v1.${payload}.${b64(sig)}`
 }
 
+/** 票据出错的机器码（阶段 A11，401 响应体的 code）：时间不对（两边时钟差）与其余（签名、柜号、角色、格式、已用过、没带） */
+export type TicketErrorCode = 'TICKET_TIME' | 'TICKET_INVALID'
+export type TicketError = { error: string; code: TicketErrorCode }
+const invalid = (error: string): TicketError => ({ error, code: 'TICKET_INVALID' })
+
 /** 验票：签名、柜号、时效（容两边时钟差 60 s）。返回载荷或出错原因 */
-export function verifyTicket(egToken: string, ticket: string, cabinet: string, now = Date.now()): TicketClaims | { error: string } {
+export function verifyTicket(egToken: string, ticket: string, cabinet: string, now = Date.now()): TicketClaims | TicketError {
   const parts = ticket.split('.')
-  if (parts.length !== 3 || parts[0] !== 'v1') return { error: '票据格式不对' }
+  if (parts.length !== 3 || parts[0] !== 'v1') return invalid('票据格式不对')
   const want = createHmac('sha256', keyOf(egToken)).update(`v1.${parts[1]}`).digest()
   const got = Buffer.from(parts[2]!, 'base64url')
-  if (got.length !== want.length || !timingSafeEqual(got, want)) return { error: '票据签名不对（不是本柜子站签发的）' }
+  if (got.length !== want.length || !timingSafeEqual(got, want)) return invalid('票据签名不对（不是本柜子站签发的）')
   let c: TicketClaims
   try {
     c = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as TicketClaims
   } catch {
-    return { error: '票据内容不对' }
+    return invalid('票据内容不对')
   }
-  if (c.c !== cabinet) return { error: `票据是给 ${c.c} 的，这台是 ${cabinet}` }
+  if (c.c !== cabinet) return invalid(`票据是给 ${c.c} 的，这台是 ${cabinet}`)
   const skew = 60_000
-  if (now > c.exp + skew) return { error: '票据已过期，请回子站重新打开' }
-  if (c.iat > now + skew) return { error: '票据时间在未来（两边时钟差太大？）' }
-  if (c.r !== 'maint' && c.r !== 'view' && c.r !== 'station') return { error: '票据角色不对' }
+  if (now > c.exp + skew) return { error: '票据已过期，请回子站重新打开', code: 'TICKET_TIME' }
+  if (c.iat > now + skew) return { error: '票据时间在未来（两边时钟差太大？）', code: 'TICKET_TIME' }
+  if (c.r !== 'maint' && c.r !== 'view' && c.r !== 'station') return invalid('票据角色不对')
   return c
 }

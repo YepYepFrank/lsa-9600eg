@@ -41,7 +41,18 @@ export interface ApplyReceipt {
   changed?: number
   /** 这台 EG 不认识、跳过了的规则 id（EG 版本比子站旧）；都认识时不带 */
   ignored?: string[]
+  /** 阶段 A11：请求体里的 requestId 原样带回（老子站不带就没有） */
+  requestId?: string
+  /** 阶段 A11：FAILED / PENDING 时给机器看的出错码（error 是给人看的） */
+  errorCode?: ErrorCode
 }
+
+/** 配置回执的出错码（阶段 A11，与子站后端定稿）：
+ *   BAD_REQUEST 格式 / 字段不对（含 caps、capKeys、devComm）；BAD_VERSION 版本号不合法；BAD_THRESHOLD 阈值表缺项 / 不合法（如温升上上限 ≤ 上限）；
+ *   DEVICES_MISMATCH 设备清单与本机 eg.yaml 不同（要重新生成 eg.yaml 部署）；LOCAL_NOT_READY 本地 TB 暂未就绪（只用于 PENDING，EG 自己重试）；
+ *   LOCAL_NOT_CONFIGURED 本机没配本地 TB 账号 / 没 provision（不可重试）；INTERNAL 其余（写本地 TB 失败已改回等）。
+ *   UNKNOWN_RULE 保留不用：不认识的规则照旧跳过、列进 ignored。票据错误不在回执里，见 apply.controller.ts 的 401。 */
+export type ErrorCode = 'BAD_REQUEST' | 'BAD_VERSION' | 'BAD_THRESHOLD' | 'DEVICES_MISMATCH' | 'LOCAL_NOT_READY' | 'LOCAL_NOT_CONFIGURED' | 'INTERNAL' | 'UNKNOWN_RULE'
 
 export interface Applied {
   version: string
@@ -76,7 +87,14 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string; alias
 /** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用 */
 const DEFAULT_EXTRAS: ThresholdExtras = { pdCnt: 20, pm25Abs: 75, commPeriods: 5 }
 
-class Invalid extends Error {}
+class Invalid extends Error {
+  constructor(
+    message: string,
+    readonly code: ErrorCode = 'BAD_REQUEST',
+  ) {
+    super(message)
+  }
+}
 
 /** 本地 TB 这类依赖暂时没就绪（等一等会好）：连不上、超时、5xx / 408 / 429 */
 function transient(e: unknown): boolean {
@@ -193,7 +211,7 @@ export class ApplyService {
 
   private async settle(body: unknown, who: { user: string; name: string; ip: string }, retry: boolean): Promise<ApplyReceipt> {
     // 重试期间来了新的下发：旧的作废
-    if (retry && this.pending?.body !== body) return { version: '', status: 'FAILED', error: '已被新的下发顶替' }
+    if (retry && this.pending?.body !== body) return { version: '', status: 'FAILED', error: '已被新的下发顶替', errorCode: 'INTERNAL' }
     const r = await this.doApply(body, who, retry)
     if (r.status !== 'PENDING') {
       if (this.pending) this.setPending(null)
@@ -211,17 +229,20 @@ export class ApplyService {
 
   private async doApply(body: unknown, who: { user: string; name: string; ip: string }, retry = false): Promise<ApplyReceipt> {
     const version = isObj(body) && typeof body['version'] === 'string' ? body['version'] : ''
-    const fail = (error: string): ApplyReceipt => {
-      this.log.warn(`版本 ${version || '?'} 应用失败：${error}`)
-      this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: '应用子站配置', target: version || '?', ok: false, detail: error })
-      return { version, status: 'FAILED', error }
+    // 阶段 A11：requestId 原样带回（字符串、不超过 128 字；别的形状不认、也不因此拒收）
+    const rq = isObj(body) ? body['requestId'] : undefined
+    const rid = typeof rq === 'string' && rq.length <= 128 ? { requestId: rq } : {}
+    const fail = (error: string, errorCode: ErrorCode): ApplyReceipt => {
+      this.log.warn(`版本 ${version || '?'} 应用失败（${errorCode}）：${error}`)
+      this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: '应用子站配置', target: version || '?', ok: false, detail: `${errorCode}：${error}` })
+      return { version, status: 'FAILED', error, errorCode, ...rid }
     }
-    const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}` })
+    const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}`, errorCode: 'LOCAL_NOT_READY', ...rid })
     let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null }
     try {
       input = this.parse(body)
     } catch (e) {
-      if (e instanceof Invalid) return fail(e.message)
+      if (e instanceof Invalid) return fail(e.message, e.code)
       throw e
     }
     // 老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，升级后同一份配置不会被当成新内容
@@ -233,9 +254,9 @@ export class ApplyService {
     if (this.applied?.version === input.version && this.applied.hash === hash) {
       // 内容相同的重发：不动本地 TB，但把 cfg 再报一次 —— 子站重发多半是因为它看到的 cfg 不对
       this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
-      return { version, status: 'APPLIED', changed: 0, ...ign }
+      return { version, status: 'APPLIED', changed: 0, ...ign, ...rid }
     }
-    if (!this.tb.available) return fail('eg.yaml 里没有本地 TB 账号，写不了设备配置')
+    if (!this.tb.available) return fail('eg.yaml 里没有本地 TB 账号，写不了设备配置', 'LOCAL_NOT_CONFIGURED')
 
     // 生成新规则（先全部算好再写，阈值缺项等在这一步就报出来）
     let profiles: TbProfile[]
@@ -246,16 +267,16 @@ export class ApplyService {
       profiles = await Promise.all(list.data.filter(p => PROFILES.find(d => d.name === p.name)?.alarms).map(p => this.tb.get<TbProfile>(`/api/deviceProfile/${p.id.id}`)))
     } catch (e) {
       if (transient(e)) return later(`读本地 TB 的设备配置失败：${(e as Error).message}`)
-      return fail(`读本地 TB 的设备配置失败：${(e as Error).message}`)
+      return fail(`读本地 TB 的设备配置失败：${(e as Error).message}`, 'INTERNAL')
     }
-    if (!profiles.length) return fail('本地 TB 上没有带告警规则的设备配置（先跑 provision:eg）')
+    if (!profiles.length) return fail('本地 TB 上没有带告警规则的设备配置（先跑 provision:eg）', 'LOCAL_NOT_CONFIGURED')
     for (const p of profiles) {
       const def = PROFILES.find(d => d.name === p.name)!
       let alarms: TbAlarmDef[]
       try {
         alarms = (profileBody(def, { rows: input.thresholds, extras: input.extras }).profileData.alarms ?? []) as TbAlarmDef[]
       } catch (e) {
-        return fail(`阈值表不全（设备配置 ${p.name}）：${(e as Error).message}`)
+        return fail(`阈值表不全（设备配置 ${p.name}）：${(e as Error).message}`, 'BAD_THRESHOLD')
       }
       const next = filterRules(alarms, input.rules)
       if (canon(next) === canon(p.profileData.alarms ?? [])) continue
@@ -272,7 +293,7 @@ export class ApplyService {
     } catch (e) {
       for (const b of done) await this.tb.req('POST', '/api/deviceProfile', b).catch(() => undefined)
       if (transient(e)) return later(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`)
-      return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`)
+      return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`, 'INTERNAL')
     }
 
     this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm }
@@ -289,7 +310,7 @@ export class ApplyService {
     const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}`
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: retry ? '应用子站配置（排队后自动）' : '应用子站配置', target: input.version, ok: true, detail })
-    return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign }
+    return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid }
   }
 
   /** 等开机清扫做完（告警事件开机重发要等它）；本地 TB 一直没就绪就等到 ms 为止 */
@@ -341,15 +362,15 @@ export class ApplyService {
   private parse(b: unknown) {
     if (!isObj(b)) throw new Invalid('请求体要是 JSON 对象')
     const version = b['version']
-    if (typeof version !== 'string' || !/^[\w.-]{1,64}$/.test(version)) throw new Invalid('version 要是 1–64 位的字母、数字、. _ -')
-    if (!Array.isArray(b['thresholds']) || !b['thresholds'].length) throw new Invalid('thresholds 要是非空数组')
+    if (typeof version !== 'string' || !/^[\w.-]{1,64}$/.test(version)) throw new Invalid('version 要是 1–64 位的字母、数字、. _ -', 'BAD_VERSION')
+    if (!Array.isArray(b['thresholds']) || !b['thresholds'].length) throw new Invalid('thresholds 要是非空数组', 'BAD_THRESHOLD')
     const num = (v: unknown, where: string) => {
       if (v === null || v === undefined) return null
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Invalid(`${where} 要是不小于 0 的数或 null`)
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Invalid(`${where} 要是不小于 0 的数或 null`, 'BAD_THRESHOLD')
       return v
     }
     const thresholds: ThresholdRow[] = b['thresholds'].map((r: unknown, i: number) => {
-      if (!isObj(r) || typeof r['key'] !== 'string') throw new Invalid(`thresholds[${i}] 缺 key`)
+      if (!isObj(r) || typeof r['key'] !== 'string') throw new Invalid(`thresholds[${i}] 缺 key`, 'BAD_THRESHOLD')
       const k = r['key']
       const s = (x: unknown) => (typeof x === 'string' ? x : '')
       return { key: k, name: s(r['name']), unit: s(r['unit']), note: s(r['note']), mv: num(r['mv'], `${k}.mv`), tr: num(r['tr'], `${k}.tr`), lv: num(r['lv'], `${k}.lv`) }
@@ -358,7 +379,7 @@ export class ApplyService {
     const val = (k: string) => thresholds.find(r => r.key === k)?.[g] ?? null
     const rise = val('rise')
     const rise2 = val('rise2')
-    if (rise !== null && rise2 !== null && rise2 <= rise) throw new Invalid(`温升上上限（${rise2}）要大于上限（${rise}）`)
+    if (rise !== null && rise2 !== null && rise2 <= rise) throw new Invalid(`温升上上限（${rise2}）要大于上限（${rise}）`, 'BAD_THRESHOLD')
 
     const rawRules = b['rules'] ?? []
     if (!Array.isArray(rawRules)) throw new Invalid('rules 要是数组')
@@ -396,7 +417,7 @@ export class ApplyService {
         const want = new Set((b['devices'] as { name?: string }[]).map(d => d?.name ?? '?'))
         const add = [...want].filter(n => !now.has(n))
         const del = [...now].filter(n => !want.has(n))
-        throw new Invalid(`设备清单与本机不同（${[add.length ? `多 ${add.join('、')}` : '', del.length ? `少 ${del.join('、')}` : ''].filter(Boolean).join('，') || '类型不同'}）：设备清单变更要在子站重新生成 eg.yaml 部署到这台 EG，在线改暂不支持`)
+        throw new Invalid(`设备清单与本机不同（${[add.length ? `多 ${add.join('、')}` : '', del.length ? `少 ${del.join('、')}` : ''].filter(Boolean).join('，') || '类型不同'}）：设备清单变更要在子站重新生成 eg.yaml 部署到这台 EG，在线改暂不支持`, 'DEVICES_MISMATCH')
       }
     }
     // 阶段 A：能力清单（本柜那一份）与下挂设备离线判据
