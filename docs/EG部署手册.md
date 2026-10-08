@@ -31,7 +31,7 @@
 | 出站 → 子站 | **8883/TCP**（MQTT over TLS） | 遥测上送（`station.mqtt`） |
 | 出站 → 子站 | **443/TCP**（HTTPS） | 告警事件与回执（`station.http`） |
 | 出站 → 子站 | 123/UDP | 对时（chrony 与 agent 的 SNTP 测量） |
-| 入站 LAN1 | 全关 | 摄像机网只出不进。agent 听 0.0.0.0:80，但 `install.sh --lan1 <网口>` 后从 LAN1 进来的请求一律 403（I5-2 已做） |
+| 入站 LAN1 | 应全关 | 摄像机网只出不进。**现状（2026-10-08 实测）**：`install.sh --lan1` 只在应用层挡 —— 80 管理页 403（「本地管理页只在 LAN2 上开放」），8554 RTSP 读 401（只许子站主机）；但 **22 SSH 在 LAN1 上照样能连**、80 / 8554 的 TCP 也能建连。要真关需在 EG 上加防火墙（LAN1 只放已建立连接的回包），拉摄像机要改走 RTSP over TCP（UDP 的 RTP 回包会被挡）—— 待定，见评审记录「11 LAN1」 |
 | 出站 → LAN1 | 554、80 | 拉摄像机 RTSP、ONVIF / 测温接口 |
 
 容器之间走 docker 网络 `lsa-eg`；本地 TB 的告警钩子经 `host.docker.internal`（宿主机网关地址）推给宿主机网络上的 agent 的 80 口 —— 防火墙要允许 docker 网段访问本机 80。
