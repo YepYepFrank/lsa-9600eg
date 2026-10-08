@@ -15,7 +15,9 @@
  * 阶段 A（接口 v1.1）：体里另带 caps / capKeys（能力清单，caps/caps.ts）与 devComm（下挂设备离线判据），一并算进内容哈希、
  *   存进 applied-config.json，应用后交给 CapsService；老子站不带 = 全部照旧。
  * 规则停用或告警类型改名（如 EG-rh「环境」→「柜内湿度高」）后，本地 TB 上该类型挂着的活动告警没有规则来清了 ——
- *   写完设备配置后把「之前有、现在没有」的告警类型的活动告警清掉（经钩子 / 对账照常给子站送 CLEARED）。 */
+ *   写完设备配置后把「之前有、现在没有」的告警类型的活动告警清掉（经钩子 / 对账照常给子站送 CLEARED）。
+ *   另在开机后（本地 TB 就绪时）扫一遍：EG 规则的告警类型（含改名前的 alias）在当前设备配置里已经没有、却还挂着的，清掉 ——
+ *   子站先升、老 EG 先应用了新配置（老代码不清），再升 EG 时配置没变、不会再走应用（0.10 在 AH12 上验出来的）。 */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -107,6 +109,8 @@ export class ApplyService {
   private readonly pendingFile: string
   private pending: Pending | null = null
   private timer: NodeJS.Timeout | null = null
+  /** 开机后的遗留告警清扫做完了没有（本地 TB 没就绪时下一轮再试） */
+  private swept = false
   /** 调试（EG_DEBUG）：假装本地 TB 没就绪，测 PENDING → 自动应用 */
   debugTbDown = false
 
@@ -134,7 +138,10 @@ export class ApplyService {
     } catch (e) {
       this.log.warn(`pending-config.json 读不了：${(e as Error).message}`)
     }
-    this.timer = setInterval(() => void this.retryPending(), 5000)
+    this.timer = setInterval(() => {
+      void this.retryPending()
+      if (!this.swept) void this.sweepOnce()
+    }, 5000)
     this.timer.unref?.()
   }
 
@@ -281,6 +288,28 @@ export class ApplyService {
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: retry ? '应用子站配置（排队后自动）' : '应用子站配置', target: input.version, ok: true, detail })
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign }
+  }
+
+  /** 开机清扫（排进应用队列，不与下发并发）：EG 规则的告警类型里，本地设备配置已经没有的，活动告警清掉 */
+  private sweepOnce(): Promise<void> {
+    if (!this.tb.available || this.debugTbDown) return Promise.resolve()
+    const p = this.chain.then(async () => {
+      if (this.swept) return
+      const list = await this.tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')
+      const profiles = await Promise.all(list.data.filter(x => PROFILES.find(d => d.name === x.name)?.alarms).map(x => this.tb.get<TbProfile>(`/api/deviceProfile/${x.id.id}`)))
+      if (!profiles.length) return
+      const now = new Set(profiles.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
+      const known = new Set(Object.values(RULE_ALARM).flatMap(r => [r.type, ...(r.alias ?? [])]))
+      const gone = [...known].filter(t => !now.has(t))
+      this.swept = true
+      const n = gone.length ? await this.clearActive(gone) : 0
+      if (n) {
+        this.log.log(`开机清扫：规则已停用 / 改名、还挂着的活动告警清掉 ${n} 条（不再有规则的类型 ${gone.join('、')}）`)
+        this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '清除遗留告警', target: gone.join('、'), ok: true, detail: `开机清扫：清掉 ${n} 条` })
+      }
+    })
+    this.chain = p.catch(() => undefined)
+    return p.catch(() => undefined)
   }
 
   /** 本地 TB 上这些类型的活动告警清掉（规则已没了，不清就一直挂着）；失败只记日志，不影响这次应用 */
