@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { css, theme, useChart } from './echarts'
+import { bjFull, css, theme, useChart } from './echarts'
 import type { UnitSeries } from './MultiUnitTrend.vue'
 const props = defineProps<{
   series?: UnitSeries[]
@@ -19,7 +19,7 @@ useChart(el, chart => {
       ...th.tooltip, trigger: 'item',
       formatter: (item: { dataIndex: number }) => {
         const p = pulses[item.dataIndex]
-        return `${new Date(p.time).toLocaleString('zh-CN', { hour12: false })}<br>相对强度 ${p.value} a.u.<br>持续时间 ${p.duration} ms`
+        return `${bjFull(p.time)}<br>相对强度 ${p.value} a.u.<br>持续时间 ${p.duration} ms`
       },
     } : { ...th.tooltip, trigger: 'axis' },
     xAxis: { ...th.xTime, min: props.from, max: props.to, splitNumber: 3 },

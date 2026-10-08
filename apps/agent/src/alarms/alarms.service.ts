@@ -298,7 +298,12 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     if (!this.tb.available) return
     const t0 = Date.now()
     try {
-      const since = Number(this.store.getMeta('reconciledAt')) || t0 - FIRST_WINDOW_MS
+      // 对账窗口 = 上次对账以来（agent 停了多久就补多久；断上行不影响对账，对的是本地 TB），
+      // 上限 = outbox 保留期（缺省 7 天）；首次部署没有上次，看 24 h（I3-2，协调会话 2026-10-08 定）
+      const last = Number(this.store.getMeta('reconciledAt'))
+      const cap = t0 - this.cfg.local.outbox.maxAgeDays * 86_400_000
+      const since = last ? Math.max(last, cap) : t0 - FIRST_WINDOW_MS
+      if (last && last < cap) this.log.warn(`上次对账在 ${new Date(last).toISOString()}，超过保留期 ${this.cfg.local.outbox.maxAgeDays} 天，只补最近 ${this.cfg.local.outbox.maxAgeDays} 天的告警变化`)
       const recent = await this.pages(`/api/v2/alarms?startTime=${since - OVERLAP_MS}&sortProperty=createdTime&sortOrder=ASC`)
       const active = await this.pages('/api/v2/alarms?statusList=ACTIVE&sortProperty=createdTime&sortOrder=ASC')
       let n = 0

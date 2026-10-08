@@ -285,6 +285,9 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
         history = true
       }
       this.send(c, rows, history)
+      // 最后一批正好取到 mark 时，下一轮在循环开头就 break、走不到上面「取空」那一支：在这里记完成
+      // （AH09 断 9.3 天补 225 万条，没打出「补传完成」）
+      if (history && this.histCursor >= this.mark && this.histTotal) this.log.log(`补传完成：${this.histTotal} 条都已发出`)
     }
   }
 
