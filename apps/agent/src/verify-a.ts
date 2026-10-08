@@ -71,6 +71,14 @@ async function main() {
   }
   const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-pm', 'EG-dphase', 'EG-devlost']
   const rules = (off: string[] = []) => RULES.map(id => ({ id, on: !off.includes(id) }))
+  /** v1.2 补：按柜停用（offCabs） */
+  const rulesCab = (off: string[], cab: string) => RULES.map(id => ({ id, on: true, ...(off.includes(id) ? { offCabs: [cab] } : {}) }))
+  const profileTypes = async () => {
+    const ps = (await tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')).data.filter(x => x.name.startsWith('sam_'))
+    const out = new Set<string>()
+    for (const x of ps) for (const a of ((await tb.get<{ profileData: { alarms: { alarmType: string }[] | null } }>(`/api/deviceProfile/${x.id.id}`)).profileData.alarms ?? [])) out.add(a.alarmType)
+    return out
+  }
   const stamp = Date.now().toString(36)
   // 版本号：缺省 a-<时间>；对着接了子站的 EG 跑时设 EG_A_VERSION=<子站的期望版本>，免得子站看到版本不一致中途重发、把自检的配置盖掉
   const ver = (i: number) => process.env['EG_A_VERSION'] ?? `a-${stamp}-${i}`
@@ -167,10 +175,12 @@ async function main() {
     return null
   }, 60_000, 2000)
   check(!!arcOn, `打弧光 → 本地 TB 活动告警「弧光异常」（${arcOn?.d ?? '没出来'}）`)
-  const r4 = await put({ version: ver(2), thresholds: base, rules: rules(['EG-rh', 'EG-arc']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
-  check(r4.status === 'APPLIED', `停用 EG-arc → ${r4.status}`)
+  const r4 = await put({ version: ver(2), thresholds: base, rules: rulesCab(['EG-rh', 'EG-arc'], code), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  check(r4.status === 'APPLIED' && !(await profileTypes()).has('弧光异常'), `按柜停用 EG-arc（offCabs: [${code}]）→ ${r4.status}，本地设备配置里没有「弧光异常」了`)
   const cleared = await until(async () => (arcOn && !(await tb.activeAlarms(arcOn.d)).some(x => x.type === '弧光异常') ? true : null), 30_000, 2000)
   check(!!cleared, '停用后「弧光异常」活动告警被清掉（没有规则了，不清就一直挂着）')
+  const r4b = await put({ version: ver(4), thresholds: base, rules: rulesCab(['EG-rh', 'EG-arc'], 'ZZ99'), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  check(r4b.status === 'APPLIED' && (await profileTypes()).has('弧光异常'), `offCabs 只列别的柜（ZZ99）→ ${r4b.status}，本柜「弧光异常」规则回来了`)
 
   console.log('\n5. 恢复：不带能力的配置（全部照旧上送）')
   const r5 = await put({ version: ver(3), thresholds: base, rules: rules(['EG-rh']) })

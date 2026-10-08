@@ -328,7 +328,10 @@ export class ApplyService {
     const rules: { id: string; on: boolean }[] = []
     const ignored: string[] = []
     for (const r of rawRules) {
-      if (!isObj(r) || typeof r['id'] !== 'string' || typeof r['on'] !== 'boolean') throw new Invalid('rules 每项要是 { id: 字符串, on: 布尔 }')
+      if (!isObj(r) || typeof r['id'] !== 'string' || typeof r['on'] !== 'boolean') throw new Invalid('rules 每项要是 { id: 字符串, on: 布尔, offCabs?: [柜号] }')
+      // v1.2 补：规则全站一份、能力按柜 —— offCabs 里有本柜号就算本柜停用（子站按能力算：能力不是 confirmed 的柜放进来）
+      const offCabs = r['offCabs'] ?? []
+      if (!Array.isArray(offCabs) || !offCabs.every(x => typeof x === 'string')) throw new Invalid(`rules[${r['id']}].offCabs 要是柜号数组`)
       // 子站执行的规则（SP-*）与 EG 无关，带了也不管
       if (!r['id'].startsWith('EG-')) continue
       // 不认识的（子站比这台 EG 新）：跳过，回执里列出来，不让整份配置失败
@@ -336,7 +339,8 @@ export class ApplyService {
         ignored.push(r['id'])
         continue
       }
-      rules.push({ id: r['id'], on: r['on'] })
+      // 存与算哈希的都是本柜生效后的 { id, on }：别的柜进出 offCabs 对本柜不算新内容；不带 offCabs 与老哈希一致
+      rules.push({ id: r['id'], on: r['on'] && !offCabs.includes(this.cfg.cabinet.code) })
     }
 
     let extras = this.applied?.extras ?? DEFAULT_EXTRAS
