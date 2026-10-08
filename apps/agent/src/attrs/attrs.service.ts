@@ -5,6 +5,7 @@
  * 同事的程序只发他知道的（固件版本 fw、实际协议 proto 等），会覆盖同名项 —— 以现场实际为准。
  * EG 自身另加 agent 版本、实际生效的配置版本 cfg、本地 TB 版本 tbVersion（§8.1）；
  * eg.yaml 里的 cfgWant 是子站自己的量（期望版本），EG 不报（I 阶段复测：报了会与子站的期望版本看混）。 */
+import { readFileSync } from 'node:fs'
 import { Inject, Injectable, type OnModuleInit } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
@@ -12,7 +13,14 @@ import { BusService } from '../bus/bus.service.js'
 import { ApplyService } from '../apply/apply.service.js'
 import { LocalTbService } from '../tb/local-tb.service.js'
 
-export const AGENT_VERSION = '0.1.0'
+/** 发布件版本（如 0.2.0-67da0ec）：镜像里 /app/package.json 由 pack-eg 写成「版本-提交号」；开发时读仓库根的 package.json */
+export const AGENT_VERSION = (() => {
+  try {
+    return (JSON.parse(readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8')) as { version: string }).version
+  } catch {
+    return '0.2.0'
+  }
+})()
 
 @Injectable()
 export class AttrsService implements OnModuleInit {
