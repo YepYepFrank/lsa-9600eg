@@ -6,7 +6,7 @@
 
 ## 1. 组成与端口
 
-一台 EG（新创云 XCY-X26A，x86_64）上跑 7 个容器，全部由 `compose.yaml` 编排（内存上限合计约 3.0 GB，日志各 10 MB × 3 轮转）：
+一台 EG（新创云 XCY-X26A，x86_64，硬件见 §2a）上跑 7 个容器，全部由 `compose.yaml` 编排（内存上限合计约 3.0 GB，日志各 10 MB × 3 轮转）：
 
 | 容器 | 作用 | 端口 | 谁访问 |
 |---|---|---|---|
@@ -38,15 +38,53 @@
 
 ## 2. 主机准备
 
-- 系统：Ubuntu Server 24.04 LTS 最小安装（开发计划 §1；G6 定稿）。
+- 系统：发布件按 **Ubuntu Server 24.04 LTS 最小安装** 做、在它上面验过（开发计划 §1；G6 定稿）。**X26A 出厂预装的是 Ubuntu 22.04 中文桌面版**（2026-10-09 答复 X1），两处要注意：
+  - **离线包 `debs/` 是 24.04（noble）的**（Docker CE、compose 插件、chrony 等），22.04（jammy）上装不上。22.04 机器要么已联网装好 Docker 与 chrony（install.sh 发现已有就不装），要么另出一套 jammy 的离线包 —— **待开发 / 待定**（待确认事项第 4 版 I12）：二选一是把 X26A 重装成 24.04 Server（我们验过的环境），或支持 22.04 桌面版并在虚拟机上把全流程重验一遍。
+  - 桌面版的额外设置见 §2a「桌面版注意事项」。
 - Docker Engine + compose 插件、chrony：**不用先装** —— 发布件的 `debs/`（`pack:eg -- --debs`）带离线包，install.sh 发现没有就装：先卸与 chrony 冲突的 systemd-timesyncd，再 `dpkg -i` 一次装本机没有 / 比本机新的那些（不联网；不用 `apt-get install ./debs/*.deb` —— 机器上留着装系统时的源索引时 apt 会报「Pathname to install is not absolute」，虚拟样机实测）。发布件的 `IMAGES.txt` 列各镜像的 tag / digest / ID，导入后逐个核对。
-- 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`，并把 `chrony.conf` 的 `makestep` 改成 `1 -1`（**X26A 没有 RTC 电池**，断电后开机时钟是错的；缺省只在头 3 次更新里跳，之后差几分钟也要追几小时）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
+- 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`，并把 `chrony.conf` 的 `makestep` 改成 `1 -1`（X26A **有** RTC 电池（2026-10-09 答复 X3，更正以前「没有」的说法），断电重启时钟大体是对的；但电池老化或长期断电后仍可能偏得多，缺省只在头 3 次更新里跳、之后差几分钟也要追几小时，所以照样改成随时可跳）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
 - **子站主机当时间服务器**：一键安装 `--role sp` 给子站的 chrony 加 `allow` 站内私网与 `local stratum 10 orphan`（没有上级时全站至少跟子站一致），站内时钟源用 `--ntp <地址>` 给（记住，升级不用再给）；子站防火墙放 UDP 123。**EG 与子站时钟差超过 60 s 时，子站下发配置、单点登录的票据会被 EG 拒收**（「票据时间在未来」，0.9.3 无 AVX 样机上踩到：实验网里没有任何对时，跑了 10 天的 VM 漂了 63 s）。
 - 系统日志：install.sh 写 `/etc/systemd/journald.conf.d/lsa-eg.conf`，journald 封顶 200 MB。
 - 网卡：LAN1 静态地址（与摄像机同段），LAN2 静态地址（站内网），缺省路由走 LAN2。
-- 数据盘：本地 TB 留 7 天、上送 outbox 最多 2 GB、**循环录像**（两路子码流常录，按 1 Mbit/s 估每天约 10.8 GB，留 24 h）、锁定的证据片段（30 天，按每次告警约 12 MB 估），按 128 GB 工业级 mSATA 准备（开发计划 §1）。
+- 数据盘：本地 TB 留 7 天、上送 outbox 最多 2 GB、**循环录像**（两路子码流常录，按 1 Mbit/s 估每天约 10.8 GB，留 24 h）、锁定的证据片段（30 天，按每次告警约 12 MB 估），按 128 GB 工业级 mSATA 准备（开发计划 §1）。**X26A 实配 mSATA 256 GB、300 TBW**（2026-10-09 答复 X2）：按每天 11–20 GB 写入，300 TBW 远超 10 年，写入寿命不再是风险。
 - **摄像机侧没人看时也一直有流量**：EG 从摄像机常拉两路子码流做循环录像（约 1 Mbit/s，LAN1 上），主码流才按需；**SSD 每天约 11 GB 写入**（一年约 4 TB，按盘的 TBW 核寿命）。
 - **容量 / 寿命检查**：`sudo bash diskcheck.sh [采样秒数] [盘的 TBW]` —— 各部分占用（录像、证据、outbox、TB 卷、日志）、开机以来与当前的写入速率、按 TBW 估的寿命；有 smartctl 时另报盘自己记的累计写入。
+
+## 2a. X26A 实际配置、485 接线与桌面版注意事项（2026-10-09 外部答复）
+
+依据：《待确认事项清单》第 4 版 X1–X5、ARC7、B1–B6、I12–I15。
+
+**主机**
+
+| 项 | 实际 | 对我们的影响 |
+|---|---|---|
+| 系统 | 预装 Ubuntu 22.04 中文桌面版（也可装优麒麟） | 见 §2「系统」与下面「桌面版注意事项」 |
+| 内存 | 8 GB，最多可扩到 16 GB | 编排内存上限合计约 3.0 GB，够；桌面版建议不进图形界面，省下约 1 GB |
+| 硬盘 | mSATA 256 GB，300 TBW | 见 §2「数据盘」 |
+| 来电自启 | 有，默认开 | 断电恢复后自己开机，容器 `restart: unless-stopped` 自起 |
+| 看门狗 | **没有硬件看门狗** | 系统卡死不会自己重启。计划在 install.sh 里启用软件看门狗（softdog + systemd `RuntimeWatchdogSec`）兜底 —— **待开发**（I13） |
+| RTC 电池 | 有 | 见 §2「对时」 |
+| 串口 | **COM2 = `/dev/ttyS1`**，批量机只有 COM2 能做 485；**样机没有 485** | 样机上测 485 设备要用 USB 转 485（`/dev/ttyUSB0`） |
+| 开关量 | 没有 DI / DO | 分合位、失电首期不做（《EG 内部 MQTT 格式》§5.4） |
+| 供电 | 只能 12 V，整机 20–25 W | 柜内要有 12 V 电源 |
+
+**485 接线规定**（X26A 的 485：没有自动收发、没有隔离、没有终端电阻；ALS10 弧光传感器**固定内置 120 Ω** 终端电阻、不能断开）
+
+1. 每条 485 总线**只接一只 ALS10，而且放在总线末端**（它就是这一端的终端电阻）。
+2. 总线另一端（X26A 这端）按需加 120 Ω 终端电阻；短线、低速（9600）时可以不加，误码多时加上。
+3. 一条总线上挂其余几种传感器（同事测过 5 种同挂没问题）照常；ALS10 与其他传感器同挂还没测过，现场先测。
+4. **没有自动收发**：收发方向要由转换程序控制（串口 RTS 或内核 RS485 模式），这是同事程序的事，接线时确认程序已按此配置。
+5. **没有隔离**：柜内强电磁环境下，485 口与外部设备之间没有电气隔离，**浪涌、地电位差可能损坏 X26A 的串口或造成误码**。建议批量机加隔离型 485 模块；不加的话至少在总线上加浪涌保护（硬件采购决定，待确认事项 Q2）。
+
+**转换程序**（同事，2026-10-09 答复 B1）：Docker 镜像，Python 3.11 + pymodbus（异步 RTU）+ aiomqtt + aiosqlite + PyYAML，自带守护进程。计划纳入 EG 离线安装包与编排（镜像随发布件、重启策略、健康检查、日志轮转、只连本机 MQTT、映射 `/dev/ttyS1`），**待开发**（I11，等同事给镜像与启动参数，Q5）。在那之前按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
+
+**桌面版注意事项**（Ubuntu 22.04 桌面版；**待在桌面版虚拟机上把 install.sh 全流程重验后定稿**，I12）
+
+- **自动更新要关**：桌面版缺省开着 unattended-upgrades 和「软件更新器」，会在后台装更新、甚至要求重启，还可能把 Docker / chrony 升到与离线包不一致的版本。关法：`sudo systemctl disable --now unattended-upgrades`，并把 `/etc/apt/apt.conf.d/20auto-upgrades` 里的两项改成 `"0"`。
+- **休眠 / 挂起 / 锁屏要关**：桌面版没人操作一段时间会挂起，EG 就停了。关法：`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`；电源设置里「自动挂起」改成关。
+- **网卡由 NetworkManager 管**：桌面版不用 netplan 的 networkd。LAN1 / LAN2 的静态地址用 `nmcli` 或图形界面设，不要另写 netplan 的 networkd 配置（两套抢同一块网卡）。Docker 建的网桥 NetworkManager 会自动标为不管理，不用动。
+- **建议默认不进图形界面**：`sudo systemctl set-default multi-user.target`，省内存、少一个出问题的环节；要用桌面时 `sudo systemctl start gdm`。
+- 时间同步：桌面版缺省用 systemd-timesyncd，install.sh 装 chrony 时会把它卸掉（与 24.04 相同）。
 
 ## 3. 子站侧要先准备的
 
