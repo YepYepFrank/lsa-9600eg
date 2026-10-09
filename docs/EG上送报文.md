@@ -73,11 +73,12 @@
 | SAM | `tev.*`、`smoke.*`、`sw.*` | 数 | 同事程序 | 地电波（unsupported）、烟雾、开关位置（pending）；目前没有点 |
 | PM / PM2 | `el.Ua` `el.Ub` `el.Uc` `el.Ia` `el.Ib` `el.Ic` `el.P` `el.Q` `el.S` `el.PF` `el.F` `el.Ep` | 数，V / A / kW / kvar / kVA / — / Hz / kWh | 同事程序 | 电表基础量（meterBasic） |
 | PM / PM2 | `el.load_pct` | 数，% | **EG 派生**：max(Ia, Ib, Ic) ÷ attrs.rated × 100 | 负荷率 |
-| PM / PM2 | `el.THDu` `el.THDi`、`el.hu.*` `el.hi.*`、`el.dmd*` | 数 | 同事程序 | THD、谐波、需量（pending） |
+| PM / PM2 | `el.THDu` `el.THDi`、`el.dmd*` | 数 | 同事程序 | THD、需量（pending） |
+| PM / PM2 | `el.hu.*` `el.hi.*` | **串**（JSON 数组：各次谐波含有率 %，30 个） | 同事程序 | 电压 / 电流谐波（pending）。《EG 内部 MQTT 格式》同 |
 | PM6 | `pm.0.3` `pm.0.5` `pm.1.0` `pm.2.5` `pm.5.0` `pm.10` | 数 | 同事程序 | 六路颗粒物（production 下 unsupported，整台不送） |
 | CAM | `ir.max` `ir.min` `ir.max_x` `ir.max_y` | 数，℃ / 像素 | eg-video | 全画面 |
 | CAM | `ir.R<n>.max` `.min` `.max_x` `.max_y` | 数 | eg-video | 测温区 n |
-| CAM | `ir.R<n>.rise` | 数 ℃ | **EG 派生**：ir.R<n>.max − 本柜 SAM 的 env.t（两者源时间差 ≤ 15 s 才出值，可为负；出不来时 q 标它） | 区域温升 |
+| CAM | `ir.R<n>.rise` | 数 ℃ | **EG 派生**：ir.R<n>.max − regions.R<n>.env 指定 SAM 的 env.t（env 字段不存在时取第一台 SAM；env 为 "" / null 时不出值、q 标 invalid，0.3.3 起；两者源时间差 ≤ 15 s 才出值，可为负；出不来时 q 标它） | 区域温升 |
 | CAM | `ir.rmax` `ir.rise` `ir.dmax` `ir.hot` | 数 | **EG 派生** | 各区最高温的最大值、各区温升的最大值、各区最高温的极差、温升最高的区号 1–3；与 ir.R<n>.max 同一时间戳 |
 | CAM | `cam.online` | 数 0–4 | eg-video | 四路里通的路数（每 60 s DESCRIBE 一次） |
 | CAM | `cam.fps` `cam.bitrate` | 数 | eg-video | |

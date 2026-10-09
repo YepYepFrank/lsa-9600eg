@@ -9,7 +9,9 @@
  * 只记警告日志 —— 要在子站维护记录里登记，否则那天的日电量是负的。
  *
  * 摄像机区域测温（G4 摄像机测温约定 §3、§5，设备 CAM-<柜号>）：
- *   ir.R<n>.rise = ir.R<n>.max − env.t（本柜柜内空气温度：CAM 属性 regions.R<n>.env 指定的设备，缺省本柜第一台 SAM）；
+ *   ir.R<n>.rise = ir.R<n>.max − env.t（本柜柜内空气温度：CAM 属性 regions.R<n>.env 指定的设备）；
+ *     env 字段不存在（老 eg.yaml）→ 本柜第一台 SAM；env 为 "" 或 null（子站 0.11：多台 SAM、按序号对不上、又没显式指定）
+ *     → 不算这区温升，质量码标 ir.R<n>.rise = invalid（不静默拿错 SAM 的温度）；ir.rise / ir.hot 只按算得出的区；
  *     两个输入都有效、源时间差 ≤ 容差（local.yaml camera.riseToleranceS，缺省 15 s）才出值，时间戳取 max 的；允许负值；
  *     出不来时在 CAM 的质量码里标 ir.R<n>.rise（env.t 缺 / 失效跟随它，时间差超容差标 stale）。
  *   ir.dmax = 各区域 ir.R<n>.max 的极差（「区域温差」告警的输入 —— TB 规则只能比常量）。
@@ -34,8 +36,8 @@ export class DeriveService implements OnModuleInit {
   private readonly lastEp = new Map<string, { ts: number; v: number }>()
   /** 电表名 → el.Ep 倒退的次数（状态接口显示） */
   readonly epBackwards = new Map<string, number>()
-  /** 摄像机名 → 区域号 → 取 env.t 的设备 */
-  private readonly envOf = new Map<string, Map<number, string>>()
+  /** 摄像机名 → 区域号 → 取 env.t 的设备；null = 子站明确写了不算（env 为 "" / null） */
+  private readonly envOf = new Map<string, Map<number, string | null>>()
 
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
@@ -45,10 +47,16 @@ export class DeriveService implements OnModuleInit {
     const firstSam = cfg.devices.find(d => d.kind === 'sam')?.name
     for (const d of cfg.devices) {
       if (d.kind !== 'camera') continue
-      const regions = (d.attrs['regions'] ?? {}) as Record<string, { env?: string } | undefined>
-      const m = new Map<number, string>()
+      const regions = (d.attrs['regions'] ?? {}) as Record<string, { env?: string | null } | undefined>
+      const m = new Map<number, string | null>()
       for (const n of [1, 2, 3]) {
-        const env = regions[`R${n}`]?.env ?? firstSam
+        const r = regions[`R${n}`]
+        if (r && 'env' in r && (r.env === '' || r.env === null)) {
+          m.set(n, null)
+          this.log.warn(`${d.name} R${n} 未指定环境温度来源（eg.yaml regions.R${n}.env 为空）：不算这区温升，质量码标 invalid`)
+          continue
+        }
+        const env = r?.env ?? firstSam
         if (env) m.set(n, env)
       }
       this.envOf.set(d.name, m)
@@ -102,6 +110,11 @@ export class DeriveService implements OnModuleInit {
       for (const { n, v } of maxes) {
         const key = `ir.R${n}.rise`
         const envDev = envMap.get(n)
+        // 子站明确写了不算（env 为空）：不出值、标 invalid
+        if (envDev === null) {
+          this.quality.setDerived(dev, key, 'invalid')
+          continue
+        }
         const env = envDev ? this.bus.live.get(envDev)?.telemetry['env.t'] : undefined
         const envQ = envDev ? this.quality.qualityOf(envDev)['env.t'] : undefined
         const envV = env ? num(env.v) : null

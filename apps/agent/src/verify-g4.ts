@@ -4,6 +4,7 @@
  *
  * 前提：开发样机带 camera（测试源）与 mediamtx 容器（pnpm dev:up）；dev:emu（含仿真摄像机）、dev:video、dev:agent 在跑，都是 G4 的代码；
  * local.yaml camera.driver = sim（pnpm dev:config 写的）。只动仿真器与 EG 样机，不碰子站。约 4 分钟。 */
+import { checkDeriveEnv } from './verify/derive-env.js'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -43,7 +44,10 @@ async function main() {
   const camPaths = async () =>
     ((await (await fetch(`${CAM_API}/v3/paths/list`)).json()) as { items: { name: string; ready: boolean }[] }).items
 
-  console.log('1. 配置与驱动')
+  console.log('0. 区域温升的环境温度来源（假总线，不碰样机）')
+  checkDeriveEnv(check)
+
+  console.log('\n1. 配置与驱动')
   const s0 = await vs()
   if (!check(s0.available, 'eg-video 在跑（经 agent 转）', s0.error)) done()
   check(s0.driver?.driver === 'sim' && s0.driver.ok, '仿真摄像机驱动取到流地址', `${s0.driver?.driver} ${s0.driver?.error ?? ''}`)
