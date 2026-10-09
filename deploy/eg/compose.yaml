@@ -9,7 +9,7 @@
 # 链路：同事的采集程序（本机）─► mosquitto（127.0.0.1:1884）─► gateway ─► tb（EG 本地 TB：存数、本地 7 类告警）
 #       agent（宿主机网络）也连 mosquitto：派生量、质量码、上送子站（mqtts 8883）、告警事件与配置回执（https 443）、本地管理页（80）
 #       摄像机（LAN1）─► mediamtx（宿主机网络，RTSP 8554 给子站拉，子码流常录）；video（eg-video）生成 mediamtx 配置、测温、抓帧；视频不经 TB
-# 内存上限合计约 3.0 GB（X26A 按 4 GB 核算，开发计划 §1）；日志 json-file 10 MB × 3 轮转。
+# 内存上限合计约 3.0 GB（加上可选的转换程序 conv 约 3.3 GB；X26A 实配 8 GB）；日志 json-file 10 MB × 3 轮转。
 # 服务名 mosquitto / tb 与 local.yaml 的缺省地址一致（IoT Gateway 在容器网络里按服务名连），容器名与 local.yaml 的 docker.containers 一致。
 name: lsa-eg
 
@@ -187,6 +187,43 @@ services:
     volumes:
       - ./config/mediamtx:/cfg
       - ${EG_RECORDINGS_DIR:-./recordings}:/recordings
+    mem_limit: 256m
+    logging: *log
+
+  # 转换程序（同事的，I11；《EG 内部 MQTT 格式》v0.5）：传感器（485）→ 本机总线。
+  # 镜像随发布件（pack:eg -- --conv <镜像>，写 CONV_IMAGE.txt）；install.sh 发现镜像在、串口在才启用（.env COMPOSE_PROFILES=conv），
+  # 否则这个服务不起（没有镜像的发布件、样机没有 485 时都是这样）。--conv-off / --conv-on 开关，--conv-serial 换串口。
+  # 宿主机网络：连本机总线 127.0.0.1:1884（与格式文档 §2、同事用的 conv-kit 同一个地址）。
+  # 串口：宿主机上的 EG_CONV_SERIAL（缺省 /dev/ttyS1 = X26A 的 COM2；样机用 USB 转 485 时如 /dev/ttyUSB0）在容器里一律是 /dev/ttyS1。
+  # 下面的环境变量名是占位：同事给了镜像与启动参数（待确认事项 Q5）后按他的改。
+  conv:
+    profiles: [conv]
+    image: ${EG_CONV_IMAGE:-lsa-eg-conv:none}
+    container_name: lsa-eg-conv
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [mosquitto]
+    devices:
+      - ${EG_CONV_SERIAL:-/dev/ttyS1}:/dev/ttyS1
+    # 串口属 dialout 组（install.sh 取宿主机的组号）
+    group_add: ['${EG_DIALOUT_GID:-20}']
+    environment:
+      TZ: Asia/Shanghai
+      LSA_MQTT_URL: mqtt://127.0.0.1:1884
+      LSA_SERIAL: /dev/ttyS1
+      LSA_EG_YAML: /eg/eg.yaml
+    volumes:
+      # 设备名以 eg.yaml 为准（格式文档 §3），只读给它
+      - ./config/eg.yaml:/eg/eg.yaml:ro
+      - ./config/conv:/config
+      - ./config/conv-data:/data
+    healthcheck:
+      # 同事给健康检查命令前，先只看主进程在不在
+      test: ['CMD-SHELL', '${EG_CONV_HEALTH:-kill -0 1}']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     mem_limit: 256m
     logging: *log
 

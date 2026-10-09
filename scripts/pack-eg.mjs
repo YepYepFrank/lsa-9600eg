@@ -17,6 +17,11 @@ const BACKEND = process.env.LSA_BACKEND ?? resolve(ROOT, '../lsa-9600sp-backend'
 const IMAGES = process.argv.includes('--images')
 const DEBS = process.argv.includes('--debs')
 const TEST = process.argv.includes('--test')
+/** 转换程序镜像（I11）：--conv <本机已有的镜像 tag>，随发布件走（images-conv.tar.gz、CONV_IMAGE.txt） */
+const CONV = (() => {
+  const i = process.argv.indexOf('--conv')
+  return i >= 0 ? process.argv[i + 1] : null
+})()
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit', cwd: ROOT, ...opts })
 const out = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8' }).trim()
 
@@ -117,6 +122,16 @@ if (IMAGES) {
   run('docker', ['save', '-o', tar, appImg, ...THIRD])
   run('gzip', ['-1', '-f', tar])
   console.log(`  → ${tar}.gz`)
+  if (CONV) {
+    if (/:latest$/.test(CONV) || !CONV.includes(':')) throw new Error(`转换程序镜像要带确切的 tag（不用 latest）：${CONV}`)
+    const id = out('docker', ['image', 'inspect', '-f', '{{.Id}}', CONV])
+    writeFileSync(resolve(DIST, 'CONV_IMAGE.txt'), `# 转换程序镜像（install.sh 读第一行；镜像 ID ${id}）\n${CONV}\n`)
+    writeFileSync(resolve(DIST, 'IMAGES.txt'), readFileSync(resolve(DIST, 'IMAGES.txt'), 'utf8') + `${CONV} - ${id}\n`)
+    const ct = resolve(DIST, 'images-conv.tar')
+    run('docker', ['save', '-o', ct, CONV])
+    run('gzip', ['-1', '-f', ct])
+    console.log(`  转换程序 ${CONV} → ${ct}.gz`)
+  }
 } else {
   console.log('\n（没带 --images：发布件里没有镜像。EG 能联网拉镜像时可以这样装，应用镜像要另行构建：docker build -t lsa-eg-app:<版本> dist/.stage-app）')
 }

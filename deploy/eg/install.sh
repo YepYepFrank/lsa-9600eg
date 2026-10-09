@@ -14,6 +14,11 @@
 # --drop-sp-key：删掉隧道账号 lsa-sp（连同它的 authorized_keys），别的不动。
 # 给过 --lan1 时同时加 LAN1 防火墙（nftables 表 inet lsa_eg：摄像机网只出不进，22 / 80 / 8554 都连不上，开机自起）；
 #   --fw-off 关掉并记住，--fw-on 重新打开；--status 显示它；回退到不管它的老版本时自动清掉。
+# 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
+#   --watchdog-off 关掉并记住，--watchdog-on 重新打开；--status 显示它。本机有硬件看门狗时直接用它、不加载 softdog。
+# 转换程序（I11）：发布件带了它的镜像（CONV_IMAGE.txt）、串口也在时启用 compose 里的 conv 服务；
+#   --conv-serial <设备>（缺省 /dev/ttyS1；样机用 USB 转 485 如 /dev/ttyUSB0，记住）、--conv-off 关掉并记住、--conv-on 重新打开。
+# 只支持 Ubuntu Server 24.04（离线包 debs/ 按它做）：别的系统在装之前就报错退出（X26A 出厂 22.04 桌面版要先改装，部署手册 §2a）。
 # 装完与 --status 都会列「安全提醒」：初始口令文件还在、lsa-sp 还在、SSH 允许口令登录等（只提醒，不替你改系统配置）。
 #
 # 分两轮是因为本地 TB 的设备、告警规则由子站跑 provision:eg 建（经 SSH 隧道连这台 EG 的 127.0.0.1:18080），
@@ -25,6 +30,7 @@ LAN1=''
 SPKEY=''
 MODE='install'
 FORCE=0
+CONV_SERIAL=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --status) MODE='status' ;;
@@ -35,6 +41,11 @@ while [ $# -gt 0 ]; do
     --drop-sp-key) MODE='drop-sp' ;;
     --fw-off) MODE='fw-off' ;;
     --fw-on) MODE='fw-on' ;;
+    --watchdog-off) MODE='wd-off' ;;
+    --watchdog-on) MODE='wd-on' ;;
+    --conv-serial) CONV_SERIAL="${2:?--conv-serial 后面给串口设备，如 /dev/ttyS1}"; shift ;;
+    --conv-off) MODE='conv-off' ;;
+    --conv-on) MODE='conv-on' ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
@@ -110,11 +121,63 @@ fw_remove() {
   true
 }
 
+# ---------- 软件看门狗（I13） ----------
+# X26A 没有硬件看门狗：系统卡死（内核或 systemd 不响应）时没人重启它。systemd 每 RuntimeWatchdogSec / 2 喂一次 /dev/watchdog，
+# 卡死超过 RuntimeWatchdogSec 没喂，softdog 就重启整机；关机 / 重启卡住超过 RebootWatchdogSec 也强制重启。来电自启与 RTC 已有。
+# 有硬件看门狗（/sys/class/watchdog/*/identity 不是 Software Watchdog）就直接用它，不加载 softdog。
+WD_MOD=/etc/modules-load.d/lsa-eg-softdog.conf
+WD_SD=/etc/systemd/system.conf.d/lsa-eg-watchdog.conf
+wd_status() {
+  if [ "$(id -u)" != 0 ]; then echo "看门狗：要 sudo 才看得到"; return 0; fi
+  local dev='' rt
+  for d in /sys/class/watchdog/watchdog*; do [ -e "$d/identity" ] && { dev="$(cat "$d/identity")"; break; }; done
+  rt="$(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null || true)"
+  if [ -f "$WD_SD" ] && [ -n "$dev" ] && [ -n "$rt" ] && [ "$rt" != 0 ] && [ "$rt" != infinity ]; then
+    echo "看门狗：开（$dev；systemd 每 $rt 内没喂就重启）"
+  elif grep -q '^EG_WATCHDOG=off' .env 2>/dev/null; then
+    echo "看门狗：已关（--watchdog-off；系统卡死不会自动重启。打开：sudo bash install.sh --watchdog-on）"
+  else
+    echo "看门狗：没开（${dev:-没有看门狗设备}；重跑 sudo bash install.sh 会打开）"
+  fi
+}
+wd_apply() {
+  local hw='' d
+  for d in /sys/class/watchdog/watchdog*; do
+    [ -e "$d/identity" ] && [ "$(cat "$d/identity")" != 'Software Watchdog' ] && hw="$(cat "$d/identity")"
+  done
+  if [ -z "$hw" ]; then
+    if ! modprobe softdog 2>/dev/null; then echo '!! 加载不了 softdog 内核模块：系统卡死时不会自动重启' >&2; return 0; fi
+    echo softdog > "$WD_MOD"
+  else
+    rm -f "$WD_MOD"
+  fi
+  mkdir -p "$(dirname "$WD_SD")"
+  cat > "$WD_SD" <<'EOF'
+# LSA-9600EG（install.sh 写）：systemd 喂看门狗，系统卡死 60 s 没喂就重启整机；关机 / 重启卡住 10 min 也强制重启。
+# 不要手改，重跑 install.sh 会重写；关掉用 sudo bash install.sh --watchdog-off
+[Manager]
+RuntimeWatchdogSec=60s
+RebootWatchdogSec=10min
+EOF
+  systemctl daemon-reexec
+  echo "看门狗已开：${hw:-softdog（软件看门狗）}，系统卡死 60 s 自动重启"
+}
+wd_remove() {
+  local had=0
+  [ -f "$WD_SD" ] && { rm -f "$WD_SD"; had=1; }
+  rm -f "$WD_MOD"
+  # systemd 关掉看门狗时会正常关闭设备（写 magic close），之后才能卸 softdog
+  [ "$had" = 1 ] && systemctl daemon-reexec
+  modprobe -r softdog 2>/dev/null || true
+  true
+}
+
 status() {
   $DC ps --format 'table {{.Name}}\t{{.Status}}'
   [ -f .installed/VERSION ] && echo "已装版本：$(cat .installed/VERSION)"
   [ -f .previous/VERSION ] && echo "可回退到：$(cat .previous/VERSION)"
   fw_status
+  wd_status
   true
 }
 # 安全提醒（只提醒，不改系统配置：自动关 SSH 口令登录可能把维护人员锁在外面）
@@ -157,6 +220,14 @@ if [ "$MODE" = 'fw-off' ]; then
   echo 'LAN1 防火墙已关并记住（以后重跑 install.sh 也不再加；要重新打开：sudo bash install.sh --fw-on）'
   exit 0
 fi
+if [ "$MODE" = 'wd-off' ]; then
+  wd_remove; env_set EG_WATCHDOG off
+  echo '看门狗已关并记住（系统卡死不会自动重启；以后重跑 install.sh 也不再开；要重新打开：sudo bash install.sh --watchdog-on）'
+  exit 0
+fi
+if [ "$MODE" = 'wd-on' ]; then
+  env_set EG_WATCHDOG on; wd_apply; exit 0
+fi
 if [ "$MODE" = 'fw-on' ]; then
   nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2-)"
   [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
@@ -165,7 +236,41 @@ fi
 # 本地 TB 的版本（compose.yaml 里 tb-node 的缺省标签）：回退不能跨它（库结构只升不降）
 tb_version() { grep -o 'tb-node:\${TB_VERSION:-[^}]*}' "$1" | head -1 | sed 's/.*:-//; s/}//'; }
 # 部署文件（升级时整个发布件覆盖过来的那些）
-DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions'
+DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt'
+
+# ---------- 转换程序（I11）：镜像在、串口在才启用 conv 服务 ----------
+conv_setup() {
+  local img='' ser
+  [ -f CONV_IMAGE.txt ] && img="$(grep -v '^#' CONV_IMAGE.txt | head -1 | tr -d '[:space:]')"
+  [ -n "$CONV_SERIAL" ] && env_set EG_CONV_SERIAL "$CONV_SERIAL"
+  ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2-)"; ser="${ser:-/dev/ttyS1}"
+  local off=''
+  if [ -z "$img" ]; then off='发布件里没有转换程序镜像（按同事自己的方式部署，连 127.0.0.1:1884 就行）'
+  elif grep -q '^EG_CONV=off' .env 2>/dev/null; then off='已关（--conv-off；打开：sudo bash install.sh --conv-on）'
+  elif ! docker image inspect "$img" >/dev/null 2>&1; then off="!! 发布件说有镜像 $img，但本机没有（导入失败？）"
+  elif [ ! -e "$ser" ]; then off="!! 串口 $ser 不存在：样机没有 485 时用 USB 转 485 —— sudo bash install.sh --conv-serial /dev/ttyUSB0"
+  fi
+  if [ -n "$off" ]; then
+    env_set COMPOSE_PROFILES ''
+    docker rm -f lsa-eg-conv >/dev/null 2>&1 || true
+    echo "转换程序：不起 —— $off"
+    return 0
+  fi
+  env_set EG_CONV_IMAGE "$img"
+  env_set EG_CONV_SERIAL "$ser"
+  env_set EG_DIALOUT_GID "$(getent group dialout | cut -d: -f3)"
+  env_set COMPOSE_PROFILES conv
+  mkdir -p config/conv config/conv-data
+  echo "转换程序：$img，串口 $ser（容器里 /dev/ttyS1），连本机总线 127.0.0.1:1884"
+}
+if [ "$MODE" = 'conv-off' ]; then
+  env_set EG_CONV off; conv_setup; exit 0
+fi
+if [ "$MODE" = 'conv-on' ]; then
+  env_set EG_CONV on; conv_setup
+  grep -q '^COMPOSE_PROFILES=conv' .env && $DC up -d conv
+  exit 0
+fi
 
 # ---------- 回退 ----------
 if [ "$MODE" = 'rollback' ]; then
@@ -180,13 +285,26 @@ if [ "$MODE" = 'rollback' ]; then
   rm -rf .rollback-tmp && mkdir .rollback-tmp
   for f in $DEPLOY_FILES; do [ -e "$f" ] && cp -a "$f" .rollback-tmp/; done
   for f in $DEPLOY_FILES; do [ -e ".previous/$f" ] && { rm -rf "$f"; cp -a ".previous/$f" .; }; done
+  [ -e .previous/CONV_IMAGE.txt ] || rm -f CONV_IMAGE.txt
   env_set EG_APP_IMAGE "lsa-eg-app:$prev"
+  conv_setup
   $DC up -d --remove-orphans
   rm -rf .installed && mv .previous .installed && mv .rollback-tmp .previous
   # 回到的版本不管 LAN1 防火墙（早于它）：把规则清掉，与那个版本一致；它也管的话留着
   grep -q 'lsa-eg-fw' install.sh || { fw_remove; echo '（回到的版本不管 LAN1 防火墙，规则已清掉）'; }
+  grep -q 'lsa-eg-watchdog' install.sh || { wd_remove; echo '（回到的版本不管看门狗，已关掉）'; }
   echo; status
   exit 0
+fi
+
+# ---------- 0. 系统：只支持 Ubuntu Server 24.04 ----------
+os_id="$( . /etc/os-release 2>/dev/null; echo "${ID:-?}" )"
+os_ver="$( . /etc/os-release 2>/dev/null; echo "${VERSION_ID:-?}" )"
+os_name="$( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-未知系统}" )"
+if [ "$os_id" != ubuntu ] || [ "$os_ver" != 24.04 ]; then
+  echo "!! 本机系统是「$os_name」。EG 只支持 Ubuntu Server 24.04 LTS：发布件里的离线包（Docker、chrony 等）按 24.04 做，别的系统装不上。" >&2
+  echo "   X26A 出厂是 Ubuntu 22.04 桌面版：请先按《EG 部署手册》§2a「改装 Ubuntu Server 24.04」改装，再跑本脚本。" >&2
+  exit 1
 fi
 
 # ---------- 1. Docker 与 chrony（没有就装发布件里的离线包） ----------
@@ -278,6 +396,8 @@ fi
 grep -q '^EG_LAN1=.' .env || echo '（提示：没给 --lan1：管理页在摄像机网口上也能打开，只能靠防火墙挡）'
 lan1_now="$(grep -E '^EG_LAN1=' .env | cut -d= -f2- || true)"
 if [ -n "$lan1_now" ] && ! grep -q '^EG_LAN1_FW=off' .env; then fw_apply "$lan1_now"; fi
+grep -q '^EG_WATCHDOG=off' .env || wd_apply
+conv_setup
 mkdir -p config/gateway/config config/mediamtx recordings
 
 # ---------- 子站 provision-eg.sh 的隧道账号（--sp-key） ----------

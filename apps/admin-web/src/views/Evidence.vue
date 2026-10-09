@@ -1,4 +1,4 @@
-<!-- 证据（G5）：循环录像是否在录、证据索引与文件的上送状态、证据清单（告警 / 子站锁定触发的双光视频、抓图、录波）。 -->
+<!-- 证据（G5）：循环录像是否在录、证据索引与文件的上送状态、证据清单（告警 / 子站锁定触发的双光视频、抓图、事件前后数据曲线）。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -51,7 +51,7 @@ onMounted(() => {
 })
 onUnmounted(() => window.clearInterval(timer))
 
-const KIND: Record<string, string> = { video: '视频', image: '抓图', wave: '录波' }
+const KIND: Record<string, string> = { video: '视频', image: '抓图', wave: '数据曲线' }
 const CH: Record<string, string> = { visible: '可见光', ir: '热像', data: '传感器' }
 const STATUS: Record<string, [string, 'success' | 'info' | 'warning' | 'danger' | 'primary']> = {
   RECORDING: ['录制中', 'primary'],
@@ -92,7 +92,7 @@ async function upload(it: Item) {
   <div>
     <div class="page-h">
       <h1>证据</h1>
-      <span class="t2">两路子码流常录做循环录像（留 {{ data?.status.config.ringHours ?? '—' }} h）；告警发生或子站请求时锁定前 {{ data?.status.config.preS ?? '—' }} s、后 {{ data?.status.config.postS ?? '—' }} s，连同双光抓图与录波形成证据清单。重要的自动上传子站，其余子站按需调取。</span>
+      <span class="t2">两路子码流常录做循环录像（留 {{ data?.status.config.ringHours ?? '—' }} h）；告警发生或子站请求时锁定前 {{ data?.status.config.preS ?? '—' }} s、后 {{ data?.status.config.postS ?? '—' }} s，连同双光抓图与事件前后数据曲线（按各量实际采样周期，不是 10 Hz 录波）形成证据清单。重要的自动上传子站，其余子站按需调取。</span>
     </div>
     <div class="grid g4">
       <div class="card">
@@ -172,7 +172,7 @@ async function upload(it: Item) {
     <el-dialog :model-value="!!view" :title="view?.title" width="760px" @close="view = null">
       <video v-if="view?.kind === 'video'" :src="view.url" controls autoplay style="width: 100%" />
       <img v-else-if="view?.kind === 'image'" :src="view.url" style="max-width: 100%" alt="抓图" />
-      <a v-else-if="view" :href="view.url" download="wave.json">下载录波 JSON</a>
+      <a v-else-if="view" :href="view.url" download="wave.json">下载数据曲线 JSON</a>
     </el-dialog>
   </div>
 </template>

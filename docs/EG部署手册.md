@@ -43,6 +43,11 @@
 - 对时：install.sh 第二轮按 `eg.yaml sp.host` 写 `/etc/chrony/sources.d/lsa-eg.sources`，并把 `chrony.conf` 的 `makestep` 改成 `1 -1`（X26A **有** RTC 电池（2026-10-09 答复 X3，更正以前「没有」的说法），断电重启时钟大体是对的；但电池老化或长期断电后仍可能偏得多，缺省只在头 3 次更新里跳、之后差几分钟也要追几小时，所以照样改成随时可跳）。agent 另用 SNTP 测偏差上报 `eg.clk_offset`。
 - **子站主机当时间服务器**：一键安装 `--role sp` 给子站的 chrony 加 `allow` 站内私网与 `local stratum 10 orphan`（没有上级时全站至少跟子站一致），站内时钟源用 `--ntp <地址>` 给（记住，升级不用再给）；子站防火墙放 UDP 123。**EG 与子站时钟差超过 60 s 时，子站下发配置、单点登录的票据会被 EG 拒收**（「票据时间在未来」，0.9.3 无 AVX 样机上踩到：实验网里没有任何对时，跑了 10 天的 VM 漂了 63 s）。
 - 系统日志：install.sh 写 `/etc/systemd/journald.conf.d/lsa-eg.conf`，journald 封顶 200 MB。
+- **系统版本检查**（0.4 起）：install.sh 一开始就看 `/etc/os-release`，不是 Ubuntu 24.04 就用中文报错退出，并提示先按 §2a 改装（离线包装不上，装到一半才失败更麻烦）。
+- **软件看门狗**（0.4 起，I13；X26A 没有硬件看门狗）：install.sh 缺省打开 —— 加载 `softdog`（写 `/etc/modules-load.d/lsa-eg-softdog.conf`，开机自动加载），并写 `/etc/systemd/system.conf.d/lsa-eg-watchdog.conf`：`RuntimeWatchdogSec=60s`（systemd 每 30 s 喂一次，系统卡死 60 s 没喂就重启整机）、`RebootWatchdogSec=10min`（关机 / 重启卡住也强制重启）。本机有硬件看门狗时直接用它，不加载 softdog。
+  - 看状态：`sudo bash install.sh --status` 里有「看门狗：开（Software Watchdog；systemd 每 1min 内没喂就重启）」。
+  - **关掉**：`sudo bash install.sh --watchdog-off`（删上面两个文件、systemd 正常关闭看门狗设备后卸 softdog，并记在 `.env` 的 `EG_WATCHDOG=off`，以后重跑 install.sh 也不再开）；**重新打开**：`--watchdog-on`。现场调试内核、或怀疑看门狗误重启时才关。
+  - 回退到 0.4 以前的版本时自动关掉（那些版本不管它）。
 - 网卡：LAN1 静态地址（与摄像机同段），LAN2 静态地址（站内网），缺省路由走 LAN2。
 - 数据盘：本地 TB 留 7 天、上送 outbox 最多 2 GB、**循环录像**（两路子码流常录，按 1 Mbit/s 估每天约 10.8 GB，留 24 h）、锁定的证据片段（30 天，按每次告警约 12 MB 估），按 128 GB 工业级 mSATA 准备（开发计划 §1）。**X26A 实配 mSATA 256 GB、300 TBW**（2026-10-09 答复 X2）：按每天 11–20 GB 写入，300 TBW 远超 10 年，写入寿命不再是风险。
 - **摄像机侧没人看时也一直有流量**：EG 从摄像机常拉两路子码流做循环录像（约 1 Mbit/s，LAN1 上），主码流才按需；**SSD 每天约 11 GB 写入**（一年约 4 TB，按盘的 TBW 核寿命）。
@@ -60,7 +65,7 @@
 | 内存 | 8 GB，最多可扩到 16 GB | 编排内存上限合计约 3.0 GB，Server 版没有图形界面，够用 |
 | 硬盘 | mSATA 256 GB，300 TBW | 见 §2「数据盘」 |
 | 来电自启 | 有，默认开 | 断电恢复后自己开机，容器 `restart: unless-stopped` 自起 |
-| 看门狗 | **没有硬件看门狗** | 系统卡死不会自己重启。计划在 install.sh 里启用软件看门狗（softdog + systemd `RuntimeWatchdogSec`）兜底 —— **待开发**（I13） |
+| 看门狗 | **没有硬件看门狗** | 0.4 起 install.sh 缺省启用软件看门狗（softdog + systemd `RuntimeWatchdogSec=60s`）兜底系统卡死，可关，见 §2「软件看门狗」（I13） |
 | RTC 电池 | 有 | 见 §2「对时」 |
 | 串口 | **COM2 = `/dev/ttyS1`**，批量机只有 COM2 能做 485；**样机没有 485** | 样机上测 485 设备要用 USB 转 485（`/dev/ttyUSB0`） |
 | 开关量 | 没有 DI / DO | 分合位、失电首期不做（《EG 内部 MQTT 格式》§5.4） |
@@ -74,7 +79,12 @@
 4. **没有自动收发**：收发方向要由转换程序控制（串口 RTS 或内核 RS485 模式），这是同事程序的事，接线时确认程序已按此配置。
 5. **没有隔离**：柜内强电磁环境下，485 口与外部设备之间没有电气隔离，**浪涌、地电位差可能损坏 X26A 的串口或造成误码**。建议批量机加隔离型 485 模块；不加的话至少在总线上加浪涌保护（硬件采购决定，待确认事项 Q2）。
 
-**转换程序**（同事，2026-10-09 答复 B1）：Docker 镜像，Python 3.11 + pymodbus（异步 RTU）+ aiomqtt + aiosqlite + PyYAML，自带守护进程。计划纳入 EG 离线安装包与编排（镜像随发布件、重启策略、健康检查、日志轮转、只连本机 MQTT、映射 `/dev/ttyS1`），**待开发**（I11，等同事给镜像与启动参数，Q5）。在那之前按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
+**转换程序**（同事，2026-10-09 答复 B1）：Docker 镜像，Python 3.11 + pymodbus（异步 RTU）+ aiomqtt + aiosqlite + PyYAML，自带守护进程。0.4 起纳入 EG 的编排与离线安装包（I11 框架已搭好，**等同事给镜像与启动参数后接上**，Q5）：
+- compose 里有个可选服务 `conv`（容器 `lsa-eg-conv`）：宿主机网络、连本机总线 `127.0.0.1:1884`（与格式文档 §2 一致）、`restart: unless-stopped`、健康检查（先只看主进程，同事给了命令再换）、日志 10 MB × 3 轮转、内存上限 256 MB；`config/eg.yaml` 只读给它（设备名以它为准），自己的配置与数据放 `config/conv/`、`config/conv-data/`。
+- 串口：宿主机的 `/dev/ttyS1`（X26A 的 COM2）映射成容器里的 `/dev/ttyS1`，加宿主机 `dialout` 组。样机没有 485 用 USB 转 485 时：`sudo bash install.sh --conv-serial /dev/ttyUSB0`（记住；容器里仍是 `/dev/ttyS1`，程序不用改）。
+- 镜像随发布件：出包时 `pnpm pack:eg -- --images --debs --conv <镜像:确切 tag>`，发布件里多 `images-conv.tar.gz` 与 `CONV_IMAGE.txt`；install.sh 导入后**镜像在、串口在才启用**（`.env` 的 `COMPOSE_PROFILES=conv`），否则不起、说明原因。升级随 EG 发布件走；`--rollback` 回到不带它的版本时，转换程序容器一并停掉。
+- 开关：`--conv-off` 关掉并记住、`--conv-on` 重新打开；`--status` 的容器列表里能看到 `lsa-eg-conv`。
+- 在那之前（发布件里没有它的镜像）按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
 
 **改装 Ubuntu Server 24.04**（X26A 出厂是 22.04 桌面版；我们只支持 24.04 Server。改装会清空整块盘，出厂系统不保留）
 

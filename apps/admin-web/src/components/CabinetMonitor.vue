@@ -227,14 +227,14 @@ const topAlarm = computed(() => {
   act.sort((a, b) => SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity) || b.occurredAt - a.occurredAt)
   return act[0] ?? null
 })
-const EVK: Record<string, string> = { video: '视频', image: '抓图', wave: '录波' }
+const EVK: Record<string, string> = { video: '视频', image: '抓图', wave: '数据曲线' }
 const EVC: Record<string, string> = { visible: '可见光', ir: '热像', data: '传感器' }
 const evText = (list: EvidenceItem[]) => {
   const ok = list.filter(e => e.hasFile)
   return list.length ? `${ok.length} / ${list.length} 个文件` : '—'
 }
 
-/* 录像回放：选中一个事件的证据组，双光视频并排放，抓图、录波可下载 */
+/* 录像回放：选中一个事件的证据组，双光视频并排放，抓图、事件前后数据曲线可下载 */
 const play = ref<{ title: string; items: { id: string; label: string; kind: string; url: string | null; err: string }[] } | null>(null)
 async function blobOf(id: string): Promise<string> {
   const r = await fetch(`api/evidence/${encodeURIComponent(id)}/file`, { headers: session.token ? { Authorization: `Bearer ${session.token}` } : {} })
@@ -332,10 +332,10 @@ async function download(id: string, label: string) {
             <div class="ev-cap">{{ it.label }}<span class="grow"/><button v-if="!it.err" class="text-link" @click="download(it.id, it.label)">下载</button></div>
             <video v-if="it.kind === 'video' && it.url" :src="it.url" controls muted playsinline />
             <img v-else-if="it.kind === 'image' && it.url" :src="it.url" alt="告警抓拍" />
-            <div v-else class="ev-note">{{ it.err || (it.kind === 'wave' ? '录波数据（JSON），点「下载」查看' : '加载中…') }}</div>
+            <div v-else class="ev-note">{{ it.err || (it.kind === 'wave' ? '事件前后数据曲线（JSON，按各量实际采样周期），点「下载」查看' : '加载中…') }}</div>
           </div>
         </div>
-        <div v-else class="monitor-empty"><span class="empty-symbol">▷</span><strong>{{ demo ? '尚未连接本地录像服务' : '在上表点「关联录像」回放' }}</strong><span>{{ demo ? '接入后可按时间回看，并从事件定位前后录像片段。' : '告警发生时 EG 自动锁定双光视频、抓图与录波（循环录像留 24 h）。' }}</span></div>
+        <div v-else class="monitor-empty"><span class="empty-symbol">▷</span><strong>{{ demo ? '尚未连接本地录像服务' : '在上表点「关联录像」回放' }}</strong><span>{{ demo ? '接入后可按时间回看，并从事件定位前后录像片段。' : '告警发生时 EG 自动锁定双光视频、抓图与事件前后数据曲线（循环录像留 24 h）。' }}</span></div>
       </section>
     </template>
   </div>
