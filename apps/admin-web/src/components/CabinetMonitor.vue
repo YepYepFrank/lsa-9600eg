@@ -32,7 +32,7 @@ const { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, ratioOf 
  * pending 照常显示真实读数并打「待定（数据仅供调试核对）」角标（v1.2：pending 多是装了传感器、型号 / 口径没定，现场要先看到读数） */
 const CARD_CAPS = {
   camera: ['camVideo', 'thermalRegions'],
-  pd: ['pdAmplitude', 'pdCount', 'pdType', 'pdLevel', 'tev'],
+  pd: ['pdAmplitude', 'pdCount', 'pdType', 'pdLevel', 'tev', 'uhf'],
   smoke: ['smokePpm', 'pm6'],
   climate: ['envTH'],
   arc: ['arcIntensity', 'arcEvents'],
@@ -42,7 +42,7 @@ const show = (k: keyof typeof CARD_CAPS) => props.demo || card(...CARD_CAPS[k]) 
 const pendingCard = (k: keyof typeof CARD_CAPS) => !props.demo && card(...CARD_CAPS[k]) === 'pending'
 const cab = computed(() => store.status?.cabinet.code)
 /** 页面上的单位一律取点表；局放幅值按子站与现场口径写 dBμV（点表目前写的是 dB，已报后端统一） */
-const UNIT_FIX: Record<string, string> = { 'us.amp': 'dBμV', 'uv.int': 'a.u.' }
+const UNIT_FIX: Record<string, string> = { 'us.amp': 'dBμV' }
 const catalogUnit = (kind: string, key: string, fallback = '') => UNIT_FIX[key] ?? (store.catalog?.devices[kind]?.find(p => p.key === key)?.unit || fallback)
 
 /* ---------- 总览：双光与测温区 ---------- */
@@ -91,13 +91,19 @@ const climate = computed(() => (props.demo ? climateSeries : realClimate.value))
 
 /* ---------- 总览：超声局放（各 SAM 取大） ---------- */
 const ampUnit = computed(() => catalogUnit('sam', 'us.amp', 'dBμV'))
-const cntUnit = computed(() => catalogUnit('sam', 'us.cnt', '次/min'))
+const cntUnit = computed(() => catalogUnit('sam', 'us.cnt', '次/秒（采样值）'))
 const maxOver = (key: string) => {
   const vs = sams.value.map(s => ({ s, v: num(s, key) })).filter((x): x is { s: string; v: number } => x.v !== null)
   return vs.length ? vs.reduce((a, b) => (b.v > a.v ? b : a)) : null
 }
 const pdAmp = computed(() => maxOver('us.amp'))
 const pdCnt = computed(() => maxOver('us.cnt'))
+/* I4（0.4）：地电波 / 特高频（dBmV，与超声的 dBμV 是不同的量）：只显示当前值、不和超声画在同一根纵轴上；
+   能力不支持（没装这一路）就不显示 —— 没装的通道读出的 187 / 269 不是读数，转换程序也不发 */
+const tevUnit = computed(() => catalogUnit('sam', 'tev.amp', 'dBmV'))
+const uhfUnit = computed(() => catalogUnit('sam', 'uhf.amp', 'dBmV'))
+const tevNow = computed(() => (card('tev') === 'hidden' ? null : maxOver('tev.amp')))
+const uhfNow = computed(() => (card('uhf') === 'hidden' ? null : maxOver('uhf.amp')))
 const shortSam = (s: string) => s.replace(/^SAM-[^-]+-?/, 'SAM-') || s
 const realDischarge = computed<UnitSeries[]>(() => [
   ...sams.value.map((s, i) => ({ name: `局放幅值 ${shortSam(s)}`, unit: ampUnit.value, color: ['var(--s1)', 'var(--s6)', 'var(--s7)'][i % 3], data: series(s, 'us.amp') })),
@@ -279,7 +285,7 @@ async function download(id: string, label: string) {
       <div class="sensor-stack">
       <section v-if="show('pd')" class="monitor-card pd-card" :class="{ 'cap-pending': pendingCard('pd') }">
         <div class="monitor-card-heading"><b>超声局放</b><span v-if="!demo && pdAmp && sams.length > 1" class="muted" :title="'各隔室取大，当前最大在 ' + labelOf(pdAmp.s)">{{ shortSam(pdAmp.s) }} 最大</span><span class="grow"/><span class="muted">近 24h</span></div>
-        <div class="sensor-values"><div><span>局放幅值</span><b>{{ demo ? '6.2' : f1(pdAmp?.v ?? null) }} <small>{{ demo ? 'dBμV' : ampUnit }}</small></b></div><div><span>局放次数</span><b>{{ demo ? '2' : f1(pdCnt?.v ?? null, 0) }} <small>{{ demo ? '次' : cntUnit }}</small></b></div></div>
+        <div class="sensor-values"><div><span>局放幅值</span><b>{{ demo ? '6.2' : f1(pdAmp?.v ?? null) }} <small>{{ demo ? 'dBμV' : ampUnit }}</small></b></div><div :title="'最近 1 s 内的放电次数，装置每 3 s 采样一次（不是累计）'"><span>局放次数</span><b>{{ demo ? '2' : f1(pdCnt?.v ?? null, 0) }} <small>{{ demo ? '次/秒' : cntUnit }}</small></b></div><div v-if="!demo && tevNow"><span>地电波</span><b>{{ f1(tevNow.v) }} <small>{{ tevUnit }}</small></b></div><div v-if="!demo && uhfNow"><span>特高频</span><b>{{ f1(uhfNow.v) }} <small>{{ uhfUnit }}</small></b></div></div>
         <MultiUnitTrend v-if="demo || hasPd" :series="dischargeSeries" :units="dischargeUnits" :height="125" compact hide-legend center-unit-names :scales="dischargeScales" :axis-colors="pdAxisColors" />
         <div v-else class="monitor-empty">尚未接入局放监测数据</div>
       </section>
@@ -301,7 +307,7 @@ async function download(id: string, label: string) {
         <div class="climate-layout"><div class="dial-column"><ThermoHygroDial compact :temperature="demo ? 26.5 : envT" :humidity="demo ? 56 : envRh" :min="0" :max="100" /><div class="dew-reading">计算露点 <b>{{ demo ? dewPoint(26.5, 56) : f1(dew) }}<small> ℃</small></b><el-tooltip content="计算露点由柜内空气温度和相对湿度计算得到。壳体表面温度低于此温度时，有凝露风险。" placement="bottom" :popper-style="{ maxWidth: '320px', lineHeight: '1.6' }"><button aria-label="计算露点说明">?</button></el-tooltip></div></div><MultiUnitTrend v-if="demo || climate.some(s => s.data.length)" :series="climate" :height="215" compact hide-legend center-unit-names :selected="selected" :scales="{ '℃': { min: 0, max: 100, interval: 20 }, '%': { min: 0, max: 100, interval: 20 } }" :axis-colors="{ '℃': 'var(--s2)', '%': 'var(--s1)' }" /><div v-else class="monitor-empty">等待温湿度数据</div></div>
       </section>
       <section v-if="show('arc')" class="monitor-card arc-card" :class="{ 'cap-pending': pendingCard('arc') }">
-        <div class="monitor-card-heading"><b>UV 弧光监测</b><span class="grow"/><span v-if="!demo && hasArc" class="muted">当前 {{ f1(arcNow?.v ?? null, 0) }} a.u.</span><span class="pending" title="相对强度使用任意单位 a.u.，待实际产品确定后调整">{{ demo ? '模拟 · 近 24h' : hasArc ? '实测 · 近 24h' : '接口待确认' }}</span></div>
+        <div class="monitor-card-heading"><b>UV 弧光监测</b><span class="grow"/><span v-if="!demo && hasArc" class="muted">当前 {{ f1(arcNow?.v ?? null) }} {{ catalogUnit('sam', 'uv.int', '%') }}</span><span class="pending" title="弧光强度按 %（ALS10 的 Arc Level ÷ 100，设备自己的归一化标度，不是 lux；出厂阈值 70 % ≈ 1 万 lux，待批准）">{{ demo ? '模拟 · 近 24h' : hasArc ? '实测 · 近 24h' : '接口待确认' }}</span></div>
         <template v-if="demo">
           <div class="preview-readings arc-readings"><div><span>峰值强度</span><b>{{ Math.max(...arcPreview.pulses.map(p => p.value)) }}<small> a.u.</small></b></div><div><span>脉冲次数</span><b>{{ arcPreview.pulses.length }}<small> 次</small></b></div></div>
           <SensorPreviewTrend :pulses="arcPreview.pulses" :from="arcPreview.from" :to="arcPreview.to" />

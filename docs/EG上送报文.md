@@ -1,6 +1,6 @@
 # EG → 子站报文（样例 + 字段表）
 
-版本 v1.0（2026-10-08，阶段 A13）。适用 EG 0.3.0 起；老 EG 少的字段已逐项注明。
+版本 v1.1（2026-10-09，EG 0.4 / 子站 0.13：电表上送一次值与回执 meters、局放 tev.amp / uhf.amp、us.cnt 单位、uv.int 改 %；事件样例里的弧光数值已按 % 改写，属示意）。v1.0（2026-10-08，阶段 A13）适用 EG 0.3.0 起；老 EG 少的字段已逐项注明。
 
 用途：子站后端据此生成 JSON Schema，并用文中样例做校验。
 
@@ -47,7 +47,7 @@
 ```json
 // v1/gateway/telemetry
 {
-  "SAM-AH12-A": [ { "ts": 1791455400000, "values": { "us.amp": 7.2, "us.cnt": 1, "uv.int": 2, "env.t": 27.5, "env.rh": 45 } } ],
+  "SAM-AH12-A": [ { "ts": 1791455400000, "values": { "us.amp": 7.2, "us.cnt": 1, "uv.int": 0.35, "env.t": 27.5, "env.rh": 45 } } ],
   "PM-AH12":    [ { "ts": 1791455400000, "values": { "el.Ua": 5766, "el.Ia": 269, "el.P": 4481, "el.PF": 0.942, "el.F": 50, "el.Ep": 12821331, "el.THDu": 1.9, "el.load_pct": 44.4 } } ],
   "CAM-AH12":   [ { "ts": 1791455400000, "values": { "ir.max": 48.3, "ir.R2.max": 47.7, "ir.R2.rise": 20.3, "ir.dmax": 0.8, "ir.hot": 2 } } ]
 }
@@ -67,11 +67,13 @@
 |---|---|---|---|---|
 | SAM | `env.t`、`env.rh` | 数，℃、%RH | 同事程序 | 柜内温湿度（能力 envTH） |
 | SAM | `us.amp` | 数，dBμV | 同事程序 | 局放幅值，**已换算**；寄存器 258 → 25.8。EG 不换算（能力 pdAmplitude） |
-| SAM | `us.cnt`、`us.type`、`us.level` | 数 | 同事程序 | 局放次数 / 类型码 / 等级（production 下为 pending） |
-| SAM | `uv.int` | 数 a.u. | 同事程序 | 弧光强度（arcIntensity，pending） |
+| SAM | `us.cnt` | 数，次/秒（采样值） | 同事程序 | 局放次数：最近 1 s 内的放电次数，装置 3 s 刷新（EG 0.4 / 子站 0.13 起已确认）|
+| SAM | `us.type`、`us.level` | 数 | 同事程序 | 局放类型码 / 等级（可选，pending） |
+| SAM | `uv.int` | 数，%（0–100） | 同事程序 | 弧光强度：ALS10 Arc Level ÷ 100（格式 v0.6 起；以前是原值）。arcIntensity，pending |
 | SAM | `uv.pulse` | **串**（JSON 对象 `{"peak":数,"ms":数}`：峰值、持续毫秒） | 同事程序 | 弧光脉冲，事件型：检测到放电立即发一条，同时带 uv.int = 峰值（arcEvents，pending）。《EG 内部 MQTT 格式》§3 |
-| SAM | `tev.*`、`smoke.*`、`sw.*` | 数 | 同事程序 | 地电波（unsupported）、烟雾、开关位置（pending）；目前没有点 |
-| PM / PM2 | `el.Ua` `el.Ub` `el.Uc` `el.Ia` `el.Ib` `el.Ic` `el.P` `el.Q` `el.S` `el.PF` `el.F` `el.Ep` | 数，V / A / kW / kvar / kVA / — / Hz / kWh | 同事程序 | 电表基础量（meterBasic） |
+| SAM | `tev.amp`、`uhf.amp` | 数，dBmV | 同事程序 | 地电波 / 特高频放电量（读数 ÷10，期望周期 3 s；能力 tev / uhf，缺省不支持，没装的通道不发）。可选 `tev.level` `uhf.level`：设备状态原码 |
+| SAM | `smoke.*`、`sw.*` | 数 | 同事程序 | 烟雾、开关位置（pending）；目前没有点 |
+| PM / PM2 | `el.Ua` `el.Ub` `el.Uc` `el.Ia` `el.Ib` `el.Ic` `el.P` `el.Q` `el.S` `el.PF` `el.F` `el.Ep` | 数，V / A / kW / kvar / kVA / — / Hz / kWh | 同事程序；**EG 上送前换成一次值**（EG 0.4 起，I3）| 电表基础量（meterBasic） |
 | PM / PM2 | `el.load_pct` | 数，% | **EG 派生**：max(Ia, Ib, Ic) ÷ attrs.rated × 100 | 负荷率 |
 | PM / PM2 | `el.THDu` `el.THDi`、`el.dmd*` | 数 | 同事程序 | THD、需量（pending） |
 | PM / PM2 | `el.hu.*` `el.hi.*` | **串**（JSON 数组：各次谐波含有率 %，30 个） | 同事程序 | 电压 / 电流谐波（pending）。《EG 内部 MQTT 格式》同 |
@@ -147,7 +149,7 @@
       "state": "CLEARED",
       "occurredAt": 1791450355592,
       "clearedAt": 1791450355855,
-      "details": { "rule": "UV 弧光脉冲", "key": "uv.int", "value": 450, "threshold": 200, "src": "EG", "cls": "dev", "unit": "", "ruleVersion": "c-0928-1" }
+      "details": { "rule": "UV 弧光脉冲", "key": "uv.int", "value": 85.2, "threshold": 70, "src": "EG", "cls": "dev", "unit": "", "ruleVersion": "c-0928-1" }
     }
   ]
 }
@@ -250,6 +252,7 @@
 | `status` | 串 APPLIED / FAILED / PENDING | 总有 | PENDING = 本地 TB 暂未就绪、已排队；EG 自己重试，生效后报 cfg 属性 |
 | `changed` | 整数 | APPLIED | 实际改了几个设备配置；0 = 与现状一致或重复下发 |
 | `ignored` | 串数组 | 有不认识的 EG-* 规则时 | 这台 EG 不认识、跳过的规则 id（子站比 EG 新） |
+| `meters` | 对象 `{ "<电表设备名>": { "ct": 数, "pt": 数 } }` | APPLIED（EG 0.4 起，I3） | 本机各电表实际生效的变比（配置体 meters[本柜] 覆盖 eg.yaml 初值，缺省 1）。子站登记「倍率变更」、电表卡显示以它为准 |
 | `error` | 串 | FAILED / PENDING | 给人看的原因 |
 | `errorCode` | 串 | FAILED / PENDING（A11，0.3.0 起） | 见下表 |
 | `retryable` | 布尔 true | PENDING | |
