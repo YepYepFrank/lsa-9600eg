@@ -51,7 +51,7 @@ const eg = {
 
 const spec = {
   generatedFrom: `@lsa/points ${CATALOG_VERSION}`,
-  format: 'EG 内部 MQTT 格式 v0.3',
+  format: 'EG 内部 MQTT 格式 v0.4',
   devices, common, retired, eg,
 }
 

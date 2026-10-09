@@ -1,6 +1,6 @@
 {
   "generatedFrom": "@lsa/points v1.1（0.11）",
-  "format": "EG 内部 MQTT 格式 v0.3",
+  "format": "EG 内部 MQTT 格式 v0.4",
   "devices": {
     "sam": {
       "send": [
