@@ -63,7 +63,7 @@ async function main() {
 
   console.log('\n2. 本地告警触发：双光视频 + 抓图 + 录波')
   const t0 = Date.now()
-  const arc = (await post(`${EMU}/emu/arc?intensity=520&ms=30`)) as { device: string }
+  const arc = (await post(`${EMU}/emu/arc?intensity=85&ms=30`)) as { device: string }
   const group = await until(async () => {
     const items = (await list()).items.filter(i => i.eventId && i.requestedEnd > t0 - 5000 && i.kind === 'video')
     return items.length ? (await list()).items.filter(i => i.eventId === items[0]!.eventId) : null

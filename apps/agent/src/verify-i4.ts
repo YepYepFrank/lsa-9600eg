@@ -65,10 +65,10 @@ async function main() {
 
   console.log('\n2. 应用：改弧光阈值、停一条规则')
   const v1 = `i4-${Date.now().toString(36)}-1`
-  const r1 = await put({ version: v1, thresholds: rows({ arc: 600 }), rules: [...allOn.filter(r => r.id !== 'EG-rise'), { id: 'EG-rise', on: false }, { id: 'SP-noise', on: true }] })
+  const r1 = await put({ version: v1, thresholds: rows({ arc: 90 }), rules: [...allOn.filter(r => r.id !== 'EG-rise'), { id: 'EG-rise', on: false }, { id: 'SP-noise', on: true }] })
   check(r1.body.status === 'APPLIED' && r1.body.version === v1, '回执 APPLIED、版本号对', JSON.stringify(r1.body))
   const a1 = await alarmsOf(samProfile)
-  check(limitOf(a1, '弧光异常', 'CRITICAL') === 600, `本地 TB ${samProfile} 的弧光限值改成 600`, String(limitOf(a1, '弧光异常', 'CRITICAL')))
+  check(limitOf(a1, '弧光异常', 'CRITICAL') === 90, `本地 TB ${samProfile} 的弧光限值改成 90 %`, String(limitOf(a1, '弧光异常', 'CRITICAL')))
   check(!!a1.find(a => a.alarmType === '过温') && limitOf(a1, '过温', 'MAJOR') === undefined && limitOf(a1, '过温', 'CRITICAL') !== undefined, '停用 EG-rise：过温只剩上上限（CRITICAL）一级')
   const attr = await until(async () => ((await cfgAttr()) === v1 ? v1 : null), 15_000, 1000)
   check(!!attr, 'EG 的 cfg 属性（本地 TB 客户端属性）= 新版本', String(await cfgAttr()))
@@ -83,26 +83,26 @@ async function main() {
   }
   check(!!(await until(async () => !(await activeArc()), 130_000, 5000)), '先等上一轮弧光告警恢复')
   let t0 = Date.now()
-  const dev = ((await post(`${EMU}/emu/arc?intensity=520&ms=30`)) as { device: string }).device
+  const dev = ((await post(`${EMU}/emu/arc?intensity=85&ms=30`)) as { device: string }).device
   await sleep(8000)
-  check(!(await tb.alarms(dev)).some(a => a.type === '弧光异常' && a.createdTime >= t0 - 2000), '强度 520 < 新限值 600：不告警')
+  check(!(await tb.alarms(dev)).some(a => a.type === '弧光异常' && a.createdTime >= t0 - 2000), '强度 85 % < 新限值 90 %：不告警')
   t0 = Date.now()
-  await post(`${EMU}/emu/arc?intensity=700&ms=30`)
+  await post(`${EMU}/emu/arc?intensity=96&ms=30`)
   const hit = await until(async () => (await tb.alarms(dev)).find(a => a.type === '弧光异常' && a.createdTime >= t0 - 2000), 15_000, 500)
-  check(!!hit, '强度 700 > 600：告警', hit ? `${((hit.createdTime - t0) / 1000).toFixed(1)} s` : '15 s 内没有')
+  check(!!hit, '强度 96 % > 90 %：告警', hit ? `${((hit.createdTime - t0) / 1000).toFixed(1)} s` : '15 s 内没有')
 
   console.log('\n4. 停用整类规则')
   const v2 = `i4-${Date.now().toString(36)}-2`
-  const r2 = await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
+  const r2 = await put({ version: v2, thresholds: rows({ arc: 90 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
   const a2 = await alarmsOf(samProfile)
   check(r2.body.status === 'APPLIED' && !a2.some(a => a.alarmType === '弧光异常') && limitOf(a2, '过温', 'MAJOR') !== undefined, '停用 EG-arc：弧光规则去掉，EG-rise 重新启用', JSON.stringify(r2.body))
 
   console.log('\n4b. 不认识的规则（子站比 EG 新）：跳过、回执列出，其余照常')
   const v3 = `i4-${Date.now().toString(36)}-3`
-  const r6 = await put({ version: v3, thresholds: rows({ arc: 600 }), rules: [...allOn, { id: 'EG-nope', on: true }] })
+  const r6 = await put({ version: v3, thresholds: rows({ arc: 90 }), rules: [...allOn, { id: 'EG-nope', on: true }] })
   const ig = (r6.body as { ignored?: string[] }).ignored
   check(r6.body.status === 'APPLIED' && JSON.stringify(ig) === '["EG-nope"]' && (await alarmsOf(samProfile)).some(a => a.alarmType === '弧光异常'), '带 EG-nope：APPLIED、ignored = ["EG-nope"]、其余规则照常生效（弧光规则回来）', JSON.stringify(r6.body))
-  const r7 = await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
+  const r7 = await put({ version: v2, thresholds: rows({ arc: 90 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
   check(r7.body.status === 'APPLIED' && !('ignored' in r7.body), '都认识时回执不带 ignored（回到 v2）', JSON.stringify(r7.body))
 
   console.log('\n4c. 本地 TB 没就绪（刚开机）：回 PENDING 排队，就绪后自动应用（调试开关扮演 TB 没起来）')
@@ -117,11 +117,11 @@ async function main() {
   await dbg('tbDown=0')
   const auto = await until(async () => ((await cfgAttr()) === v4 ? true : null), 40_000, 1000)
   check(!!auto && (await dbg('')).pending === null && limitOf(await alarmsOf(samProfile), '弧光异常', 'CRITICAL') === 650, 'TB 就绪后自动应用：cfg 属性变成新版本、排队清空、弧光限值 650 生效', auto ? `${((Date.now() - t4) / 1000).toFixed(1)} s` : '40 s 内没应用')
-  await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
+  await put({ version: v2, thresholds: rows({ arc: 90 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
 
   console.log('\n5. 失败要回原因，且不改本机')
   const bad = async (what: string, body: Record<string, unknown>, want: RegExp) => {
-    const r = await put({ version: `bad-${Date.now().toString(36)}`, thresholds: rows({ arc: 600 }), rules: allOn, ...body })
+    const r = await put({ version: `bad-${Date.now().toString(36)}`, thresholds: rows({ arc: 90 }), rules: allOn, ...body })
     check(r.body.status === 'FAILED' && want.test(r.body.error ?? ''), `${what} → FAILED`, r.body.error)
   }
   await bad('温升上上限不大于上限', { thresholds: rows({ rise: 80, rise2: 70 }) }, /上上限/)
@@ -133,7 +133,7 @@ async function main() {
   check((await agent<{ applied: { version: string } }>(cfg.dir, '/api/config')).applied.version === v2 && !(await alarmsOf(samProfile)).some(a => a.alarmType === '弧光异常'), '失败后生效版本与本地规则都没动')
 
   console.log('\n6. 重复下发同一版')
-  const r4 = await put({ version: v2, thresholds: rows({ arc: 600 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
+  const r4 = await put({ version: v2, thresholds: rows({ arc: 90 }), rules: allOn.map(r => (r.id === 'EG-arc' ? { ...r, on: false } : r)) })
   check(r4.body.status === 'APPLIED' && r4.body.changed === 0, '同版本同内容：APPLIED，不重写', JSON.stringify(r4.body))
 
   console.log('\n7. 审计')

@@ -450,7 +450,7 @@ export class ApplyService {
     }
     let meters: Record<string, Partial<Ratio>> | null
     try {
-      meters = parseMeters(b['meters'], this.meters.names)
+      meters = parseMeters(b['meters'], this.cfg.cabinet.code, this.meters.names)
     } catch (e) {
       throw new Invalid((e as Error).message)
     }

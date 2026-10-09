@@ -166,7 +166,7 @@ async function main() {
   check(!!ts && ['synced', 'unsynced', 'unknown'].includes(String(ts.value)), `eg.time_sync = ${ts?.value}（eg.clk_offset 测不出不发、不填 0）`)
 
   console.log('\n4. 规则停用后，挂着的活动告警清掉（改名「柜内湿度高」同一套）')
-  await post(`${EMU}/emu/arc?intensity=450&ms=25`)
+  await post(`${EMU}/emu/arc?intensity=88&ms=25`)
   const arcOn = await until(async () => {
     for (const d of devs.filter(n => n.startsWith('SAM-'))) {
       const a = (await tb.activeAlarms(d)).find(x => x.type === '弧光异常')

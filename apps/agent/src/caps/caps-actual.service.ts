@@ -7,7 +7,7 @@
  *   通配（"PM6:*"、"el.*"）不算 q 与 dev.*（那是 agent 自己发的，传感器坏了也照样有）。
  *   每 30 s 判一次：变了马上报，连上本机总线 / 子站时报，另外每小时重报一次。子站没下发能力就不报。 */
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
-import { periodMs, pointsOf } from '@lsa/points'
+import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
@@ -39,7 +39,7 @@ export class CapsActualService implements OnModuleInit, OnModuleDestroy {
       if (d.kind === 'eg') continue
       const m = new Map<string, number>()
       for (const p of pointsOf(d.kind, cfg.cabinet.group, true)) {
-        const ms = periodMs(p.period)
+        const ms = expectedPeriodMs(p)
         if (ms !== null) m.set(p.key, ms)
       }
       this.periods.set(d.name, m)

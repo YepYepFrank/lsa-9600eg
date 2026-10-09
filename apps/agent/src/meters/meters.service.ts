@@ -2,7 +2,8 @@
  *
  * 变比来源（后者覆盖前者）：
  *   1. eg.yaml 电表 attrs 的 ctRatio / ptRatio（首次部署的初值；没有就是 1）
- *   2. 子站配置体 meters: { "<电表设备名>": { "ct": 40, "pt": 100 } }（ApplyService 应用时 set；随 applied-config.json 持久）
+ *   2. 子站配置体 meters: { "<柜号>": { "<电表设备名>": { "ct": 40, "pt": 100 } } }（配置体全站一份，与 caps 一样按柜号分组，
+ *      EG 只看本柜那一块；ApplyService 应用时 set；随 applied-config.json 持久）
  * 换算：电压 × pt；电流 × ct；P / Q / S / Ep × pt × ct；PF、F、THD、谐波含有率不乘（需量点目录里还没有，T09 定了再加）。
  * EG 本地 TB 里存的是转换程序发的表计原值（IoT Gateway 直接写），本地页显示与负荷率按这里的变比换算；
  * 上送（outbox 入队那一刻）换成一次值 —— 补传队列里的旧数入队时已按当时变比换过，不重算。 */
@@ -86,19 +87,23 @@ export class MetersService {
   }
 }
 
-/** 校验配置体里的 meters（ApplyService 用）：表名必须是本机电表，ct / pt 要是正数；出错抛 Error（调用方转 BAD_REQUEST） */
-export function parseMeters(raw: unknown, meters: string[]): Record<string, Partial<Ratio>> | null {
+/** 校验配置体里的 meters（ApplyService 用）：按柜号分组，只看本柜那一块（别的柜的条目不管）；
+ *  本柜块里的表名必须是本机电表，ct / pt 要是正数；出错抛 Error（调用方转 BAD_REQUEST）。没带 meters 或没有本柜块返回 null（用 eg.yaml 初值） */
+export function parseMeters(raw: unknown, cabinet: string, meters: string[]): Record<string, Partial<Ratio>> | null {
   if (raw === undefined) return null
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('meters 要是对象 { "<电表设备名>": { "ct": 正数, "pt": 正数 } }')
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('meters 要是对象 { "<柜号>": { "<电表设备名>": { "ct": 正数, "pt": 正数 } } }')
+  const mine = (raw as Record<string, unknown>)[cabinet]
+  if (mine === undefined) return null
+  if (!mine || typeof mine !== 'object' || Array.isArray(mine)) throw new Error(`meters.${cabinet} 要是对象 { "<电表设备名>": { ct, pt } }`)
   const out: Record<string, Partial<Ratio>> = {}
-  for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!meters.includes(name)) throw new Error(`meters.${name}：本机 eg.yaml 里没有这台电表（本机电表：${meters.join('、') || '无'}）`)
-    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(`meters.${name} 要是 { ct, pt }`)
+  for (const [name, v] of Object.entries(mine as Record<string, unknown>)) {
+    if (!meters.includes(name)) throw new Error(`meters.${cabinet}.${name}：本机 eg.yaml 里没有这台电表（本机电表：${meters.join('、') || '无'}）`)
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(`meters.${cabinet}.${name} 要是 { ct, pt }`)
     const r: Partial<Ratio> = {}
     for (const k of ['ct', 'pt'] as const) {
       const x = (v as Record<string, unknown>)[k]
       if (x === undefined) continue
-      if (pos(x) === null) throw new Error(`meters.${name}.${k} 要是正数`)
+      if (pos(x) === null) throw new Error(`meters.${cabinet}.${name}.${k} 要是正数`)
       r[k] = x as number
     }
     out[name] = r

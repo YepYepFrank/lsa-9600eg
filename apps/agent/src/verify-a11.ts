@@ -52,7 +52,7 @@ async function main() {
     ['设备清单不同', { ...good('a11-x'), devices: [...cfg.devices.map(d => ({ name: d.name, kind: d.kind })), { name: 'SAM-X-Z', kind: 'sam' }] }, 'DEVICES_MISMATCH'],
     ['caps 不是对象', { ...good('a11-x'), caps: 1 }, 'BAD_REQUEST'],
     ['rules 不是数组', { ...good('a11-x'), rules: {} }, 'BAD_REQUEST'],
-    ['meters 里的表不是本机的（I3）', { ...good('a11-x'), meters: { 'PM-NOPE': { ct: 40 } } }, 'BAD_REQUEST'],
+    ['meters 里的表不是本机的（I3）', { ...good('a11-x'), meters: { [cfg.cabinet.code]: { 'PM-NOPE': { ct: 40 } } } }, 'BAD_REQUEST'],
   ]
   for (const [what, body, want] of cases) {
     const id = randomUUID()

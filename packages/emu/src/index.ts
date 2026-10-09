@@ -12,7 +12,7 @@
  *   GET  /emu/status
  *   POST /emu/dev/<设备名>/dead?on=1|0   这台设备停发（模拟传感器掉线）/ 恢复
  *   POST /emu/dev/<设备名>/drop?keys=a,b  这台设备只停发这几个量（模拟单个传感器坏）；keys 为空 = 恢复
- *   POST /emu/arc?intensity=420&ms=22    热点隔室的 SAM 打一次弧光脉冲
+ *   POST /emu/arc?intensity=85&ms=22     热点隔室的 SAM 打一次弧光脉冲（强度按 %，0–100：ALS10 Arc Level ÷ 100，格式文档 v0.6；出厂阈值 70）
  *
  * 仿真摄像机（G4 摄像机测温约定 §6，camera.ts）：eg-video 的 sim 驱动取 GET /emu/cam/state；
  *   POST /emu/cam/overtemp?region=R2&max=95&s=120   区域最高温保持 s 秒
@@ -25,7 +25,7 @@ import { createServer } from 'node:http'
 import mqtt from 'mqtt'
 import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { attributesOf, PERIOD, planCabinets, telemetryOf, type CabPlan, type Ctx, type Period, type Scenario } from '@lsa/points'
-import type { CabinetSpec, SubDeviceSpec } from '@lsa/model'
+import { capDefaults, type CabinetSpec, type SubDeviceSpec } from '@lsa/model'
 import { CameraSim, type RegionDef } from './camera.js'
 
 const argv = process.argv.slice(2)
@@ -51,6 +51,11 @@ function cabinetOf(cfg: EgConfig): CabinetSpec {
     camProfile: '',
     eg: { name: cfg.eg.name, kind: 'eg', profile: '', label: cfg.eg.name, attrs: cfg.eg.attrs },
     subs: cfg.devices.map(sub),
+    // 后端 0.11 / 0.13 起 CabinetSpec 必带：SAM 清单（id 取设备名最后一段，所在位置取 attrs.room）、北向槽位、配置提示、能力（仿真器全量出数 = demo）
+    sams: cfg.devices.filter(d => d.kind === 'sam').map(d => ({ id: d.name.split('-').pop() ?? '', at: String(d.attrs['room'] ?? '') })),
+    samSlots: [],
+    warnings: [],
+    caps: capDefaults('demo'),
   }
 }
 
@@ -166,7 +171,7 @@ async function main() {
       log(`${seg[2]} ${keys.length ? `停发 ${keys.join('、')}` : '各量恢复'}`)
       return json(200, { ok: true, drop: keys })
     }
-    if (req.method === 'POST' && seg[1] === 'arc') return json(200, { ok: true, device: arc(num('intensity', 420), num('ms', 22)) })
+    if (req.method === 'POST' && seg[1] === 'arc') return json(200, { ok: true, device: arc(num('intensity', 85), num('ms', 22)) })
     if (seg[1] === 'cam') {
       const q = (k: string) => url.searchParams.get(k) ?? ''
       if (req.method === 'GET' && seg[2] === 'state') {

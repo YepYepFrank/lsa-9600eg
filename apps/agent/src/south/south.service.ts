@@ -9,7 +9,7 @@
  *
  * 计数按分钟分桶留 24 h；agent 重启后从零开始计（窗口按运行时长算，不会把重启前当成超时）。 */
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
-import { periodMs, pointsOf } from '@lsa/points'
+import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
@@ -47,7 +47,7 @@ export class SouthService implements OnModuleInit, OnModuleDestroy {
   ) {
     for (const d of cfg.devices) {
       if (d.kind === 'eg') continue
-      const pts = pointsOf(d.kind, cfg.cabinet.group).map(p => ({ key: p.key, ms: periodMs(p.period) }))
+      const pts = pointsOf(d.kind, cfg.cabinet.group).map(p => ({ key: p.key, ms: expectedPeriodMs(p) }))
       const periods = pts.map(p => p.ms).filter((x): x is number => x !== null)
       if (!periods.length) continue
       const interval = Math.min(...periods)

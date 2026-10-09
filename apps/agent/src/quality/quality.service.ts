@@ -22,7 +22,7 @@
  *   - 能力全都不启用的设备（caps）不发 dev.*（上送那边也整台不送）
  *   - q / dev.comm / dev.link 变了立即发，dev.last_ok / fails / err 随每分钟那一次 */
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
-import { periodMs, pointsOf } from '@lsa/points'
+import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
@@ -94,7 +94,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
       if (d.kind === 'eg') continue
       const keys = new Map<string, Watch>()
       for (const p of pointsOf(d.kind, cfg.cabinet.group, true)) {
-        const ms = periodMs(p.period)
+        // I6（0.4）：按点目录的期望周期（局放 us.* / tev.* / uhf.* 是 3 s，装置 3 s 才刷新一次），没写的按 fast / slow 档
+        const ms = expectedPeriodMs(p)
         // 事件型（弧光脉冲）不按周期看护；派生量跟随输入，不单独看护
         if (ms === null || p.key in DERIVED) continue
         keys.set(p.key, { period: ms, optional: !!p.optional, lastAt: this.startedAt, seen: false })

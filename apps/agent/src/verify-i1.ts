@@ -84,7 +84,7 @@ async function main() {
 
   console.log('\n5. 本地告警：仿真器打一次弧光')
   const t0 = Date.now()
-  const arc = (await post(`${EMU}/emu/arc?intensity=520&ms=30`)) as { device: string }
+  const arc = (await post(`${EMU}/emu/arc?intensity=85&ms=30`)) as { device: string }
   check(!!arc.device, '仿真器打了弧光', arc.device)
   const alarm = await until(async () => (await tb.alarms(arc.device)).find(a => a.type === '弧光异常' && a.createdTime >= t0 - 5000), 20_000, 1000)
   check(!!alarm, '本地 TB 在 20 s 内建了「弧光异常」告警', alarm ? `${alarm.severity}，${((alarm.createdTime - t0) / 1000).toFixed(1)} s` : '没有')

@@ -117,7 +117,7 @@ async function main() {
   // 仿真器把弧光打在「热点隔室」的 SAM 上，是哪台以它的回复为准
   const sams = cfg.devices.filter(d => d.kind === 'sam').map(d => d.name)
   let arcDev = sams[0]!
-  const arc = async () => (arcDev = ((await post(`${EMU}/emu/arc?intensity=520&ms=30`)) as { device: string }).device)
+  const arc = async () => (arcDev = ((await post(`${EMU}/emu/arc?intensity=85&ms=30`)) as { device: string }).device)
   const localArc = async (since: number) => (await tb.alarms(arcDev)).find(a => a.type === ARC && a.createdTime >= since)
   const idle = await until(async () => {
     for (const d of sams) if ((await tb.alarms(d)).some(a => a.type === ARC && !a.status.startsWith('CLEARED'))) return false
