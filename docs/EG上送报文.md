@@ -18,7 +18,7 @@
 | 1 | 遥测 / 属性 | EG → 子站 TB，MQTT（现场 mqtts 8883）。主题：子设备用 `v1/gateway/*`，EG 自身用 `v1/devices/me/*` | MQTT 用户名 = 子站上 EG-<柜号> 网关设备的令牌 | QoS 1，PUBACK 后才从 outbox 删（至少一次）。子站 TB 按「设备 + key + 源时间戳」覆盖写，重发无害 |
 | 2 | 告警事件 | EG → 子站 `POST /ext/eg/<柜号>/events` | 头 `X-EG-Token` | 回执逐条 accepted / duplicate 才删；按 eventId + revision 去重 |
 | 3 | 证据索引 | EG → 子站 `POST /ext/eg/<柜号>/evidence` | 头 `X-EG-Token` | 同事件，按 evidenceId + revision |
-| 4 | 证据文件 | EG → 子站 `PUT /ext/eg/<柜号>/evidence/<evidenceId>/file` | `X-EG-Token`，另带头 `X-Sha256` | 子站回 stored 且 sha256 一致才算 UPLOADED；失败整份重传（不分段续传） |
+| 4 | 证据文件 | EG → 子站 `PUT /ext/eg/<柜号>/evidence/<evidenceId>/file` | `X-EG-Token`，另带头 `X-Sha256` | 子站回 stored 且 sha256 一致才算 UPLOADED；失败整份重传（不分段续传，已定：用户 2026-10-08 拍板） |
 | 5 | 配置回执 | 子站 `PUT <EG>/api/config` 的响应体 | 子站带 `X-EG-Ticket`（服务票据） | 200：APPLIED / FAILED / PENDING；票据不对：401 |
 | 6 | 证据锁定回执 | 子站 `PUT <EG>/api/evidence/lock` 的响应体 | 同上 | 见 G5 证据约定 §8.7，本文不重复 |
 
@@ -159,7 +159,7 @@
 | `events[].eventId` | 串 UUID | = EG 本地 TB 告警 id，重启不变 |
 | `events[].revision` | 整数 ≥ 1 | 状态、级别或恢复时刻变了才 + 1；测量值变化不算 |
 | `events[].device` | 串 | 设备名（含 EG 自身 `EG-<柜号>`） |
-| `events[].type` | 串 | 告警类型：过温、绝对超温、区域温差、局放异常、弧光异常、柜内湿度高、过载、烟气、设备失联。老 EG 可能还发旧名「环境」 |
+| `events[].type` | 串 | 告警类型：过温、绝对超温、区域温差、局放异常、弧光异常、柜内湿度高、过载、烟气、设备失联。老 EG 可能还发旧名「环境」。另有 EG 自身设备的「证据未上传即被清理」（0.3.2 起，MAJOR，details 带 n / oldest / ids / disk / text；盘降到 highWater 以下自动恢复） |
 | `events[].severity` | 串 CRITICAL / MAJOR / MINOR / WARNING / INDETERMINATE | TB 级别 |
 | `events[].state` | 串 ACTIVE / CLEARED | |
 | `events[].occurredAt` | 整数毫秒 | 发生时刻；恢复那一版也带着 |
@@ -238,7 +238,7 @@
 ### 3.2 文件 `PUT /ext/eg/<柜号>/evidence/<evidenceId>/file`
 
 - 头：`Content-Type: video/mp4 | image/jpeg | application/json`（录波是 JSON），`X-EG-Token`，`X-Sha256: <64 位十六进制>`。
-- 体：文件全文。不分段，失败后整份重发。
+- 体：文件全文。不分段，失败后整份重发（已定，不做断点续传）。
 - 子站回 `{"stored": true, "sha256": "<子站算的>"}`，与 X-Sha256 一致才算 UPLOADED；不一致子站回 400。
 
 ## 4. 配置回执（`PUT <EG>/api/config` 的响应，HTTP 200）

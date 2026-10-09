@@ -4,7 +4,8 @@
  *   生产：到了窗口末尾再做（RECORDING → READY / MISSING / EXPIRED）；双光按实际起点配对，记 pairOffsetMs
  *   上送：索引 POST /ext/eg/<柜号>/evidence（回执、只留最新一版，同告警事件）；重要的文件 PUT …/evidence/<id>/file（子站按 sha256 校验）
  *   保留：锁定的本地副本 lockedDays，已上传的再留 uploadedKeepDays；数据盘超 fullWater 报满（eg.evid_full）、新锁定标缺证
- *   要上传的（重要 / 子站要的）没等到子站确认归档（UPLOADED）前，到期也不删本地这唯一一份（V3 A12）；只占盘，盘满照常报 eg.evid_full */
+ *   要上传的（重要 / 子站要的）没等到子站确认归档（UPLOADED）前，到期也不删本地这唯一一份（V3 A12）；只占盘，盘满照常报 eg.evid_full
+ *   盘满兜底（purge.ts）：超 purgeWater 按 已上传 → 不需上传 → 待上传 的顺序删本地副本，最后一类报 EG 告警「证据未上传即被清理」 */
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -14,9 +15,14 @@ import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
 import { BusService } from '../bus/bus.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
+import { LocalTbService } from '../tb/local-tb.service.js'
 import { VideoClient } from '../video/video.controller.js'
 import { EvidenceStore, indexOf, roundTimes, type EvChannel, type EvidenceRow, type EvKind } from './evidence.store.js'
 import { WaveBuffer } from './wave.buffer.js'
+import { CANDIDATE_SQL, EXPIRED_SQL, purge, type PurgeResult, type PurgeStep } from './purge.js'
+
+/** 盘满兜底删了待上传证据时报的 EG 告警（本地 TB 上 EG 自身设备，经告警事件送子站；降到 highWater 以下自动恢复） */
+export const PURGE_ALARM = '证据未上传即被清理'
 
 export interface LockRequest {
   requestId?: string
@@ -55,6 +61,9 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
   private sending = false
   private uploading = false
   private full = false
+  /** 盘满兜底累计删掉的待上传证据（告警明细用，恢复后清零） */
+  private purged = { n: 0, oldest: null as number | null }
+  private purgeAlarmId: string | null = null
   private recOk: boolean | null = null
   private indexError: string | null = null
   private lastIndexAck: number | null = null
@@ -65,6 +74,7 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
     private readonly video: VideoClient,
     private readonly uplink: UplinkService,
     private readonly audit: AuditService,
+    private readonly tb: LocalTbService,
   ) {
     this.dir = resolve(cfg.dir, 'evidence')
     const e = cfg.local.evidence
@@ -364,7 +374,7 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
   /** 到期清本地副本：已上传的只删文件（位置改 station），其余状态改 DELETED；要上传、还没确认归档的不删（唯一副本） */
   private clean(): void {
     const now = Date.now()
-    for (const r of this.store.where("expires_at is not null and expires_at < ? and file is not null and not (upload_wanted = 1 and status = 'READY')", now)) {
+    for (const r of this.store.where(EXPIRED_SQL, now)) {
       // 同一文件被别的证据引用（本实现每条证据一份文件，这里按文件名查，将来共用时也成立）
       if (this.store.where('file = ? and id != ? and (expires_at is null or expires_at >= ?)', r.file, r.evidenceId, now).length) continue
       try {
@@ -379,13 +389,12 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
 
   /** 数据盘水位与录像健康（每分钟） */
   private async watch(): Promise<void> {
-    let used: number | null = null
-    try {
-      const s = statfsSync(this.cfg.dir)
-      used = Math.round((1 - s.bavail / s.blocks) * 1000) / 10
-    } catch {
-      /* 取不到按没满 */
-    }
+    let used = this.diskUsed()
+    if (used !== null && used >= this.ev.purgeWater) {
+      const r = this.purgeNow()
+      used = r.after
+      if (r.unuploaded.n) await this.raisePurgeAlarm(r)
+    } else if (used !== null && used < this.ev.highWater && (this.purged.n || this.purgeAlarmId)) await this.clearPurgeAlarm(used)
     const full = used !== null && used >= this.ev.fullWater
     if (full !== this.full) {
       this.full = full
@@ -394,6 +403,85 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
     }
     const rec = await this.video.recording()
     this.recOk = rec ? rec.ok : null
+  }
+
+  private diskUsed(): number | null {
+    try {
+      const s = statfsSync(this.cfg.dir)
+      return Math.round((1 - s.bavail / s.blocks) * 1000) / 10
+    } catch {
+      return null /* 取不到按没满 */
+    }
+  }
+
+  /** 盘满兜底一轮（purge.ts）：删文件、改状态、写日志与审计 */
+  purgeNow(): PurgeResult {
+    const r = purge(
+      {
+        used: () => this.diskUsed(),
+        candidates: (step: PurgeStep) => this.store.where(CANDIDATE_SQL[step]),
+        remove: (row: EvidenceRow, step: PurgeStep) => {
+          try {
+            rmSync(resolve(this.dir, row.file!), { force: true })
+          } catch {
+            return false
+          }
+          if (step === 'uploaded') this.store.update(row.evidenceId, { location: 'station', file: null })
+          else this.store.update(row.evidenceId, { status: 'DELETED', location: 'none', file: null, missingReason: step === 'unuploaded' ? 'disk_purged_unuploaded' : 'disk_purged' })
+          return true
+        },
+      },
+      this.ev.purgeWater,
+      this.ev.highWater,
+    )
+    const n = r.removed.uploaded + r.removed.not_wanted + r.removed.unuploaded
+    if (n) {
+      const detail = `数据盘 ${r.before} % → ${r.after} %：删本地副本 已上传 ${r.removed.uploaded}、不需上传 ${r.removed.not_wanted}、待上传（未归档）${r.removed.unuploaded}`
+      this.log.warn(`盘满兜底：${detail}${r.unuploaded.n ? `；待上传被删的：${r.unuploaded.ids.join('、')}` : ''}`)
+      this.audit.write({ user: 'system', name: '证据', via: 'system', ip: '-', action: 'evidence.disk_purge', target: `${r.before} %`, ok: !r.unuploaded.n, detail })
+    } else if (r.before !== null && r.before >= this.ev.purgeWater) this.log.warn(`数据盘 ${r.before} % 超过 ${this.ev.purgeWater} %，但已没有可删的本地证据副本（循环录像由 eg-video 删）`)
+    return r
+  }
+
+  private async egDeviceId(): Promise<string> {
+    const d = await this.tb.get<{ id: { id: string } }>(`/api/tenant/devices?deviceName=${encodeURIComponent(this.cfg.eg.name)}`)
+    return d.id.id
+  }
+
+  /** 报 / 更新「证据未上传即被清理」：本地 TB 上 EG 自身设备的活动告警，经告警事件送子站 */
+  private async raisePurgeAlarm(r: PurgeResult): Promise<void> {
+    this.purged.n += r.unuploaded.n
+    this.purged.oldest = this.purged.oldest === null ? r.unuploaded.oldest : Math.min(this.purged.oldest, r.unuploaded.oldest ?? Infinity)
+    if (!this.tb.available) return
+    const oldest = this.purged.oldest ? new Date(this.purged.oldest + 8 * 3_600_000).toISOString().replace('T', ' ').slice(0, 19) : '—'
+    const details = { cls: 'dev', src: 'EG', n: this.purged.n, oldest: this.purged.oldest, ids: r.unuploaded.ids.slice(0, 20), disk: r.after, text: `证据未上传即被清理（${this.purged.n} 个，最早 ${oldest}）` }
+    try {
+      const id = await this.egDeviceId()
+      const act = await this.tb.get<{ data: { id: { id: string }; type: string }[] }>(`/api/alarm/DEVICE/${id}?searchStatus=ACTIVE&pageSize=50&page=0`)
+      const cur = act.data.find(a => a.type === PURGE_ALARM)
+      const saved = await this.tb.req<{ id: { id: string } }>('POST', '/api/alarm', cur ? { ...cur, severity: 'MAJOR', details } : { originator: { entityType: 'DEVICE', id }, type: PURGE_ALARM, severity: 'MAJOR', status: 'ACTIVE_UNACK', details })
+      this.purgeAlarmId = saved.id.id
+      this.log.warn(`EG 告警「${PURGE_ALARM}」：${details.text}`)
+    } catch (e) {
+      this.log.warn(`报「${PURGE_ALARM}」失败：${(e as Error).message}（下一轮再报）`)
+    }
+  }
+
+  /** 降到 highWater 以下：告警恢复，累计清零 */
+  private async clearPurgeAlarm(used: number): Promise<void> {
+    if (this.tb.available) {
+      try {
+        const id = await this.egDeviceId()
+        const act = await this.tb.get<{ data: { id: { id: string }; type: string }[] }>(`/api/alarm/DEVICE/${id}?searchStatus=ACTIVE&pageSize=50&page=0`)
+        for (const a of act.data.filter(x => x.type === PURGE_ALARM)) await this.tb.req('POST', `/api/alarm/${a.id.id}/clear`)
+      } catch (e) {
+        this.log.warn(`「${PURGE_ALARM}」恢复失败：${(e as Error).message}`)
+        return
+      }
+    }
+    this.log.log(`数据盘降到 ${used} %，「${PURGE_ALARM}」恢复（累计删了 ${this.purged.n} 个待上传证据）`)
+    this.purged = { n: 0, oldest: null }
+    this.purgeAlarmId = null
   }
 
   /** EG 自身指标（随 eg.* 每 5 s）：待上传条数、证据存储满、循环录像是否在录 */

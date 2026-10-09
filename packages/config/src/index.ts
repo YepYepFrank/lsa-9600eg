@@ -107,8 +107,10 @@ export interface LocalFile {
     lockedDays: number
     /** 已上传的 EG 本地副本再留多久 */
     uploadedKeepDays: number
-    /** 数据盘水位 %：超 highWater 提前删最旧的循环段；只剩锁定文件还超 fullWater 就报满、新锁定标缺证 */
+    /** 数据盘水位 %：超 highWater 提前删最旧的循环段；超 purgeWater 按顺序删本地证据副本（已上传的 → 不需上传的 → 待上传的，
+     *  最后一类报告警，apps/agent/src/evidence/purge.ts），降到 highWater 以下为止；都删完还超 fullWater 才报满、新锁定标缺证 */
     highWater: number
+    purgeWater: number
     fullWater: number
     /** 重要证据（自动上传子站）：级别或类型命中其一 */
     autoUpload: { severities: string[]; types: string[] }
@@ -161,6 +163,7 @@ export const LOCAL_DEFAULTS: LocalFile = {
     lockedDays: 30,
     uploadedKeepDays: 7,
     highWater: 85,
+    purgeWater: 90,
     fullWater: 95,
     autoUpload: { severities: ['CRITICAL'], types: ['弧光异常', '过温'] },
   },

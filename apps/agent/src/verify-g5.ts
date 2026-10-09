@@ -4,6 +4,7 @@
  *
  * 前提：G4 的样机（camera、mediamtx 容器，mediamtx 挂了 run/recordings 且配置是 G5 的：子码流常录、回放服务）；
  * dev:emu、dev:video、dev:agent（G5 代码）在跑。子站侧的证据接口（索引、文件）归后端，这里只报「等子站」。约 4 分钟。 */
+import { checkEvidencePurge } from './verify/evidence-purge.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { loadConfig, stationToken } from '@lsa-eg/config'
 import { signTicket } from './auth/ticket.js'
@@ -51,7 +52,10 @@ async function main() {
   }
   const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
 
-  console.log('1. 循环录像（两路子码流常录）')
+  console.log('0. 盘满兜底与「归档前不删唯一副本」（临时库，不碰正在用的 evidence.db）')
+  checkEvidencePurge(check)
+
+  console.log('\n1. 循环录像（两路子码流常录）')
   const rec = (await (await fetch('http://127.0.0.1:9110/api/video/recording')).json()) as { ok: boolean; paths: { channel: string; segments: number; oldest: number | null; recording: boolean }[] }
   check(rec.ok && rec.paths.length === 2 && rec.paths.every(p => p.recording), '可见光 / 热像子码流都在录', rec.paths.map(p => `${p.channel}:${p.segments} 段`).join(' '))
   const oldest = Math.max(...rec.paths.map(p => p.oldest ?? Date.now()))
