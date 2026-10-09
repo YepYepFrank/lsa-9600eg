@@ -1,6 +1,6 @@
 /* 派生量：同事的程序只发传感器原本就有的量，下面这些由 agent 算好发回总线（开发计划 §6.1）。
  *
- *   el.load_pct = max(Ia, Ib, Ic) ÷ 额定电流 × 100（接入规范 §6.2）
+ *   el.load_pct = max(Ia, Ib, Ic) × CT 变比 ÷ 额定电流 × 100（接入规范 §6.2；I3：电流是表计原值，乘变比成一次值，额定电流是一次的）
  *     过载告警在 EG 本地 TB 上统一按 110 % 判 —— TB 设备配置的告警规则读不到设备属性，额定电流各柜不同，只能 EG 先除好。
  *     额定电流取电表的 `rated` 属性（eg.yaml，子站 model.yaml 来的），没有就用柜的额定电流。
  *     时间戳与电流读数相同，这样子站上负荷率与电流在同一时刻。
@@ -24,6 +24,7 @@ import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { QualityService } from '../quality/quality.service.js'
+import { MetersService } from '../meters/meters.service.js'
 
 const PHASES = ['el.Ia', 'el.Ib', 'el.Ic'] as const
 
@@ -43,6 +44,7 @@ export class DeriveService implements OnModuleInit {
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
     private readonly quality: QualityService,
+    private readonly meters: MetersService,
   ) {
     const firstSam = cfg.devices.find(d => d.kind === 'sam')?.name
     for (const d of cfg.devices) {
@@ -152,7 +154,7 @@ export class DeriveService implements OnModuleInit {
       // 这一条里没带的相，用同一时刻（或更早）的最新值
       const amps = PHASES.map(k => num(e.values[k] ?? (live[k] && live[k].ts <= e.ts ? live[k].v : undefined)))
       if (amps.some(a => a === null)) continue
-      const pct = Math.round((Math.max(...(amps as number[])) / rated) * 1000) / 10
+      const pct = Math.round(((Math.max(...(amps as number[])) * this.meters.ratio(dev).ct) / rated) * 1000) / 10
       this.bus.publish(dev, { 'el.load_pct': pct }, e.ts)
     }
   }

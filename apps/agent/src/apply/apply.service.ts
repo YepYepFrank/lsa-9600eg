@@ -30,6 +30,7 @@ import { BusService } from '../bus/bus.service.js'
 import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
 import { parseCaps, type CapsConfig } from '../caps/caps.js'
 import { CapsService, type DevCommParams } from '../caps/caps.service.js'
+import { MetersService, parseMeters, type Ratio } from '../meters/meters.service.js'
 
 export interface ApplyReceipt {
   version: string
@@ -41,6 +42,8 @@ export interface ApplyReceipt {
   changed?: number
   /** 这台 EG 不认识、跳过了的规则 id（EG 版本比子站旧）；都认识时不带 */
   ignored?: string[]
+  /** I3（0.4）：APPLIED 时回显各电表实际生效的变比，子站登记「倍率变更」与电表卡显示以它为准 */
+  meters?: Record<string, Ratio>
   /** 阶段 A11：请求体里的 requestId 原样带回（老子站不带就没有） */
   requestId?: string
   /** 阶段 A11：FAILED / PENDING 时给机器看的出错码（error 是给人看的） */
@@ -65,6 +68,8 @@ export interface Applied {
   /** 阶段 A：本柜能力清单（没下发过为 null / 缺省） */
   caps?: CapsConfig | null
   devComm?: DevCommParams | null
+  /** I3：子站下发的电表变比（没下发为 null / 缺省 —— 用 eg.yaml 的初值） */
+  meters?: Record<string, Partial<Ratio>> | null
 }
 
 /** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别；alias = 改名前的类型（@lsa/model 的模板还没跟上时照样认） */
@@ -140,6 +145,7 @@ export class ApplyService {
     private readonly bus: BusService,
     private readonly audit: AuditService,
     private readonly caps: CapsService,
+    private readonly meters: MetersService,
   ) {
     this.file = resolve(cfg.dir, 'applied-config.json')
     this.pendingFile = resolve(cfg.dir, 'pending-config.json')
@@ -149,6 +155,7 @@ export class ApplyService {
       this.log.warn(`applied-config.json 读不了：${(e as Error).message}`)
     }
     this.caps.set(this.applied?.caps ?? null, this.applied?.devComm ?? null)
+    this.meters.set(this.applied?.meters ?? null)
     // 上次没应用成的（比如断电重启时本地 TB 还没起来）：接着重试
     try {
       if (existsSync(this.pendingFile)) {
@@ -238,7 +245,7 @@ export class ApplyService {
       return { version, status: 'FAILED', error, errorCode, ...rid }
     }
     const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}`, errorCode: 'LOCAL_NOT_READY', ...rid })
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null }
     try {
       input = this.parse(body)
     } catch (e) {
@@ -248,13 +255,15 @@ export class ApplyService {
     // 老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，升级后同一份配置不会被当成新内容
     const parts: unknown[] = [input.thresholds, input.rules, input.extras]
     if (input.caps || input.devComm) parts.push(input.caps, input.devComm)
+    // I3：带了 meters 才计进哈希（老配置的哈希不变）
+    if (input.meters) parts.push({ meters: input.meters })
     const hash = createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
     const ign = input.ignored.length ? { ignored: input.ignored } : {}
     if (input.ignored.length) this.log.warn(`版本 ${input.version}：这台 EG 不认识规则 ${input.ignored.join('、')}（EG 版本比子站旧），跳过，其余照常应用`)
     if (this.applied?.version === input.version && this.applied.hash === hash) {
       // 内容相同的重发：不动本地 TB，但把 cfg 再报一次 —— 子站重发多半是因为它看到的 cfg 不对
       this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
-      return { version, status: 'APPLIED', changed: 0, ...ign, ...rid }
+      return { version, status: 'APPLIED', changed: 0, ...ign, ...rid, meters: this.meters.effective() }
     }
     if (!this.tb.available) return fail('eg.yaml 里没有本地 TB 账号，写不了设备配置', 'LOCAL_NOT_CONFIGURED')
 
@@ -296,9 +305,10 @@ export class ApplyService {
       return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`, 'INTERNAL')
     }
 
-    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm }
+    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters }
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
     this.caps.set(input.caps, input.devComm)
+    this.meters.set(input.meters)
     // 规则停用 / 类型改名后，没有规则来清的活动告警：清掉
     const typesOf = (ps: TbProfile[]) => new Set(ps.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
     const before = typesOf(profiles)
@@ -310,7 +320,7 @@ export class ApplyService {
     const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}`
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: retry ? '应用子站配置（排队后自动）' : '应用子站配置', target: input.version, ok: true, detail })
-    return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid }
+    return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid, meters: this.meters.effective() }
   }
 
   /** 等开机清扫做完（告警事件开机重发要等它）；本地 TB 一直没就绪就等到 ms 为止 */
@@ -438,7 +448,13 @@ export class ApplyService {
       }
       devComm = { failN: pos(d['failN'], 'failN', 5), minMs: pos(d['minMs'], 'minMs', 30_000), periods: pos(d['periods'], 'periods', 5) }
     }
-    return { version, thresholds, rules, extras, ignored, caps, devComm }
+    let meters: Record<string, Partial<Ratio>> | null
+    try {
+      meters = parseMeters(b['meters'], this.meters.names)
+    } catch (e) {
+      throw new Invalid((e as Error).message)
+    }
+    return { version, thresholds, rules, extras, ignored, caps, devComm, meters }
   }
 }
 

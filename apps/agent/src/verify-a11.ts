@@ -9,6 +9,7 @@ import { CAP_DEFAULT_PRODUCTION, CAP_KEYMAP, RULE_CAP, loadModel } from '@lsa/mo
 import { loadConfig, repoRoot, stationToken } from '@lsa-eg/config'
 import { signTicket, type TicketClaims } from './auth/ticket.js'
 import { AGENT, check, done, env, until } from './verify/lib.js'
+import { checkMeters } from './verify/meters.js'
 
 const MODEL = resolve(env('LSA_BACKEND', resolve(repoRoot() ?? '.', '../lsa-9600sp-backend')), 'tb/model.yaml')
 const EXT = process.env['EXT_BASE']
@@ -26,7 +27,7 @@ async function main() {
   }
   const put = async (body: unknown, t: string | null = ticket()) => {
     const r = await fetch(`${AGENT}/api/config`, { method: 'PUT', headers: { 'content-type': 'application/json', ...(t === null ? {} : { 'X-EG-Ticket': t }) }, body: JSON.stringify(body) })
-    return { http: r.status, j: (await r.json()) as { status?: string; error?: string; errorCode?: string; requestId?: string; changed?: number; code?: string; message?: string } }
+    return { http: r.status, j: (await r.json()) as { status?: string; error?: string; errorCode?: string; requestId?: string; changed?: number; code?: string; message?: string; meters?: Record<string, { ct: number; pt: number }> } }
   }
   const codes = [code, 'AH12'].filter((c, i, a) => a.indexOf(c) === i).sort()
   const caps = Object.fromEntries(codes.map(c => [c, { ...CAP_DEFAULT_PRODUCTION }]))
@@ -38,7 +39,10 @@ async function main() {
   const capKeys = Object.fromEntries(Object.entries(CAP_KEYMAP).filter(([, v]) => v.length))
   const good = (version: string) => ({ version, thresholds: model.thresholds, rules, extras: model.thresholdExtras, caps, capKeys, devComm: { failN: 5, minMs: 30_000, periods: 5 } })
 
-  console.log('1. 校验不过 → FAILED + errorCode，requestId 原样带回（都不动本地 TB）')
+  console.log('0. 电表变比（I3，纯函数）')
+  checkMeters(check)
+
+  console.log('\n1. 校验不过 → FAILED + errorCode，requestId 原样带回（都不动本地 TB）')
   const g = cfg.cabinet.group
   const cases: [string, unknown, string][] = [
     ['版本号不合法', { ...good('bad version!') }, 'BAD_VERSION'],
@@ -48,6 +52,7 @@ async function main() {
     ['设备清单不同', { ...good('a11-x'), devices: [...cfg.devices.map(d => ({ name: d.name, kind: d.kind })), { name: 'SAM-X-Z', kind: 'sam' }] }, 'DEVICES_MISMATCH'],
     ['caps 不是对象', { ...good('a11-x'), caps: 1 }, 'BAD_REQUEST'],
     ['rules 不是数组', { ...good('a11-x'), rules: {} }, 'BAD_REQUEST'],
+    ['meters 里的表不是本机的（I3）', { ...good('a11-x'), meters: { 'PM-NOPE': { ct: 40 } } }, 'BAD_REQUEST'],
   ]
   for (const [what, body, want] of cases) {
     const id = randomUUID()
@@ -83,6 +88,8 @@ async function main() {
   const id = randomUUID()
   const { j: ok } = await put({ ...good(ver), requestId: id })
   check(ok.status === 'APPLIED' && ok.requestId === id && !('errorCode' in ok), `版本 ${ver} → ${ok.status}（改了 ${ok.changed ?? 0} 个），requestId ${ok.requestId === id ? '带回' : '没带回'}`)
+  const em = cfg.devices.filter(d => d.kind === 'meter').map(d => d.name)
+  check(!!ok.meters && em.every(n => typeof ok.meters![n]?.ct === 'number' && typeof ok.meters![n]?.pt === 'number'), `回执回显各电表实际生效的变比（I3）：${JSON.stringify(ok.meters)}`)
   const id2 = randomUUID()
   const { j: same } = await put({ ...good(ver), requestId: id2 })
   check(same.status === 'APPLIED' && same.changed === 0 && same.requestId === id2, `同一份重发（新 requestId）→ ${same.status}、改了 ${same.changed}、带回新的 requestId`)

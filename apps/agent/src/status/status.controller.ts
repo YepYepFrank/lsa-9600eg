@@ -11,6 +11,7 @@ import { SelfService } from '../self/self.service.js'
 import { SouthService } from '../south/south.service.js'
 import { Public } from '../auth/guard.js'
 import { AGENT_VERSION } from '../attrs/attrs.service.js'
+import { MetersService } from '../meters/meters.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
 import { CapsService } from '../caps/caps.service.js'
 
@@ -27,6 +28,7 @@ export class StatusController {
     private readonly self: SelfService,
     private readonly derive: DeriveService,
     private readonly uplink: UplinkService,
+    private readonly meters: MetersService,
   ) {}
 
   @Get('status')
@@ -66,6 +68,8 @@ export class StatusController {
           south: this.south.rowOf(d.name, now),
           southBySource: this.south.bySource(d.name),
           rated: this.derive.ratedOf(d.name),
+          // I3：电表实际生效的变比（本地页把表计原值换成一次值显示）
+          ...(d.kind === 'meter' ? { ratio: this.meters.ratio(d.name) } : {}),
           epBackwards: this.derive.epBackwards.get(d.name) ?? 0,
         }
       }),

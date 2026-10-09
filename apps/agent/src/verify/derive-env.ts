@@ -31,7 +31,7 @@ export function checkDeriveEnv(check: Check): void {
       { name: 'CAM-X', kind: 'camera', attrs: { regions: { R1: { env: 'SAM-X-B' }, R2: { label: '无 env 字段' }, R3: { env: '' } } } },
     ],
   } as unknown as EgConfig
-  const svc = new DeriveService(cfg, bus as never, quality as never)
+  const svc = new DeriveService(cfg, bus as never, quality as never, { ratio: () => ({ ct: 1, pt: 1 }) } as never)
   svc.onModuleInit()
   handler!('CAM-X', [{ ts: now, values: { 'ir.R1.max': 50, 'ir.R2.max': 40, 'ir.R3.max': 70 } }], false)
   check(published['ir.R1.rise'] === 20, `R1 env 显式写 SAM-X-B：温升 = 50 − 30 = ${published['ir.R1.rise']}`)

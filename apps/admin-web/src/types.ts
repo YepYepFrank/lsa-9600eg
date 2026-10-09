@@ -13,6 +13,8 @@ export interface Dev {
   south: { req: number; timeout: number; rate: number | null } | null
   southBySource: boolean
   rated: number | null
+  /** I3：电表实际生效的变比（表计原值 × 它 = 一次值） */
+  ratio?: { ct: number; pt: number }
   epBackwards: number
   /** 阶段 A：通信状态（§13）；fromSource = 转换程序自报的项 */
   comm?: { comm: 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'UNKNOWN'; lastOk: number | null; fails: number; err: string; fromSource: { lastOk: boolean; fails: boolean; err: boolean } }

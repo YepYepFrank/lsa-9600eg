@@ -27,7 +27,7 @@ async function fullscreen() {
   try { await camera.value?.requestFullscreen() } catch { ElMessage.warning('当前浏览器无法进入全屏') }
 }
 
-const { m, cam, sams, meter, pm, labelOf, num, text, series, has, card } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
+const { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, ratioOf } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
 /* 阶段 A：卡片 → 能力（子站下发的能力清单）。演示模式照旧全显示；实测时 confirmed 照常、unsupported 隐藏、
  * pending 照常显示真实读数并打「待定（数据仅供调试核对）」角标（v1.2：pending 多是装了传感器、型号 / 口径没定，现场要先看到读数） */
 const CARD_CAPS = {
@@ -317,6 +317,7 @@ async function download(id: string, label: string) {
     <section v-else-if="tab === 'electric' && !show('meter')" class="monitor-card"><div class="monitor-empty"><strong>本柜不配电表</strong><span>子站能力清单里电表各项都是「不具备」</span></div></section>
     <template v-else-if="tab === 'electric'">
       <p v-if="pendingCard('meter')" class="cap-pending-note">电表能力待定：以下数据仅供调试核对（子站确认后才上送）</p>
+      <p v-if="!demo && (ratioOf(meter).ct !== 1 || ratioOf(meter).pt !== 1)" class="muted" style="margin:0 0 8px;font-size:12px">以下电压、电流、功率、电量为一次值：表计读数 × 变比（CT {{ ratioOf(meter).ct }} / PT {{ ratioOf(meter).pt }}，子站下发）；功率因数、频率、谐波不乘</p>
       <div v-if="!demo && !meter" class="monitor-card"><div class="monitor-empty">本柜没有配置电表（eg.yaml 设备清单里没有 meter）</div></div>
       <template v-else>
       <div class="electric-grid"><section v-for="group in electric" :key="group.label" class="monitor-card"><div class="monitor-card-heading"><b>{{ group.label }}</b><span class="grow"/><span class="muted">{{ group.unit }}</span></div><div v-for="item in group.items" :key="item[0]" class="electric-row"><span>{{ item[0] }}</span><b>{{ item[1] }}</b></div></section></div>

@@ -87,6 +87,16 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   const meter = computed(() => devs.value.find(d => d.kind === 'meter')?.name ?? null)
   const pm = computed(() => devs.value.find(d => d.kind === 'pm')?.name ?? null)
   const labelOf = (name: string) => devs.value.find(d => d.name === name)?.label || name
+  /** I3：电表的 el.* 是表计原值（二次值），显示时按实际生效的变比换成一次值（与 agent meters.service.ts 同一套规则） */
+  const ratioOf = (dev: string | null) => (dev ? devs.value.find(d => d.name === dev)?.ratio : undefined) ?? { ct: 1, pt: 1 }
+  function factor(dev: string | null, key: string): number {
+    const r = ratioOf(dev)
+    if (key === 'el.Ua' || key === 'el.Ub' || key === 'el.Uc') return r.pt
+    if (key === 'el.Ia' || key === 'el.Ib' || key === 'el.Ic') return r.ct
+    if (key === 'el.P' || key === 'el.Q' || key === 'el.S' || key === 'el.Ep') return r.pt * r.ct
+    return 1
+  }
+  const scaled = (v: number, f: number) => (f === 1 ? v : Number((v * f).toPrecision(12)))
 
   /** 某量的最新值：设备或量不在、或质量码标了 invalid 就是 null（页面显示「—」，不拿陈旧值冒充） */
   function num(dev: string | null, key: string): number | null {
@@ -95,7 +105,7 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
     const p = l?.telemetry[key]
     if (!p || l?.q[key] === 'invalid') return null
     const n = typeof p.v === 'number' ? p.v : Number(p.v)
-    return Number.isFinite(n) ? n : null
+    return Number.isFinite(n) ? scaled(n, factor(dev, key)) : null
   }
   function text(dev: string | null, key: string): string | null {
     const v = dev ? m.live[dev]?.telemetry[key]?.v : undefined
@@ -104,7 +114,8 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   /** 趋势：数值序列（null 断线） */
   function series(dev: string | null, key: string): Sample[] {
     if (!dev) return []
-    return (m.hist[dev]?.[key] ?? []).map(([t, v]) => [t, typeof v === 'number' ? v : null])
+    const f = factor(dev, key)
+    return (m.hist[dev]?.[key] ?? []).map(([t, v]) => [t, typeof v === 'number' ? scaled(v, f) : null])
   }
   function has(dev: string | null, key: string): boolean {
     return !!dev && (!!m.live[dev]?.telemetry[key] || !!m.hist[dev]?.[key]?.length)
@@ -196,7 +207,7 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   onBeforeUnmount(stop)
   watch([tab, enabled, () => !!store.status], start)
 
-  return { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, refresh: start }
+  return { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, ratioOf, refresh: start }
 }
 
 /** 露点（Magnus 公式，与领导原型同一组系数） */

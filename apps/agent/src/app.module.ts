@@ -27,6 +27,7 @@ import { EvidenceController } from './evidence/evidence.controller.js'
 import { EvidenceService } from './evidence/evidence.service.js'
 import { HistoryController } from './history/history.controller.js'
 import { CapsService } from './caps/caps.service.js'
+import { MetersService } from './meters/meters.service.js'
 import { CapsActualService } from './caps/caps-actual.service.js'
 import { CapsController } from './caps/caps.controller.js'
 import { GatewayConfigService } from './gateway/gateway-config.service.js'
@@ -40,6 +41,7 @@ import { GatewayConfigService } from './gateway/gateway-config.service.js'
     { provide: APP_GUARD, useClass: AuthGuard },
     BusService,
     CapsService,
+    MetersService,
     AttrsService,
     QualityService,
     DeriveService,

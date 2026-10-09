@@ -20,6 +20,7 @@ import { OutboxStore, type OutRow, type RowKind } from './outbox.store.js'
 import { attrKey, chunkRows, dropStaleAttrs, MAX_PAYLOAD_BYTES } from './chunk.js'
 import { AuditService } from '../audit/audit.service.js'
 import { CapsService } from '../caps/caps.service.js'
+import { MetersService } from '../meters/meters.service.js'
 
 export type UplinkState = 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'none' | 'unknown'
 
@@ -93,6 +94,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     private readonly bus: BusService,
     private readonly audit: AuditService,
     private readonly caps: CapsService,
+    private readonly meters: MetersService,
   ) {}
 
   private readonly upListeners: (() => void)[] = []
@@ -128,7 +130,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     // 能力全都不启用的设备（阶段 A caps）：源头丢，不进 outbox —— 改成启用后从那一刻起送，以前的不补传
     this.bus.onTelemetry((dev, entries) => {
       if (!this.caps.deviceEnabled(dev)) return
-      for (const e of entries) this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(e.values) })
+      // I3：电表的 el.* 在入队这一刻换成一次值（子站一律按一次量处理）；补传队列里的旧数入队时已按当时变比换过
+      for (const e of entries) this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(this.meters.toPrimary(dev, e.values)) })
     })
     this.bus.onAttributes((dev, attrs) => {
       if (!this.caps.deviceEnabled(dev)) return
