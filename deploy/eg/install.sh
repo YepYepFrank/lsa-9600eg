@@ -355,7 +355,9 @@ $DC up -d --remove-orphans
 # eg.yaml / sp-ca.pem 换过（改设备清单 §5b、换令牌、换证书）：compose 不看挂载文件的内容，镜像没变时容器不会重建，
 # agent / video 还拿着旧配置（agentBootId 也不变，子站据它判断「重新部署过」）—— 跟上次装好时比，变了就重启这三个
 cfg_sum="$(cat config/eg.yaml config/sp-ca.pem 2>/dev/null | sha256sum | cut -c1-64)"
-if [ "$(cat .installed/config.sha256 2>/dev/null)" != "$cfg_sum" ]; then
+# 升级时 .installed 已挪成 .previous（上面第 2 步），就跟 .previous 里记的比 —— 不然每次升级都误报「变了」（0.11 验收发现）
+last_sum="$(cat .installed/config.sha256 2>/dev/null || cat .previous/config.sha256 2>/dev/null)"
+if [ "$last_sum" != "$cfg_sum" ]; then
   echo "config/eg.yaml（或 sp-ca.pem）与上次装好时不同：重启 agent / video / gateway，读新配置"
   $DC restart agent video gateway >/dev/null
 fi
