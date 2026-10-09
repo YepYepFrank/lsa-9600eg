@@ -1,0 +1,19 @@
+# 转换程序测试总线：与 EG 上的 lsa-eg-mosquitto 同版本、同配置、同端口（127.0.0.1:1884）。
+#   docker compose up -d              # 只本机可连（与 EG 一致）
+#   LSA_BUS_BIND=0.0.0.0 docker compose up -d   # 让局域网里别的电脑也能连（转换程序在另一台机器上调试时）
+name: lsa-conv-kit
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:${MOSQUITTO_VERSION:-2.1.2}
+    container_name: lsa-conv-mosquitto
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mq-data:/mosquitto/data
+    ports:
+      - '${LSA_BUS_BIND:-127.0.0.1}:${LSA_BUS_PORT:-1884}:1883'
+    mem_limit: 64m
+
+volumes:
+  mq-data:
