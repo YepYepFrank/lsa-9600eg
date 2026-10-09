@@ -231,7 +231,7 @@
 | `important` | 布尔 | 重要 = 自动上传文件 |
 | `pairOffsetMs` | 整数或 null | 双光实际起点差 |
 | `createdAt` `expiresAt` | 整数毫秒 / 整数或 null | 本地副本到期时刻；要上传、还没确认归档的到期也不删（0.3.0 起） |
-| `missingReason` | 串或 null | expired（早于循环覆盖）、disk_full、gap（断流缺口）等；没做出来、或部分缺失时给 |
+| `missingReason` | 串或 null | expired（早于循环覆盖）、disk_full、gap（断流缺口）；盘满兜底删掉的：disk_purged（不需上传的）、disk_purged_unuploaded（待上传未归档的，0.3.2 起，同时报「证据未上传即被清理」）；没做出来、部分缺失或被删时给 |
 
 时间字段一律是整数（子站按 bigint 入库）。回执形状同事件：`{"results":[{"evidenceId","revision","status","reason?","retryable?"}]}`。
 
