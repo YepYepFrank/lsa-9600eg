@@ -1,0 +1,454 @@
+{
+  "generatedFrom": "@lsa/points v1.1（0.11）",
+  "format": "EG 内部 MQTT 格式 v0.3",
+  "devices": {
+    "sam": {
+      "send": [
+        {
+          "key": "us.amp",
+          "label": "超声局放幅值",
+          "unit": "dBμV",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "us.cnt",
+          "label": "超声局放次数",
+          "unit": "次",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "us.type",
+          "label": "局放类型码",
+          "unit": "",
+          "periodMs": 2000,
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "key": "us.level",
+          "label": "局放设备告警等级",
+          "unit": "",
+          "periodMs": 2000,
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "key": "uv.int",
+          "label": "紫外弧光强度",
+          "unit": "",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "uv.pulse",
+          "label": "弧光脉冲",
+          "unit": "",
+          "periodMs": null,
+          "optional": false,
+          "type": "json"
+        },
+        {
+          "key": "env.t",
+          "label": "环境温度",
+          "unit": "℃",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "env.rh",
+          "label": "相对湿度",
+          "unit": "%",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        }
+      ],
+      "forbid": [
+        "dev.link"
+      ]
+    },
+    "meter": {
+      "send": [
+        {
+          "key": "el.Ua",
+          "label": "A 相电压",
+          "unit": "V",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Ub",
+          "label": "B 相电压",
+          "unit": "V",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Uc",
+          "label": "C 相电压",
+          "unit": "V",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Ia",
+          "label": "A 相电流",
+          "unit": "A",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Ib",
+          "label": "B 相电流",
+          "unit": "A",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Ic",
+          "label": "C 相电流",
+          "unit": "A",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.P",
+          "label": "有功功率",
+          "unit": "kW",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Q",
+          "label": "无功功率",
+          "unit": "kvar",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.S",
+          "label": "视在功率",
+          "unit": "kVA",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.PF",
+          "label": "功率因数",
+          "unit": "",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.F",
+          "label": "频率",
+          "unit": "Hz",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.Ep",
+          "label": "正向有功电能",
+          "unit": "kWh",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.THDu",
+          "label": "电压总谐波畸变率",
+          "unit": "%",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.THDi",
+          "label": "电流总谐波畸变率",
+          "unit": "%",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "el.hu.A",
+          "label": "A 相电压谐波",
+          "unit": "%",
+          "periodMs": 60000,
+          "optional": false,
+          "type": "json"
+        },
+        {
+          "key": "el.hu.B",
+          "label": "B 相电压谐波",
+          "unit": "%",
+          "periodMs": 60000,
+          "optional": false,
+          "type": "json"
+        },
+        {
+          "key": "el.hu.C",
+          "label": "C 相电压谐波",
+          "unit": "%",
+          "periodMs": 60000,
+          "optional": false,
+          "type": "json"
+        },
+        {
+          "key": "el.hi.A",
+          "label": "A 相电流谐波",
+          "unit": "%",
+          "periodMs": 60000,
+          "optional": false,
+          "type": "json"
+        },
+        {
+          "key": "el.hi.B",
+          "label": "B 相电流谐波",
+          "unit": "%",
+          "periodMs": 60000,
+          "optional": false,
+          "type": "json"
+        },
+        {
+          "key": "el.hi.C",
+          "label": "C 相电流谐波",
+          "unit": "%",
+          "periodMs": 60000,
+          "optional": false,
+          "type": "json"
+        }
+      ],
+      "forbid": [
+        "el.load_pct",
+        "dev.link"
+      ]
+    },
+    "pm": {
+      "send": [
+        {
+          "key": "pm.0.3",
+          "label": "≥0.3 μm 颗粒数",
+          "unit": "个/L",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "pm.0.5",
+          "label": "≥0.5 μm 颗粒数",
+          "unit": "个/L",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "pm.1.0",
+          "label": "≥1.0 μm 颗粒数",
+          "unit": "个/L",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "pm.2.5",
+          "label": "PM2.5",
+          "unit": "μg/m³",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "pm.5.0",
+          "label": "PM5.0",
+          "unit": "μg/m³",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "key": "pm.10",
+          "label": "PM10",
+          "unit": "μg/m³",
+          "periodMs": 10000,
+          "optional": false,
+          "type": "number"
+        }
+      ],
+      "forbid": [
+        "dev.link"
+      ]
+    }
+  },
+  "common": {
+    "send": [
+      {
+        "key": "dev.last_ok",
+        "label": "最近成功时刻",
+        "unit": "ms",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.last_try",
+        "label": "最近尝试时刻",
+        "unit": "ms",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.fails",
+        "label": "连续失败次数",
+        "unit": "次",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.err",
+        "label": "错误码",
+        "unit": "",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "string"
+      },
+      {
+        "key": "q",
+        "label": "质量码",
+        "unit": "",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "json"
+      },
+      {
+        "key": "dev.req_24h",
+        "label": "近 24 h 请求",
+        "unit": "次",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.timeout_24h",
+        "label": "近 24 h 超时",
+        "unit": "次",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.crc_24h",
+        "label": "近 24 h 校验错",
+        "unit": "次",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.retry_24h",
+        "label": "近 24 h 重试",
+        "unit": "次",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      },
+      {
+        "key": "dev.rate_24h",
+        "label": "近 24 h 成功率",
+        "unit": "%",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number"
+      }
+    ],
+    "forbid": [
+      "dev.comm",
+      "dev.link"
+    ]
+  },
+  "retired": {
+    "sam": [
+      "ir.t_max",
+      "ir.t_avg",
+      "ir.rise",
+      "ir.box.*",
+      "ir.z*"
+    ]
+  },
+  "eg": {
+    "send": [
+      {
+        "key": "sw.cb",
+        "label": "断路器分合位",
+        "unit": "",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number",
+        "enum": [
+          1,
+          0,
+          -1
+        ]
+      },
+      {
+        "key": "sw.es",
+        "label": "接地刀位置",
+        "unit": "",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number",
+        "enum": [
+          1,
+          0,
+          -1
+        ]
+      },
+      {
+        "key": "eg.power",
+        "label": "装置电源",
+        "unit": "",
+        "periodMs": 60000,
+        "optional": true,
+        "type": "number",
+        "enum": [
+          0,
+          1
+        ]
+      }
+    ],
+    "forbid": [
+      "eg.state",
+      "eg.lat",
+      "eg.loss",
+      "eg.clk_offset",
+      "eg.cpu",
+      "eg.mem",
+      "eg.ssd",
+      "eg.ssd_health",
+      "eg.temp",
+      "eg.volt",
+      "eg.up_kbps",
+      "eg.uptime_s",
+      "eg.agent_up_s"
+    ]
+  }
+}
