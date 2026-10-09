@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LSA-9600EG 转换程序自检工具 —— 按《EG 内部 MQTT 格式 v0.3》逐条检查总线上的消息。
+"""LSA-9600EG 转换程序自检工具 —— 按《EG 内部 MQTT 格式 v0.4》逐条检查总线上的消息。
 
 只用 Python 标准库（3.8+），自带一个最小的 MQTT 5 客户端，不用 pip 装任何东西。
 
@@ -856,7 +856,7 @@ def run_clear(args):
 def main():
     global SPEC
     SPEC = load_spec()
-    ap = argparse.ArgumentParser(description='LSA-9600EG 转换程序自检（EG 内部 MQTT 格式 v0.3）')
+    ap = argparse.ArgumentParser(description='LSA-9600EG 转换程序自检（EG 内部 MQTT 格式 v0.4）')
     ap.add_argument('cmd', nargs='?', default='check', choices=['check', 'demo', 'clear-retained'], help='check 检查（缺省）/ demo 发示范数据 / clear-retained 清 retain')
     ap.add_argument('--host', default=os.environ.get('LSA_BUS_HOST', '127.0.0.1'))
     ap.add_argument('--port', type=int, default=int(os.environ.get('LSA_BUS_PORT', '1884')))
