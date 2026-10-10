@@ -375,7 +375,7 @@ if [ ! -f .env ] && [ "$FORCE" != 1 ]; then
   fi
 fi
 if [ ! -f .env ]; then
-  pg="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  pg="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # sete-ok：head 在最前、定长读，不会 SIGPIPE
   cat > .env <<EOF
 # 这台 EG 的本地配置（install.sh 生成）—— 含本地库口令，不外传
 EG_PG_PASSWORD=$pg

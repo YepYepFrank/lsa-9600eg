@@ -12,7 +12,7 @@ SAMPLE="${1:-60}"
 TBW="${2:-${EG_SSD_TBW:-300}}"
 
 src="$(df --output=source . | tail -1)"
-dev="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)"
+dev="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)"   # sete-ok：本脚本没有 set -e
 [ -n "$dev" ] || dev="$(basename "$src")"
 echo "部署目录 $(pwd) 在 $src（盘 $dev）"
 df -h --output=size,used,avail,pcent . | sed 's/^/  /'

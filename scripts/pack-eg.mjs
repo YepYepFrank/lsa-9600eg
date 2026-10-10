@@ -36,6 +36,8 @@ const STAGE = resolve(ROOT, 'dist', '.stage-app')
 const THIRD = ['postgres:16', 'thingsboard/tb-node:4.2.2.5', 'eclipse-mosquitto:2.1.2', 'thingsboard/tb-gateway:3.8.5', 'bluenviron/mediamtx:1.21.1']
 
 console.log(`EG 发布件 ${VERSION}\n`)
+// 0.13 验收后：安装脚本里 set -e 下会悄悄退出的写法，有一条就不出包
+run('bash', ['scripts/sete-lint.sh'])
 for (const p of ['packages/model', 'packages/points']) {
   if (!existsSync(resolve(BACKEND, p, 'package.json'))) throw new Error(`找不到后端库的 ${p}（${BACKEND}；可设 LSA_BACKEND）`)
 }

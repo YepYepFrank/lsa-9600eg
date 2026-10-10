@@ -75,6 +75,8 @@ function placeTree(srcDir, dstDir, skip = () => false) {
 }
 
 // ---------- 输入 ----------
+// 0.13 验收后：setup.sh / stub.sh / install.sh 里 set -e 下会悄悄退出的写法，有一条就不出包
+run('bash', ['scripts/sete-lint.sh'])
 const SP = opt('sp') && resolve(opt('sp'))
 if (!SP) {
   console.error('用法：pnpm bundle -- --sp <子站离线包目录> [--eg <EG 发布件目录>] [--out <目录>]')

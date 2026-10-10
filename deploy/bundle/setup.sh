@@ -47,7 +47,7 @@ die() { echo "错误：$*" >&2; exit 1; }
 ask() { # ask <提示> <缺省>：--yes 或非交互终端直接取缺省
   local ans
   if [ "$YES" = 1 ] || [ ! -t 0 ]; then echo "$2"; return; fi
-  read -r -p "$1 [$2]: " ans </dev/tty
+  read -r -p "$1 [$2]: " ans </dev/tty || ans=''   # Ctrl-D（EOF）当作直接回车取缺省，不悄悄退出
   echo "${ans:-$2}"
 }
 rnd() { head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c "${1:-16}"; }
