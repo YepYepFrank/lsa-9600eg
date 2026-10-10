@@ -65,7 +65,8 @@ setv() {
 [ "$(uname -m)" = x86_64 ] || die "只支持 x86_64（本机 $(uname -m)）"
 
 echo "LSA-9600SP 离线安装 $(cat VERSION)"
-sed -n '2,20p' MANIFEST.txt 2>/dev/null | sed 's/^/  /'
+# set -euo pipefail 下：单独一行的管道、x="$(会失败的管道)"、函数最后一句 [ ] && … 失败都会让脚本悄悄退出 —— 可能失败的都带 || true（0.13 验收后通扫）
+sed -n '2,20p' MANIFEST.txt 2>/dev/null | sed 's/^/  /' || true
 
 say '校验安装文件'
 sha256sum --quiet -c SHA256SUMS || die '文件校验不过（拷贝不完整？重新拷一遍安装文件）'
@@ -118,7 +119,8 @@ SP_CRED="$SP_DEST/初始账号口令.txt"
 sp_new_env() {
   say '生成 docker/.env（首次安装）'
   local guess
-  guess="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+  # 站内网常常没有缺省路由：ip route get 报 Network is unreachable（返回 2），不带 || true 会在这里悄悄退出
+  guess="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)"
   [ -n "$IP" ] || IP="$(ask '本机在站内网的 IP（浏览器、EG 都用它连子站）' "${guess:-}")"
   [[ "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "IP 不对：'$IP'（用 --ip 指定）"
   local pg tenant seed screen
@@ -281,7 +283,7 @@ install_sp() {
   fi
   if [ -n "$ca0" ]; then
     local ca1 k1
-    ca1="$(sha256sum < "$ca" 2>/dev/null | cut -c1-64)"; k1="$(ca_key_sum)"
+    ca1="$(sha256sum < "$ca" 2>/dev/null | cut -c1-64 || true)"; k1="$(ca_key_sum)"
     if [ "$ca1" = "$ca0" ] && [ "$k1" = "$k0" ]; then echo "站内 CA 未变（证书 sha256 ${ca0:0:16}…、私钥 sha256 ${k0:0:16}…），各 EG 的 sp-ca.pem 照常可用"
     else die "站内 CA 在升级中变了（证书 ${ca0:0:16}… → ${ca1:0:16}…，私钥 ${k0:0:16}… → ${k1:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls、docker/tls-ca 换回去再跑 up.sh --prod"; fi
   fi
@@ -308,7 +310,7 @@ install_eg() {
   cp -a docs "$DEST/" 2>/dev/null || true
   if [ -z "$LAN1" ] && ! grep -q '^EG_LAN1=.' "$DEST/.env" 2>/dev/null; then
     echo '网口：'
-    ip -br -4 addr | grep -v '^lo ' | sed 's/^/  /'
+    ip -br -4 addr 2>/dev/null | grep -v '^lo ' | sed 's/^/  /' || true
     LAN1="$(ask '哪个是接摄像机的 LAN1（管理页对它关闭；直接回车跳过）' '')"
   fi
   if [ -n "$EGCFG" ]; then

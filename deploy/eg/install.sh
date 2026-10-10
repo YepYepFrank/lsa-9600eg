@@ -63,7 +63,8 @@ fw_status() {
   local nic; nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
   if [ "$(id -u)" != 0 ]; then echo "LAN1 防火墙：要 sudo 才看得到"; return 0; fi
   if nft list table inet lsa_eg >/dev/null 2>&1; then
-    local n; n="$(nft list chain inet lsa_eg input 2>/dev/null | grep -oE 'counter packets [0-9]+' | awk '{s+=$3} END {print s+0}')"
+    # 没有计数行时 grep 返回 1，pipefail 下赋值会让脚本退出：|| true（0.13 验收后通扫 set -e 写法）
+    local n; n="$(nft list chain inet lsa_eg input 2>/dev/null | grep -oE 'counter packets [0-9]+' | awk '{s+=$3} END {print s+0}' || true)"
     echo "LAN1 防火墙：开（$(nft list chain inet lsa_eg input | grep -oE 'iifname "[^"]+"' | head -1 | cut -d'"' -f2) 只出不进；开机自起 $(systemctl is-enabled lsa-eg-fw.service 2>/dev/null)；已丢弃入站 $n 个包）"
   elif [ -n "$nic" ]; then
     echo "LAN1 防火墙：没开（摄像机网 $nic 上 22 / 80 / 8554 都能连；sudo bash install.sh --fw-on 打开）"
