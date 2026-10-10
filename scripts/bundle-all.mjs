@@ -102,6 +102,10 @@ if (!readdirSync(join(EG, 'debs')).some(f => f.endsWith('.deb'))) throw new Erro
 const spVer = readFileSync(join(SP, 'lsa9600sp-backend/docker/.env.prod.example'), 'utf8').match(/^APP_VERSION=(.+)$/m)[1].trim()
 const egVer = readFileSync(join(EG, 'VERSION'), 'utf8').trim()
 const spRev = (() => {
+  // 离线包自己记的提交（0.12 起 src/lsa9600sp-backend-<提交>.tar.gz）优先：打包工作区的 HEAD 可能已经往前走了
+  // （0.13 r3 就把 0.13 的包标成了工作区当时的 0.14 提交）
+  const src = existsSync(join(SP, 'src')) ? readdirSync(join(SP, 'src')).map(f => f.match(/^lsa9600sp-backend-([0-9a-f]{7,})\.tar\.gz$/)?.[1]).find(Boolean) : null
+  if (src) return src
   try {
     return out('git', ['rev-parse', '--short', 'HEAD'], { cwd: SP })
   } catch {
