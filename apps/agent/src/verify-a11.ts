@@ -93,6 +93,16 @@ async function main() {
   const id2 = randomUUID()
   const { j: same } = await put({ ...good(ver), requestId: id2 })
   check(same.status === 'APPLIED' && same.changed === 0 && same.requestId === id2, `同一份重发（新 requestId）→ ${same.status}、改了 ${same.changed}、带回新的 requestId`)
+  // 子站回滚到 0.12（下发不带 meters 的老格式）时变比回到 eg.yaml 初值、不保留上一次的（协调会话 2026-10-10 定的口径）。
+  // 带 CT 40 的那份只停留一两秒（这期间上送的电流 / 功率 × 40），紧接着就发不带的
+  if (em.length) {
+    const m0 = em[0]!
+    const { j: w } = await put({ ...good(`${ver}-m40`), meters: { [code]: { [m0]: { ct: 40 } } }, requestId: randomUUID() })
+    const { j: wo } = await put({ ...good(`${ver}-m0`), requestId: randomUUID() })
+    check(w.status === 'APPLIED' && w.meters?.[m0]?.ct === 40, `带 meters（${m0} CT 40）→ ${w.status}，回显 CT ${w.meters?.[m0]?.ct}`)
+    check(wo.status === 'APPLIED' && wo.meters?.[m0]?.ct === ok.meters?.[m0]?.ct && wo.meters?.[m0]?.pt === ok.meters?.[m0]?.pt,
+      `再发不带 meters 的（老子站格式）→ ${wo.status}，回显 CT ${wo.meters?.[m0]?.ct} / PT ${wo.meters?.[m0]?.pt}：回到 eg.yaml 初值（CT ${ok.meters?.[m0]?.ct}），不保留 40`)
+  }
 
   if (EXT && process.env['EXT_PASSWORD']) {
     console.log('\n4. 还原：子站重发它自己的配置')
