@@ -23,7 +23,7 @@
  *   - q / dev.comm / dev.link 变了立即发，dev.last_ok / fails / err 随每分钟那一次 */
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
-import type { EgConfig } from '@lsa-eg/config'
+import { CAM_MAX_REGIONS, camRegionLimit, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { CapsService } from '../caps/caps.service.js'
@@ -62,19 +62,20 @@ interface DeviceWatch {
   period: number
 }
 
-/** 派生量 → 它的输入 */
+/** 派生量 → 它的输入（摄像机测温区按上限 R1–R12 全列，没配的区不看护、自然不影响结果；I18） */
+const REGION_MAXES = Array.from({ length: CAM_MAX_REGIONS }, (_, i) => `ir.R${i + 1}.max`)
 const DERIVED: Record<string, string[]> = {
   'el.load_pct': ['el.Ia', 'el.Ib', 'el.Ic'],
   // 摄像机区域测温（G4 摄像机测温约定 §3、§5）：温升还依赖 env.t（跨设备，由 DeriveService 另标），这里只跟随本设备的输入
-  'ir.R1.rise': ['ir.R1.max'],
-  'ir.R2.rise': ['ir.R2.max'],
-  'ir.R3.rise': ['ir.R3.max'],
-  'ir.dmax': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
+  ...Object.fromEntries(REGION_MAXES.map((k, i) => [`ir.R${i + 1}.rise`, [k]])),
+  'ir.dmax': REGION_MAXES,
   // §8.6 补充的汇总量（本地规则按它们判）
-  'ir.rise': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
-  'ir.rmax': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
-  'ir.hot': ['ir.R1.max', 'ir.R2.max', 'ir.R3.max'],
+  'ir.rise': REGION_MAXES,
+  'ir.rmax': REGION_MAXES,
+  'ir.hot': REGION_MAXES,
 }
+/** 点目录展开用的测温区：本柜配了几个就展开几个（都按矩形区；point 区的 .pt 来过才看护，同 R1–R3 时的做法） */
+const camRegions = (attrs: Record<string, unknown>) => Object.fromEntries(Array.from({ length: camRegionLimit(attrs) }, (_, i) => [`R${i + 1}`, 'region' as const]))
 const EVAL_MS = 2_000
 const REPUBLISH_MS = 60_000
 
@@ -93,7 +94,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     for (const d of cfg.devices) {
       if (d.kind === 'eg') continue
       const keys = new Map<string, Watch>()
-      for (const p of pointsOf(d.kind, cfg.cabinet.group, true)) {
+      for (const p of pointsOf(d.kind, cfg.cabinet.group, d.kind === 'camera' ? camRegions(d.attrs) : true)) {
         // I6（0.4）：按点目录的期望周期（局放 us.* / tev.* / uhf.* 是 3 s，装置 3 s 才刷新一次），没写的按 fast / slow 档
         const ms = expectedPeriodMs(p)
         // 事件型（弧光脉冲）不按周期看护；派生量跟随输入，不单独看护

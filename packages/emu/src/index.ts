@@ -23,7 +23,7 @@
  * 摄像机的 cam.* 由 eg-video 报，这里不再替摄像机发（它不是同事程序管的传感器）。 */
 import { createServer } from 'node:http'
 import mqtt from 'mqtt'
-import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { camRegionLimit, BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { attributesOf, PERIOD, planCabinets, telemetryOf, type CabPlan, type Ctx, type Period, type Scenario } from '@lsa/points'
 import { capDefaults, type CabinetSpec, type SubDeviceSpec } from '@lsa/model'
 import { CameraSim, type RegionDef } from './camera.js'
@@ -80,6 +80,7 @@ async function main() {
     cab.rooms.length,
     process.env['EMU_CAM_RTSP'] ?? 'rtsp://admin:lsa-cam@camera:8554',
     process.env['EMU_CAM_API'] ?? 'http://127.0.0.1:19998',
+    camRegionLimit(cfg.devices.find(d => d.kind === 'camera')?.attrs),
   )
   const dead = new Set<string>()
   /** /emu/cam/down：到这个时刻之前 /emu/cam/state 直接断连接 */

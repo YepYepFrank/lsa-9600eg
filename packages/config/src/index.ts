@@ -248,6 +248,17 @@ export function stationToken(cfg: Pick<EgFile, 'station' | 'eg'>): string {
   return cfg.station.token || cfg.eg.token
 }
 
+/** 摄像机测温区上限（I18，与后端 @lsa/points 的 MAX_REGIONS / DEFAULT_REGION_COUNT 一致） */
+export const CAM_MAX_REGIONS = 12
+export const CAM_DEFAULT_REGIONS = 3
+/** 这面柜配了几个测温区：eg.yaml 里 CAM 设备属性 regions 下有几个 R<n> 就是几（子站 model.yaml 给），没有按 3，夹到 1–12
+ *  （2026-10-10 与后端商定，eg.yaml 不加字段） */
+export function camRegionLimit(attrs: Record<string, unknown> | undefined): number {
+  const regions = attrs?.['regions']
+  const n = regions && typeof regions === 'object' ? Object.keys(regions).filter(k => /^R\d{1,2}$/.test(k)).length : 0
+  return Math.min(CAM_MAX_REGIONS, Math.max(1, n || CAM_DEFAULT_REGIONS))
+}
+
 function merge<T>(base: T, over: unknown): T {
   if (!isObj(base) || !isObj(over)) return (over === undefined ? structuredClone(base) : over) as T
   const out: Record<string, unknown> = structuredClone(base) as Record<string, unknown>

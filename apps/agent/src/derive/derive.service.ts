@@ -20,7 +20,7 @@
  *     ir.hot = 温升最高的区域号 1–3（没有温升时取最高温最高的区域），告警明细带它，子站据此显示是哪个区域。
  *   都与 ir.R<n>.max 同一时间戳。 */
 import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common'
-import type { EgConfig } from '@lsa-eg/config'
+import { camRegionLimit, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { QualityService } from '../quality/quality.service.js'
@@ -51,7 +51,8 @@ export class DeriveService implements OnModuleInit {
       if (d.kind !== 'camera') continue
       const regions = (d.attrs['regions'] ?? {}) as Record<string, { env?: string | null } | undefined>
       const m = new Map<number, string | null>()
-      for (const n of [1, 2, 3]) {
+      // 本柜配了几个测温区（eg.yaml CAM 属性 regions.R<n> 的个数，1–12，缺省 3；I18）
+      for (let n = 1; n <= camRegionLimit(d.attrs); n++) {
         const r = regions[`R${n}`]
         if (r && 'env' in r && (r.env === '' || r.env === null)) {
           m.set(n, null)
@@ -103,8 +104,10 @@ export class DeriveService implements OnModuleInit {
     const envMap = this.envOf.get(dev)!
     const tol = this.cfg.local.camera.riseToleranceS * 1000
     for (const e of entries) {
-      const maxes = [1, 2, 3].map(n => ({ n, v: num(e.values[`ir.R${n}.max`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
-      const pts = [1, 2, 3].map(n => ({ n, v: num(e.values[`ir.R${n}.pt`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
+      // 区号取遥测里实际有的（I18 起 1–12 个；与后端 camDerive 同一口径）
+      const ids = [...new Set(Object.keys(e.values).map(k => /^ir\.R(\d{1,2})\.(?:max|pt)$/.exec(k)?.[1]).filter((x): x is string => !!x).map(Number))].sort((a, b) => a - b)
+      const maxes = ids.map(n => ({ n, v: num(e.values[`ir.R${n}.max`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
+      const pts = ids.map(n => ({ n, v: num(e.values[`ir.R${n}.pt`]) })).filter((x): x is { n: number; v: number } => x.v !== null)
       if (!maxes.length && !pts.length) continue
       const out: Record<string, number> = {}
       const rises: { n: number; v: number }[] = []

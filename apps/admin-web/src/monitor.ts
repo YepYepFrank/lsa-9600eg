@@ -18,7 +18,8 @@ export interface Region {
   name: string
   label: string
   type: 'point' | 'line' | 'region' | 'polygon'
-  coords: Record<string, number>
+  /** 坐标原样照摄像机：point {x,y}、line {startX,startY,endX,endY}、region {x,y,width,height}、polygon {points:[{x,y}…]} */
+  coords: Record<string, number> & { points?: { x: number; y: number }[] }
   frame: { w: number; h: number }
 }
 export interface AlarmRow {
@@ -144,10 +145,16 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
       m.error = (e as Error).message
     }
   }
+  /** 本柜的测温区号（非 point 区；eg-video 报来的区域，没报来时按 R1–R3） */
+  function regionIds(): string[] {
+    const ids = m.regions.filter(r => r.type !== 'point').map(r => r.id)
+    return ids.length ? ids : ['R1', 'R2', 'R3']
+  }
   async function loadHist() {
     if (tab.value === 'overview') {
       await Promise.all([
-        hist(cam.value, ['ir.R1.max', 'ir.R2.max', 'ir.R3.max', 'ir.rmax', 'ir.rise']),
+        // 测温区按 eg-video 报来的区域（本柜配了几个就几个，1–12；I18），还没报来时按 R1–R3
+        hist(cam.value, [...regionIds().map(id => `ir.${id}.max`), 'ir.rmax', 'ir.rise']),
         ...sams.value.map(s => hist(s, ['env.t', 'env.rh', 'us.amp', 'us.cnt'])),
         ...sams.value.map(s => hist(s, ['uv.pulse'], 'NONE')),
         hist(pm.value, ['pm.1.0', 'pm.2.5', 'pm.10']),

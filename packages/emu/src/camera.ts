@@ -1,7 +1,7 @@
 /* 仿真摄像机（G4 摄像机测温约定 §6）：本柜那台双目摄像机的「区域测温 + 四路视频 + 原生报警」。
  *
  *   视频：RTSP 测试源（deploy/dev 的 camera 容器，mediamtx + ffmpeg 按需出画面）；断流经它的 API 把那一路的 runOnDemand 摘掉。
- *   测温：R1–R3 与全画面，用与子站模拟器同一个发生器（@lsa/points 的 camTemps，温升随负荷与日波动变；
+ *   测温：R1–R<n> 与全画面（n = eg.yaml CAM 属性 regions.R<n> 的个数，1–12，缺省 3；I18），用与子站模拟器同一个发生器（@lsa/points 的 camTemps，温升随负荷与日波动变；
  *        AH03 的「6 小时内爬升到越限」照样出现在热点隔室对应的区域上）。
  *   eg-video 的 sim 驱动每 2 s 取 GET /emu/cam/state。
  */
@@ -29,12 +29,24 @@ export interface CamState {
 
 const FRAME = { ...SHARED_FRAME }
 const DEFAULT_REGIONS: RegionDef[] = structuredClone(SHARED_REGIONS)
+/** n 个缺省测温区：不超过 3 个用共用的那三个（与子站模拟器一致），更多的按 4 × 3 网格铺满热像画面（I18，最多 12） */
+export function defaultRegions(n: number): RegionDef[] {
+  if (n <= DEFAULT_REGIONS.length) return structuredClone(DEFAULT_REGIONS.slice(0, Math.max(1, n)))
+  const cw = FRAME.w / 4
+  const ch = FRAME.h / 3
+  return Array.from({ length: Math.min(12, n) }, (_, i) => ({
+    name: `R${i + 1}`,
+    type: 'region' as const,
+    enabled: true,
+    coords: { x: Math.round((i % 4) * cw + 10), y: Math.round(Math.floor(i / 4) * ch + 10), width: Math.round(cw - 20), height: Math.round(ch - 20) },
+  }))
+}
 const PATHS = { visible: 'visible', visibleSub: 'visible-sub', thermal: 'thermal', thermalSub: 'thermal-sub' } as const
 type Ch = keyof typeof PATHS
 
 
 export class CameraSim {
-  private regions: RegionDef[] = structuredClone(DEFAULT_REGIONS)
+  private regions: RegionDef[]
   private readonly off = new Set<Ch>()
   private dead = false
   private alarm = '{}'
@@ -48,7 +60,11 @@ export class CameraSim {
     private readonly rtspBase: string,
     /** 测试源 mediamtx 的 API（断流用），如 http://127.0.0.1:19998 */
     private readonly api: string,
-  ) {}
+    /** 本柜配了几个测温区（eg.yaml CAM 属性 regions.R<n> 的个数，缺省 3） */
+    regionCount = 3,
+  ) {
+    this.regions = defaultRegions(regionCount)
+  }
 
   state(ts = Date.now()): CamState {
     const streams = Object.fromEntries(

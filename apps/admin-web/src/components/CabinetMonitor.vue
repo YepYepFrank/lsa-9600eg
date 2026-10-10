@@ -51,6 +51,12 @@ const hotId = computed(() => {
   const h = text(cam.value, 'ir.hot')
   return h === null ? null : /^\d+$/.test(h) ? `R${h}` : h
 })
+const REGION_COLORS = ['var(--s3)', 'var(--s4)', 'var(--s5)', 'var(--s6)', 'var(--s8)', 'var(--s1)', 'var(--s7)', 'var(--s2)']
+/** 本柜的测温区号（非 point 区）；eg-video 还没报来时按 R1–R3 */
+const regionIdsOf = (rs: { id: string; type: string }[]) => {
+  const ids = rs.filter(r => r.type !== 'point').map(r => r.id)
+  return ids.length ? ids : ['R1', 'R2', 'R3']
+}
 /** 测温区的部位名（eg.yaml CAM regions.R<n>.label，经 eg-video 的区域定义带来） */
 const regionLabel = (id: string) => m.regions.find(r => r.id === id)?.label ?? ''
 const rois = computed(() =>
@@ -64,9 +70,9 @@ const rois = computed(() =>
       const name = r.label
       if (r.type === 'point') return { label, name, temp, hot: r.id === hotId.value, x: c.x! / W - 0.015, y: c.y! / H - 0.02, w: 0.03, h: 0.04, point: true }
       if (c.width !== undefined) return { label, name, temp, hot: r.id === hotId.value, x: c.x! / W, y: c.y! / H, w: c.width / W, h: c.height! / H }
-      // 线 / 多边形：画外接框
-      const xs = Object.entries(c).filter(([k]) => /^x\d*$/.test(k)).map(([, v]) => v)
-      const ys = Object.entries(c).filter(([k]) => /^y\d*$/.test(k)).map(([, v]) => v)
+      // 线 / 多边形：画外接框（线是 startX / endX，多边形是 points[]）
+      const xs = [...Object.entries(c).filter(([k, v]) => /x$/i.test(k) && typeof v === 'number').map(([, v]) => v as number), ...(c.points ?? []).map(p => p.x)]
+      const ys = [...Object.entries(c).filter(([k, v]) => /y$/i.test(k) && typeof v === 'number').map(([, v]) => v as number), ...(c.points ?? []).map(p => p.y)]
       if (!xs.length || !ys.length) return null
       return { label, name, temp, hot: r.id === hotId.value, x: Math.min(...xs) / W, y: Math.min(...ys) / H, w: (Math.max(...xs) - Math.min(...xs)) / W || 0.01, h: (Math.max(...ys) - Math.min(...ys)) / H || 0.01 }
     })
@@ -83,7 +89,8 @@ const envT = computed(() => num(samSel.value || null, 'env.t'))
 const envRh = computed(() => num(samSel.value || null, 'env.rh'))
 const dew = computed(() => dewPoint(envT.value, envRh.value))
 const realClimate = computed<UnitSeries[]>(() => [
-  ...['R1', 'R2', 'R3'].map((r, i) => ({ name: `测温区 ${r}`, unit: '℃', color: ['var(--s3)', 'var(--s4)', 'var(--s5)'][i], data: series(cam.value, `ir.${r}.max`) })).filter(s => s.data.length),
+  // 测温区按本柜实际配的（1–12，I18）；颜色轮着用
+  ...regionIdsOf(m.regions).map((r, i) => ({ name: `测温区 ${r}`, unit: '℃', color: REGION_COLORS[i % REGION_COLORS.length]!, data: series(cam.value, `ir.${r}.max`) })).filter(s => s.data.length),
   { name: '环境温度', unit: '℃', color: 'var(--s2)', data: series(samSel.value || null, 'env.t') },
   { name: '相对湿度', unit: '%', color: 'var(--s1)', data: series(samSel.value || null, 'env.rh') },
 ])

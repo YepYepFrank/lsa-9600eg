@@ -148,7 +148,7 @@ const STREAMS = [
   <div>
     <div class="page-h">
       <h1>视频与测温</h1>
-      <span class="t2">每面柜一台双目摄像机（可见光 + 热像），接 EG 的 LAN1。视频不经 TB：eg-video 按需从摄像机拉，子站再按需从 EG 拉；区域测温 R1–R3 每 2 s 上报，温升由 EG 算。</span>
+      <span class="t2">每面柜一台双目摄像机（可见光 + 热像），接 EG 的 LAN1。视频不经 TB：eg-video 按需从摄像机拉，子站再按需从 EG 拉；区域测温（本柜配了几个就几个，R1–R12）每 2 s 上报，温升由 EG 算。</span>
     </div>
 
     <div v-if="vs && !vs.available" class="panel">
@@ -206,7 +206,7 @@ const STREAMS = [
     </div>
 
     <div class="panel">
-      <div class="panel-h">区域测温<span class="t2">R1–R3 与部位的对应只来自配置，不等同 A / B / C 相；温升 = 区域最高温 − 本柜柜内空气温度</span></div>
+      <div class="panel-h">区域测温<span class="t2">本柜配了几个测温区就有几个（R1–R12，缺省 3）；区域与部位的对应只来自配置，不等同 A / B / C 相；温升 = 区域最高温 − 本柜柜内空气温度</span></div>
       <div class="panel-b">
         <div v-if="vs?.measure && !vs.measure.supported" class="t2">当前驱动（{{ vs.driver?.driver }}）只有视频、不测温。</div>
         <template v-else>

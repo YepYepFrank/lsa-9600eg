@@ -9,7 +9,9 @@
  *     报警 / 区域接口出错 → partial（温度照常）、测温接口出错 → API、超时 → TIMEOUT、连不上 → CONNECT、抓拍 base64 → JPEG、回的不是 JPEG → DATA。 */
 import { createHash, randomBytes } from 'node:crypto'
 import { Restv1Driver, RESTV1_FRAME, alarmText, coordsOf } from '../../../apps/video/src/restv1.js'
-import type { DriverError } from '../../../apps/video/src/driver-base.js'
+import { numberRegions, type DriverError, type RegionDef } from '../../../apps/video/src/driver-base.js'
+import { camRegionLimit } from '@lsa-eg/config'
+import { defaultRegions } from './camera.js'
 import { startRestv1Mock, type MockRegion } from './restv1-mock.js'
 
 let pass = 0
@@ -157,7 +159,23 @@ async function main() {
   check(eJ?.code === 'DATA', `回的不是 JPEG → DATA：${eJ?.message}`)
   mock.state.fail = {}
 
-  console.log('\n9. 摄像机连不上')
+  console.log('\n9. 测温区数（I18：本柜配了几个就几个，1–12，缺省 3）')
+  const regs = (n: number) => ({ regions: Object.fromEntries(Array.from({ length: n }, (_, i) => [`R${i + 1}`, { label: `区 ${i + 1}` }])) })
+  check(camRegionLimit(undefined) === 3 && camRegionLimit({}) === 3 && camRegionLimit(regs(1)) === 1 && camRegionLimit(regs(5)) === 5 && camRegionLimit(regs(12)) === 12 && camRegionLimit(regs(15)) === 12,
+    `区数 = eg.yaml CAM 属性 regions.R<n> 的个数：没有 → 3、1 → 1、5 → 5、12 → 12、15 → 12（夹到 1–12）`)
+  const grid = defaultRegions(12)
+  const inFrame = grid.every(r => { const c = r.coords as { x: number; y: number; width: number; height: number }; return c.x >= 0 && c.y >= 0 && c.x + c.width <= 640 && c.y + c.height <= 480 })
+  check(grid.length === 12 && grid[11]!.name === 'R12' && inFrame && defaultRegions(3).length === 3 && defaultRegions(2).length === 2, `仿真器缺省区域：12 个按 4 × 3 网格铺在 640×480 里，≤ 3 个用共用的那几个`)
+  const unnamed: RegionDef[] = Array.from({ length: 6 }, (_, i) => ({ name: `区域${i}`, type: 'region', coords: {}, enabled: i !== 1 }))
+  check(numberRegions(unnamed, 3).map(x => `${x.id}=${x.def.name}`).join(' ') === 'R1=区域0 R2=区域2 R3=区域3', `没按 R<n> 起名：取前 limit 个启用的按顺序编（停用的跳过）`)
+  const named12 = defaultRegions(12) as RegionDef[]
+  check(numberRegions(named12, 3).map(x => x.id).join(',') === 'R1,R2,R3' && numberRegions(named12, 12).length === 12, `按名对应：摄像机上有 R1–R12，limit 3 只取 R1–R3，limit 12 全取`)
+  const m12 = await startRestv1Mock({ user: USER, password: PASS, regions: defaultRegions(12).map(r => ({ regionEnable: true, regionName: '', regionType: 'region' as const, region: r.coords })) })
+  const t12 = (await drv({ base: m12.url }).measure())
+  check(t12.regions.length === 12 && t12.temps!.regions.length === 12 && t12.regions[11]!.name === 'R12' && t12.temps!.regions[11]!.avg !== undefined, `真机 12 个区（ID 0–11、没起名）→ R1–R12，各区都有温度和 avg / center`)
+  await m12.close()
+
+  console.log('\n10. 摄像机连不上')
   const url = mock.url
   await mock.close()
   const eC = await thrown(drv({ base: url }).measure())

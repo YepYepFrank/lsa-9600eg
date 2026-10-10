@@ -1,7 +1,8 @@
 /* eg-video 的主体（G4：docs/G4视频接口约定.md §8.5、docs/G4摄像机测温约定.md §8.6）：
  *   1. 四路流地址：local.yaml 手填的优先，其余由摄像机驱动给（sim / ONVIF），启动时与每 10 分钟刷新；
  *   2. 生成本机 mediamtx 配置（两级按需拉的 EG 这一级）；
- *   3. 测温（驱动能测温时）：按驱动的轮询间隔取（sim 2 s、真机 restv1 每秒），全画面与 R1–R3 的温度每 2 s 发到本机总线
+ *   3. 测温（驱动能测温时）：按驱动的轮询间隔取（sim 2 s、真机 restv1 每秒），全画面与 R1–R<n> 的温度每 2 s 发到本机总线
+ *      （n = 这面柜配了几个测温区：eg.yaml CAM 属性 regions.R<n> 的个数，1–12，缺省 3；I18）
  *      lsa/CAM-<柜号>/telemetry，区域配置作为 CAM 的客户端属性 ir.regions / ir.regionsVer，原生报警 cam.alarm 变化时与每 60 s 发；
  *      测温接口的状态 cam.rest：OK / DEGRADED（温度正常、区域配置或报警状态读不到）/ FAIL（连不上、令牌失效、测温接口报错）。
  *      出错时 eg-video 自己马上发 q（受影响的量标 invalid）与 dev.err（错误类别），不等 agent 按周期判陈旧（EG 0.5）；
@@ -11,10 +12,10 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { Logger } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
-import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { BUS_TOPIC, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { fetchAuth } from './digest.js'
 import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
-import type { DriverError } from './driver-base.js'
+import { numberRegions, type DriverError } from './driver-base.js'
 import { CHANNELS, maskUri, mtxPaths, pathOf, renderMtxConfig, withCreds, type MtxPath } from './mtx.js'
 import type { ChannelKey } from './onvif.js'
 import { describe, type Probe } from './rtsp.js'
@@ -210,12 +211,9 @@ export class VideoService {
     }
   }
 
-  /** 摄像机上的区域 → R1–R3：区域名就是 R1–R3 的按名对应，否则取前 3 个启用区域按顺序编（约定 §2） */
+  /** 摄像机上的区域 → R1–R<n>（约定 §2，driver-base.ts 的 numberRegions） */
   private numbered(m: Measurement): { id: string; def: Measurement['regions'][number] }[] {
-    const enabled = m.regions.filter(r => r.enabled)
-    const byName = enabled.filter(r => /^R[1-3]$/.test(r.name))
-    if (byName.length) return byName.map(r => ({ id: r.name, def: r }))
-    return enabled.slice(0, 3).map((r, i) => ({ id: `R${i + 1}`, def: r }))
+    return numberRegions(m.regions, camRegionLimit(this.cfg.devices.find(d => d.kind === 'camera')?.attrs))
   }
 
   private takeRegions(m: Measurement): void {

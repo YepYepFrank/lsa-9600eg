@@ -8,7 +8,7 @@
  *   每 30 s 判一次：变了马上报，连上本机总线 / 子站时报，另外每小时重报一次。子站没下发能力就不报。 */
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
-import type { EgConfig } from '@lsa-eg/config'
+import { camRegionLimit, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { QualityService } from '../quality/quality.service.js'
@@ -38,7 +38,8 @@ export class CapsActualService implements OnModuleInit, OnModuleDestroy {
     for (const d of cfg.devices) {
       if (d.kind === 'eg') continue
       const m = new Map<string, number>()
-      for (const p of pointsOf(d.kind, cfg.cabinet.group, true)) {
+      // 摄像机按本柜配了几个测温区展开（I18，1–12，缺省 3）
+      for (const p of pointsOf(d.kind, cfg.cabinet.group, d.kind === 'camera' ? Object.fromEntries(Array.from({ length: camRegionLimit(d.attrs) }, (_, i) => [`R${i + 1}`, 'region' as const])) : true)) {
         const ms = expectedPeriodMs(p)
         if (ms !== null) m.set(p.key, ms)
       }
