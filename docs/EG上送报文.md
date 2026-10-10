@@ -79,9 +79,11 @@
 | PM / PM2 | `el.hu.*` `el.hi.*` | **串**（JSON 数组：各次谐波含有率 %，30 个） | 同事程序 | 电压 / 电流谐波（pending）。《EG 内部 MQTT 格式》同 |
 | PM6 | `pm.0.3` `pm.0.5` `pm.1.0` `pm.2.5` `pm.5.0` `pm.10` | 数 | 同事程序 | 六路颗粒物（production 下 unsupported，整台不送） |
 | CAM | `ir.max` `ir.min` `ir.max_x` `ir.max_y` | 数，℃ / 像素 | eg-video | 全画面 |
-| CAM | `ir.R<n>.max` `.min` `.max_x` `.max_y` | 数 | eg-video | 测温区 n |
+| CAM | `ir.avg` `ir.center` | 数，℃ | eg-video | 全画面平均温、中心点温度。**真机驱动 restv1 起才有（清单 I18，未实现）**；取不到不发（optional） |
+| CAM | `ir.R<n>.max` `.min` `.max_x` `.max_y` | 数 | eg-video | 测温区 n（1–12：model.yaml 每柜配了几个 `regions.R<n>` 就是几个，最少 1、最多 12，缺省 3；2026-10-10 与后端商定，未实现前仍是 R1–R3） |
+| CAM | `ir.R<n>.avg` `.center` | 数，℃ | eg-video | 测温区 n 的平均温、中心点温度（point 类型没有）。同上，restv1 起才有；不进告警、不进北向 |
 | CAM | `ir.R<n>.rise` | 数 ℃ | **EG 派生**：ir.R<n>.max − regions.R<n>.env 指定 SAM 的 env.t（env 字段不存在时取第一台 SAM；env 为 "" / null 时不出值、q 标 invalid，0.3.3 起；两者源时间差 ≤ 15 s 才出值，可为负；出不来时 q 标它） | 区域温升 |
-| CAM | `ir.rmax` `ir.rise` `ir.dmax` `ir.hot` | 数 | **EG 派生** | 各区最高温的最大值、各区温升的最大值、各区最高温的极差、温升最高的区号 1–3；与 ir.R<n>.max 同一时间戳 |
+| CAM | `ir.rmax` `ir.rise` `ir.dmax` `ir.hot` | 数 | **EG 派生** | 各区最高温的最大值、各区温升的最大值、各区最高温的极差、温升最高的区号（现 1–3，扩区后 1–12）；与 ir.R<n>.max 同一时间戳 |
 | CAM | `cam.online` | 数 0–4 | eg-video | 四路里通的路数（每 60 s DESCRIBE 一次） |
 | CAM | `cam.fps` `cam.bitrate` | 数 | eg-video | |
 | CAM | `cam.vis` `cam.ir` | 串 OK / DEGRADED / FAIL | eg-video | 可见光、热像各自的主子码流：都通 / 通一路 / 都不通（阶段 A §13） |
