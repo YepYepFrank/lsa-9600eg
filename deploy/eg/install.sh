@@ -60,7 +60,7 @@ done
 FW_NFT=/etc/lsa-eg/lan1-fw.nft
 FW_UNIT=/etc/systemd/system/lsa-eg-fw.service
 fw_status() {
-  local nic; nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2-)"
+  local nic; nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
   if [ "$(id -u)" != 0 ]; then echo "LAN1 防火墙：要 sudo 才看得到"; return 0; fi
   if nft list table inet lsa_eg >/dev/null 2>&1; then
     local n; n="$(nft list chain inet lsa_eg input 2>/dev/null | grep -oE 'counter packets [0-9]+' | awk '{s+=$3} END {print s+0}')"
@@ -229,7 +229,7 @@ if [ "$MODE" = 'wd-on' ]; then
   env_set EG_WATCHDOG on; wd_apply; exit 0
 fi
 if [ "$MODE" = 'fw-on' ]; then
-  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2-)"
+  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
   [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
   env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
 fi
@@ -241,9 +241,10 @@ DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES
 # ---------- 转换程序（I11）：镜像在、串口在才启用 conv 服务 ----------
 conv_setup() {
   local img='' ser
-  [ -f CONV_IMAGE.txt ] && img="$(grep -v '^#' CONV_IMAGE.txt | head -1 | tr -d '[:space:]')"
+  # grep 没匹配时返回 1：set -e + pipefail 下赋值语句会让整个 install.sh 悄悄退出（0.4.0 在 0.13 验收里踩到：.env 里还没有 EG_CONV_SERIAL）—— 都加 || true
+  [ -f CONV_IMAGE.txt ] && img="$(grep -v '^#' CONV_IMAGE.txt | head -1 | tr -d '[:space:]' || true)"
   [ -n "$CONV_SERIAL" ] && env_set EG_CONV_SERIAL "$CONV_SERIAL"
-  ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2-)"; ser="${ser:-/dev/ttyS1}"
+  ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
   local off=''
   if [ -z "$img" ]; then off='发布件里没有转换程序镜像（按同事自己的方式部署，连 127.0.0.1:1884 就行）'
   elif grep -q '^EG_CONV=off' .env 2>/dev/null; then off='已关（--conv-off；打开：sudo bash install.sh --conv-on）'
@@ -474,9 +475,11 @@ $RUN video node --import @swc-node/register/esm-register src/render.ts
 $DC up -d --remove-orphans
 # eg.yaml / sp-ca.pem 换过（改设备清单 §5b、换令牌、换证书）：compose 不看挂载文件的内容，镜像没变时容器不会重建，
 # agent / video 还拿着旧配置（agentBootId 也不变，子站据它判断「重新部署过」）—— 跟上次装好时比，变了就重启这三个
-cfg_sum="$(cat config/eg.yaml config/sp-ca.pem 2>/dev/null | sha256sum | cut -c1-64)"
+# 没有 sp-ca.pem（开发用明文 MQTT）时 cat 返回 1，set -e + pipefail 下会悄悄退出：分开拼、缺的跳过
+cfg_sum="$( { cat config/eg.yaml; cat config/sp-ca.pem 2>/dev/null || true; } | sha256sum | cut -c1-64)"
 # 升级时 .installed 已挪成 .previous（上面第 2 步），就跟 .previous 里记的比 —— 不然每次升级都误报「变了」（0.11 验收发现）
-last_sum="$(cat .installed/config.sha256 2>/dev/null || cat .previous/config.sha256 2>/dev/null)"
+# 新装、或从不记这个哈希的老版本升级时两个都没有：|| true，否则 set -e 下会悄悄退出（0.3.4 起的回归，0.13 验收里查出）
+last_sum="$(cat .installed/config.sha256 2>/dev/null || cat .previous/config.sha256 2>/dev/null || true)"
 if [ "$last_sum" != "$cfg_sum" ]; then
   echo "config/eg.yaml（或 sp-ca.pem）与上次装好时不同：重启 agent / video / gateway，读新配置"
   $DC restart agent video gateway >/dev/null
