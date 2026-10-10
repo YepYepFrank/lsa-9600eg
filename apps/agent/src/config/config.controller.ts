@@ -1,10 +1,10 @@
 /* 配置查看与本地配置修改（开发计划 §6.2 配置归属）：
  *   eg.yaml（子站下发）只读看，访问令牌打码；
- *   local.yaml 能在页面上改的只有：对时服务器、上行网口、摄像机（地址、账号、各路 RTSP）。
+ *   local.yaml 能在页面上改的只有：对时服务器、上行网口、摄像机（驱动、地址、账号、各路 RTSP）。
  *   总线 / 本地 TB 地址、容器名、管理页端口改错了本地页自己就打不开或失联，不给页面改，要改到 EG 上改文件。 */
 import { Body, Controller, Get, Inject, Put } from '@nestjs/common'
 import { Type } from 'class-transformer'
-import { IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator'
+import { IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator'
 import { saveLocal, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
@@ -20,6 +20,10 @@ class RtspDto {
   @IsOptional() @IsString() @MaxLength(512) thermalSub?: string
 }
 class CameraDto {
+  /** 驱动（EG 0.5）：现场真机选 restv1；sim 只在样机 / 实验台用 */
+  @IsOptional() @IsIn(['restv1', 'onvif', 'rtsp', 'sim']) driver?: 'restv1' | 'onvif' | 'rtsp' | 'sim'
+  /** restv1 驱动的摄像机地址 http://主机[:端口] */
+  @IsOptional() @IsString() @MaxLength(255) restv1?: string
   @IsOptional() @IsString() @MaxLength(512) onvif?: string
   @IsOptional() @IsString() @MaxLength(64) user?: string
   /** 不传 = 不改（页面上不回显口令） */
@@ -81,6 +85,8 @@ export class ConfigController {
     set('上行网口', l.net.uplink, b.uplinkIface?.trim(), v => (l.net.uplink = v))
     if (b.camera) {
       const cam = b.camera
+      set('摄像机驱动', l.camera.driver, cam.driver, v => (l.camera.driver = v))
+      set('摄像机 restv1 地址', l.camera.restv1, cam.restv1?.trim(), v => (l.camera.restv1 = v))
       set('摄像机 ONVIF 地址', l.camera.onvif, cam.onvif?.trim(), v => (l.camera.onvif = v))
       set('摄像机账号', l.camera.user, cam.user?.trim(), v => (l.camera.user = v))
       if (cam.password !== undefined && cam.password !== '') set('摄像机口令', l.camera.password, cam.password, v => (l.camera.password = v))

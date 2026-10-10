@@ -1,7 +1,7 @@
 {
   "name": "lsa9600eg",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.5.0",
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "engines": {
@@ -29,6 +29,7 @@
     "i3:verify": "pnpm -F @lsa-eg/agent verify:i3",
     "i4:verify": "pnpm -F @lsa-eg/agent verify:i4",
     "g4:verify": "pnpm -F @lsa-eg/agent verify:g4",
+    "restv1:verify": "pnpm -F @lsa-eg/emu verify:restv1",
     "g5:verify": "pnpm -F @lsa-eg/agent verify:g5",
     "pack:eg": "node scripts/pack-eg.mjs",
     "bundle": "node scripts/bundle-all.mjs",

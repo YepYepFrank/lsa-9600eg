@@ -27,7 +27,9 @@ interface VideoStatus {
   mediamtx?: { rtspPort: number; readFrom: string[]; error: string | null; updatedAt: number | null }
   channels?: Channel[]
   metrics?: Record<string, number>
-  measure?: { supported: boolean; ok: boolean; error: string | null; at: number | null; temps: Record<string, number>; regions: Region[]; regionsVer: string; alarm: string | null }
+  measure?: { supported: boolean; ok: boolean; error: string | null; code?: string | null; partial?: { what: string; error: string }[]; rest?: 'OK' | 'DEGRADED' | 'FAIL' | null; pollMs?: number; at: number | null; temps: Record<string, number>; regions: Region[]; regionsVer: string; alarm: string | null }
+  /** 驱动细节（restv1：地址、令牌剩余、登录次数、固件版本、区域数、最近的错误；不含口令） */
+  driverDetail?: { base?: string; token?: { validS: number } | null; logins?: number; firmware?: string | null; regions?: number | null; lastError?: string | null } | null
 }
 
 const vs = ref<VideoStatus | null>(null)
@@ -100,7 +102,14 @@ async function grab(ch: 'visible' | 'ir') {
 }
 
 // 接入配置
-const form = reactive({ onvif: '', user: '', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } })
+const form = reactive({ driver: 'rtsp', restv1: '', onvif: '', user: '', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } })
+const DRIVERS = [
+  ['restv1', 'restv1（真机：测温、报警、抓拍、流地址）'],
+  ['onvif', 'onvif（只有视频，ONVIF 查流地址）'],
+  ['rtsp', 'rtsp（只有视频，只用手填地址）'],
+  ['sim', 'sim（仿真摄像机，只在样机 / 实验台用）'],
+] as const
+const REST_TEXT: Record<string, string> = { OK: '正常', DEGRADED: '部分出错（温度照常）', FAIL: '失败' }
 const saving = ref(false)
 const hasPw = computed(() => store.config?.local.camera.password === '已设置')
 watch(
@@ -108,14 +117,14 @@ watch(
   c => {
     if (!c) return
     const k = c.local.camera
-    Object.assign(form, { onvif: k.onvif, user: k.user, password: '', rtsp: { ...k.rtsp } })
+    Object.assign(form, { driver: k.driver, restv1: k.restv1 ?? '', onvif: k.onvif, user: k.user, password: '', rtsp: { ...k.rtsp } })
   },
   { immediate: true },
 )
 async function save() {
   saving.value = true
   try {
-    const body = { camera: { onvif: form.onvif, user: form.user, rtsp: form.rtsp, ...(form.password ? { password: form.password } : {}) } }
+    const body = { camera: { driver: form.driver, restv1: form.restv1, onvif: form.onvif, user: form.user, rtsp: form.rtsp, ...(form.password ? { password: form.password } : {}) } }
     const r = await api<{ changed: string[] }>('config/local', { method: 'PUT', body })
     ElMessage.success(r.changed.length ? `已保存：${r.changed.join('、')}（eg-video 已按新地址刷新）` : '没有改动')
     form.password = ''
@@ -201,7 +210,14 @@ const STREAMS = [
       <div class="panel-b">
         <div v-if="vs?.measure && !vs.measure.supported" class="t2">当前驱动（{{ vs.driver?.driver }}）只有视频、不测温。</div>
         <template v-else>
-          <el-alert v-if="vs?.measure && !vs.measure.ok && vs.measure.error" type="error" :closable="false" show-icon :title="`测温失败：${vs.measure.error}`" style="margin-bottom: 10px" />
+          <el-alert v-if="vs?.measure && !vs.measure.ok && vs.measure.error" type="error" :closable="false" show-icon :title="`测温失败（${vs.measure.code ?? '—'}）：${vs.measure.error}`" description="cam.rest = FAIL；温度量与 cam.alarm 已标质量码「无效」并上送子站。" style="margin-bottom: 10px" />
+          <el-alert v-else-if="vs?.measure?.partial?.length" type="warning" :closable="false" show-icon :title="`测温接口部分出错：${vs.measure.partial.map(p => p.error).join('；')}`" description="cam.rest = DEGRADED；温度照常，区域配置 / 报警状态用的是上一次读到的。" style="margin-bottom: 10px" />
+          <div v-if="vs?.measure?.rest || vs?.driverDetail" class="note" style="margin: 0 0 8px">
+            测温接口 cam.rest：<b>{{ vs?.measure?.rest ? REST_TEXT[vs.measure.rest] : '—' }}</b>；每 {{ ((vs?.measure?.pollMs ?? 2000) / 1000).toFixed(0) }} s 取一次、每 2 s 上报
+            <template v-if="vs?.driverDetail">
+              ；摄像机 {{ vs.driverDetail.base }}，固件 {{ vs.driverDetail.firmware || '—' }}，令牌{{ vs.driverDetail.token ? ` 还有 ${vs.driverDetail.token.validS} s` : '没有' }}（登录 {{ vs.driverDetail.logins ?? 0 }} 次），区域 {{ vs.driverDetail.regions ?? '—' }} 个
+            </template>
+          </div>
           <el-table :data="regionRows" size="small" empty-text="摄像机没有配置测温区域">
             <el-table-column label="区域" width="70"><template #default="{ row }"><b>{{ row.id }}</b></template></el-table-column>
             <el-table-column prop="label" label="部位" min-width="120" />
@@ -223,7 +239,7 @@ const STREAMS = [
     </div>
 
     <div class="panel">
-      <div class="panel-h">抓帧<span class="t2">摄像机有抓图地址就用它，否则经本机 mediamtx 拉主码流解一帧（会顺带拉起、10 s 后自动断）</span></div>
+      <div class="panel-h">抓帧<span class="t2">驱动能抓（restv1）或摄像机有抓图地址就用它，否则经本机 mediamtx 拉主码流解一帧（会顺带拉起、10 s 后自动断）</span></div>
       <div class="panel-b">
         <el-button size="small" :loading="snap.busy" @click="grab('visible')">可见光</el-button>
         <el-button size="small" :loading="snap.busy" @click="grab('ir')">热像</el-button>
@@ -238,12 +254,18 @@ const STREAMS = [
       <div class="panel-h">摄像机接入<span class="t2">只看账号不能改；保存后 eg-video 马上按新地址刷新</span></div>
       <div class="panel-b">
         <el-form label-width="120px" size="small" :disabled="!canMaint" style="max-width: 760px" @submit.prevent="save">
-          <el-form-item label="驱动"><span>{{ store.config?.local.camera.driver ?? '—' }}</span><span class="note" style="margin-left: 8px">部署时定（local.yaml camera.driver）；sim = 仿真摄像机</span></el-form-item>
-          <el-form-item label="ONVIF 地址"><el-input v-model="form.onvif" placeholder="http://192.168.10.64/onvif/device_service" /></el-form-item>
+          <el-form-item label="驱动">
+            <el-select v-model="form.driver" style="width: 330px">
+              <el-option v-for="[v, t] in DRIVERS" :key="v" :value="v" :label="t" />
+            </el-select>
+            <span class="note" style="margin-left: 8px">现场真机选 restv1（部署手册 §5a）</span>
+          </el-form-item>
+          <el-form-item v-if="form.driver === 'restv1'" label="摄像机地址"><el-input v-model="form.restv1" placeholder="http://192.168.10.64（只到主机[:端口]）" style="width: 330px" /></el-form-item>
+          <el-form-item v-if="form.driver === 'onvif' || form.onvif" label="ONVIF 地址"><el-input v-model="form.onvif" placeholder="http://192.168.10.64/onvif/device_service" /></el-form-item>
           <el-form-item label="账号"><el-input v-model="form.user" style="width: 200px" /></el-form-item>
           <el-form-item label="口令"><el-input v-model="form.password" type="password" show-password :placeholder="hasPw ? '已设置（不回显），留空 = 不改' : '未设置'" style="width: 260px" /></el-form-item>
           <el-form-item v-for="[k, label] in STREAMS" :key="k" :label="label">
-            <el-input v-model="form.rtsp[k]" placeholder="留空 = 由驱动给（ONVIF / 仿真）；手填的优先" />
+            <el-input v-model="form.rtsp[k]" placeholder="留空 = 由驱动给（restv1 / ONVIF / 仿真）；手填的优先" />
           </el-form-item>
           <el-form-item><el-button type="primary" native-type="submit" :loading="saving">保存</el-button></el-form-item>
         </el-form>

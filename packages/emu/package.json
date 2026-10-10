@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:restv1": "tsx src/verify-restv1.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",

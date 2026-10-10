@@ -30,7 +30,7 @@ const props = withDefaults(defineProps<{
   image?: string | null
   /** EG：按摄像机坐标画的测温区（热像画面上的 0–1 比例坐标），温度取不到为 null；hot = 最热的（标黄） */
   rois?: { label: string; name?: string; temp: number | null; hot: boolean; x: number; y: number; w: number; h: number; point?: boolean }[]
-  /** 测温区坐标所在画面的宽高比（如 640 / 512） */
+  /** 测温区坐标所在画面的宽高比（如 640 / 480，热像主码流，厂家 CAM5） */
   frameAspect?: number
 }>(), { hot: 1, thermalCap: '红外热成像', mode: 'side', palette: 'iron', phases: 3, envT: null, streams: null, image: null, frameAspect: 1.25 })
 

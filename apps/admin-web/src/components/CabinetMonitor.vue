@@ -57,7 +57,7 @@ const rois = computed(() =>
   m.regions
     .map(r => {
       const W = r.frame?.w || 640
-      const H = r.frame?.h || 512
+      const H = r.frame?.h || 480
       const c = r.coords
       const temp = r.type === 'point' ? num(cam.value, `ir.${r.id}.pt`) : num(cam.value, `ir.${r.id}.max`)
       const label = r.id

@@ -106,7 +106,10 @@ async function main() {
     const keys = ['ir.max', 'ir.min', 'ir.max_x', 'ir.max_y', ...[1, 2, 3].flatMap(i => ['max', 'min', 'max_x', 'max_y'].map(k => `ir.R${i}.${k}`))]
     const miss = keys.filter(k => !(k in cam.telemetry))
     check(!miss.length, '全画面与 R1–R3 的 max / min / 坐标都有', miss.join(' '))
-    check(!Object.keys(cam.telemetry).some(k => /avg|center/.test(k)), '不报 avg / center')
+    // avg / center（厂家 CAM2 澄清后补报，EG 0.5）：仿真器随点目录 v1.3 起有、之前没有 —— 要么全画面与 R1–R3 都有、要么都没有
+    const hasAvg = 'ir.avg' in cam.telemetry
+    const avgOk = hasAvg === 'ir.center' in cam.telemetry && [1, 2, 3].every(i => `ir.R${i}.avg` in cam.telemetry === hasAvg && `ir.R${i}.center` in cam.telemetry === hasAvg)
+    check(avgOk, `avg / center ${hasAvg ? '全画面与 R1–R3 都有' : '都没有（点目录 v1.3 之前的仿真器）'}`)
     // 区域配置看本地 TB 的客户端属性（agent 重启后内存里的属性要等 eg-video 下次重报）
     const tbA = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()
     const rv = await tbA.attr(camDev, 'CLIENT_SCOPE', 'ir.regions')

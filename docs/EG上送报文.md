@@ -87,7 +87,8 @@
 | CAM | `cam.online` | 数 0–4 | eg-video | 四路里通的路数（每 60 s DESCRIBE 一次） |
 | CAM | `cam.fps` `cam.bitrate` | 数 | eg-video | |
 | CAM | `cam.vis` `cam.ir` | 串 OK / DEGRADED / FAIL | eg-video | 可见光、热像各自的主子码流：都通 / 通一路 / 都不通（阶段 A §13） |
-| CAM | `cam.rest` | 串 OK / FAIL | eg-video | 测温接口；纯 RTSP 驱动不发 |
+| CAM | `cam.rest` | 串 OK / DEGRADED / FAIL | eg-video | 测温接口；DEGRADED（EG 0.5 起）= 温度正常、区域配置或报警状态读不到；纯 RTSP 驱动不发 |
+| CAM | `q` `dev.err` | 串 | eg-video | EG 0.5 起测温出错时 eg-video 自己马上发（温度量与 cam.alarm 标 invalid、dev.err 给错误类别 CONNECT / TIMEOUT / AUTH / TOKEN / API / DATA / ALARM），agent 合并后照常发 q（G4 测温约定 §2） |
 | CAM | `cam.alarm` | 串 | eg-video | 摄像机原生报警状态，原样 |
 | 任意 | `q` | 串（JSON 对象：`{"<key>":"invalid"|"stale"|"warmup"|"calibrating"}`） | 同事程序报 + EG 看护合并 | 质量码，只列出有问题的 key；全好时为 `"{}"`。合并优先级 invalid > calibrating / warmup > stale |
 | 任意 | `dev.comm` | 串 ONLINE / DEGRADED / OFFLINE / UNKNOWN | 同事程序报，没报时 EG 兜底 | §13 下挂设备通信状态 |

@@ -117,10 +117,13 @@ export interface LocalFile {
   }
   camera: {
     /** 摄像机驱动（G4 摄像机测温约定 §1）：sim = 仿真摄像机（流、区域、温度、报警都从仿真器取）；
-     *  onvif / rtsp = 只有视频（ONVIF 查流地址 / 只用手填），不测温。真机驱动归 H */
-    driver: 'sim' | 'onvif' | 'rtsp'
+     *  onvif / rtsp = 只有视频（ONVIF 查流地址 / 只用手填），不测温；
+     *  restv1 = 真机（厂家 restv1 V1.8：token、流地址、区域测温、报警轮询、抓拍；EG 0.5，清单 I18），现场改成它 */
+    driver: 'sim' | 'onvif' | 'rtsp' | 'restv1'
     /** sim 驱动的仿真器地址，如 http://127.0.0.1:3190/emu/cam */
     api: string
+    /** restv1 驱动的摄像机地址，如 http://192.168.10.64（只到主机[:端口]，/restv1/… 由驱动拼）；账号口令用下面的 user / password */
+    restv1: string
     /** 区域温升 ir.R<n>.rise = ir.R<n>.max − env.t：两个输入的源时间差超过这么多秒就不出值（缺省 15 = 1.5 × env.t 周期，约定 §3） */
     riseToleranceS: number
     /** ONVIF 设备服务地址，如 http://192.168.10.64/onvif/device_service */
@@ -167,7 +170,7 @@ export const LOCAL_DEFAULTS: LocalFile = {
     fullWater: 95,
     autoUpload: { severities: ['CRITICAL'], types: ['弧光异常', '过温'] },
   },
-  camera: { driver: 'rtsp', api: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
+  camera: { driver: 'rtsp', api: '', restv1: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 
 /** 仓库根（有 pnpm-workspace.yaml 的那层）；装到 EG 上后没有就返回 null */

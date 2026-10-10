@@ -1,10 +1,12 @@
 /* eg-video 的主体（G4：docs/G4视频接口约定.md §8.5、docs/G4摄像机测温约定.md §8.6）：
  *   1. 四路流地址：local.yaml 手填的优先，其余由摄像机驱动给（sim / ONVIF），启动时与每 10 分钟刷新；
  *   2. 生成本机 mediamtx 配置（两级按需拉的 EG 这一级）；
- *   3. 测温（驱动能测温时）：每 2 s 取全画面与 R1–R3 的温度发到本机总线 lsa/CAM-<柜号>/telemetry，
- *      区域配置作为 CAM 的客户端属性 ir.regions / ir.regionsVer，原生报警 cam.alarm 变化时与每 60 s 发；
+ *   3. 测温（驱动能测温时）：按驱动的轮询间隔取（sim 2 s、真机 restv1 每秒），全画面与 R1–R3 的温度每 2 s 发到本机总线
+ *      lsa/CAM-<柜号>/telemetry，区域配置作为 CAM 的客户端属性 ir.regions / ir.regionsVer，原生报警 cam.alarm 变化时与每 60 s 发；
+ *      测温接口的状态 cam.rest：OK / DEGRADED（温度正常、区域配置或报警状态读不到）/ FAIL（连不上、令牌失效、测温接口报错）。
+ *      出错时 eg-video 自己马上发 q（受影响的量标 invalid）与 dev.err（错误类别），不等 agent 按周期判陈旧（EG 0.5）；
  *   4. 每 60 s 对各路做 RTSP DESCRIBE，发 cam.online / cam.fps / cam.bitrate；
- *   5. 抓帧：驱动给了抓图地址就用，否则经本机 mediamtx 拉主码流用 ffmpeg 解一帧（G5 告警抓拍用）。 */
+ *   5. 抓帧：驱动自己能抓（restv1 的 channel/snap）就用，其次驱动给的抓图地址，否则经本机 mediamtx 拉主码流用 ffmpeg 解一帧（G5 告警抓拍用）。 */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { Logger } from '@nestjs/common'
@@ -12,13 +14,17 @@ import mqtt, { type MqttClient } from 'mqtt'
 import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { fetchAuth } from './digest.js'
 import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
+import type { DriverError } from './driver-base.js'
 import { CHANNELS, maskUri, mtxPaths, pathOf, renderMtxConfig, withCreds, type MtxPath } from './mtx.js'
 import type { ChannelKey } from './onvif.js'
 import { describe, type Probe } from './rtsp.js'
 import { Recording } from './recording.js'
 
 const PROBE_MS = 60_000
+/** 测温量的上报间隔（点目录 fast 档）；驱动可以更快地轮询（restv1 每秒），上报仍按这个 */
 const MEASURE_MS = 2_000
+/** 测温失败期间，q / dev.err / cam.rest 隔这么久重发一次（agent 只认「新鲜」的来源值） */
+const FAIL_REPEAT_MS = 10_000
 const STREAMS_MS = 10 * 60_000
 const ALARM_REPEAT_MS = 60_000
 /** 区域配置属性没变也隔这么久重报一次（总线另一端重启了的 agent、本地页要看得到） */
@@ -47,7 +53,11 @@ export class VideoService {
   private lastBytes: { at: number; bytes: number } | null = null
   private metrics: Record<string, number | string> = {}
   // 测温
-  private measure: { ok: boolean; error: string | null; at: number | null; count: number } = { ok: false, error: null, at: null, count: 0 }
+  private measure: { ok: boolean; error: string | null; code: string | null; partial: { what: string; error: string }[]; at: number | null; count: number } = { ok: false, error: null, code: null, partial: [], at: null, count: 0 }
+  private measuredAt = 0
+  private tempsPubAt = 0
+  /** 上一次发出去的来源质量码与错误类别（JSON），失败期间定时重发 */
+  private srcQ: { q: string; err: string; at: number } = { q: '{}', err: '', at: 0 }
   private lastTemps: Record<string, number> = {}
   private regions: RegionMeta[] = []
   private regionsVer = ''
@@ -76,7 +86,8 @@ export class VideoService {
     await this.refresh()
     this.timers.push(setInterval(() => void this.refresh(), STREAMS_MS))
     this.timers.push(setInterval(() => void this.probe(), PROBE_MS))
-    this.timers.push(setInterval(() => void this.measureOnce(), MEASURE_MS))
+    // 每秒看一次，到了驱动的轮询间隔才真测（sim 2 s、restv1 1 s；本地页换了驱动也跟着变）
+    this.timers.push(setInterval(() => void this.measureOnce(), 1000))
     this.timers.push(setInterval(() => void this.recording.trimForDisk().catch(e => this.log.warn(`按水位清录像失败：${(e as Error).message}`)), 5 * 60_000))
     setTimeout(() => void this.probe(), 3000)
   }
@@ -130,24 +141,55 @@ export class VideoService {
   }
 
   /** 测温一次（驱动能测温时）：温度发遥测，区域配置变了发属性，原生报警变了（或满 60 s）发 cam.alarm */
-  /** 测温接口的状态（cam.rest）：驱动不测温（纯 RTSP）为 undefined、不发；还没测过也不发 */
-  private restState(): 'OK' | 'FAIL' | undefined {
+  /** 测温接口的状态（cam.rest）：驱动不测温（纯 RTSP）为 undefined、不发；还没测过也不发。
+   *  FAIL = 整次测温失败；DEGRADED = 温度正常、但区域配置或报警状态读不到（用的是上一次的） */
+  private restState(): 'OK' | 'DEGRADED' | 'FAIL' | undefined {
     if (!this.driver?.measure) return undefined
-    return this.measure.error ? 'FAIL' : this.measure.ok ? 'OK' : undefined
+    return this.measure.error ? 'FAIL' : this.measure.ok ? (this.measure.partial.length ? 'DEGRADED' : 'OK') : undefined
+  }
+
+  /** 来源质量码：测温失败时把平时发的温度量与 cam.alarm 标 invalid，报警状态读不到时只标 cam.alarm；dev.err 给错误类别。
+   *  变了马上发，失败期间每 10 s 重发（agent 只认新鲜的来源值），恢复后发 q = {}、dev.err = '' */
+  private publishSourceQ(force = false): void {
+    const q: Record<string, string> = {}
+    let err = ''
+    if (this.measure.error) {
+      for (const k of Object.keys(this.lastTemps)) q[k] = 'invalid'
+      q['cam.alarm'] = 'invalid'
+      err = this.measure.code ?? 'API'
+    } else if (this.measure.partial.some(p => p.what === 'alarm')) {
+      q['cam.alarm'] = 'invalid'
+      err = 'ALARM'
+    }
+    const qs = JSON.stringify(q)
+    const now = Date.now()
+    const failing = qs !== '{}'
+    if (!force && qs === this.srcQ.q && err === this.srcQ.err && !(failing && now - this.srcQ.at >= FAIL_REPEAT_MS)) return
+    this.pub({ q: qs, 'dev.err': err, ...(this.restState() ? { 'cam.rest': this.restState()! } : {}) }, now)
+    this.srcQ = { q: qs, err, at: now }
   }
 
   async measureOnce(): Promise<void> {
     if (this.measuring || !this.driver?.measure) return
+    if (Date.now() - this.measuredAt < (this.driver.pollMs ?? MEASURE_MS) - 100) return
     this.measuring = true
+    this.measuredAt = Date.now()
     const restBefore = this.restState()
     try {
       const m = await this.driver.measure()
-      this.measure = { ok: true, error: null, at: Date.now(), count: this.measure.count + 1 }
+      const partial = m.partial ?? []
+      const partialText = partial.map(p => p.error).join('；')
+      if (partialText && partialText !== this.measure.partial.map(p => p.error).join('；')) this.log.warn(`测温接口部分出错（温度照常）：${partialText}`)
+      if (!partialText && this.measure.partial.length) this.log.log('测温接口恢复正常')
+      if (this.measure.error) this.log.log('测温恢复')
+      this.measure = { ok: true, error: null, code: null, partial, at: Date.now(), count: this.measure.count + 1 }
       this.takeRegions(m)
-      if (m.temps) {
+      // 驱动轮询得比上报快（restv1 每秒）：温度量仍按 2 s 发（点目录 fast 档），取最新一次
+      if (m.temps && Date.now() - this.tempsPubAt >= MEASURE_MS - 100) {
         const values = this.telemetryOf(m)
         this.lastTemps = values
         this.pub(values, m.temps.ts)
+        this.tempsPubAt = Date.now()
       }
       const now = Date.now()
       if (!this.alarm || this.alarm.state !== m.alarm || now - this.alarm.sentAt >= ALARM_REPEAT_MS) {
@@ -156,13 +198,15 @@ export class VideoService {
         this.alarm = { state: m.alarm, sentAt: now }
       }
     } catch (e) {
-      if (this.measure.ok || this.measure.error !== (e as Error).message) this.log.warn(`测温失败：${(e as Error).message}`)
-      this.measure = { ...this.measure, ok: false, error: (e as Error).message }
+      const code = (e as DriverError).code ?? 'API'
+      if (this.measure.ok || this.measure.error !== (e as Error).message) this.log.warn(`测温失败（${code}）：${(e as Error).message}`)
+      this.measure = { ...this.measure, ok: false, error: (e as Error).message, code, partial: [] }
     } finally {
       this.measuring = false
-      // 测温接口好 / 坏变了：马上发 cam.rest（视频照常，测温量由 agent 的质量码看护标 invalid）
+      // 测温接口好 / 坏变了：马上发 cam.rest（视频照常）；受影响的量马上标质量码，不等 agent 按周期判陈旧
       const rest = this.restState()
       if (rest && rest !== restBefore) this.pub({ 'cam.rest': rest }, Date.now())
+      this.publishSourceQ()
     }
   }
 
@@ -188,10 +232,12 @@ export class VideoService {
     }
   }
 
-  /** 温度 → CAM 的遥测（约定 §2：不报 avg / center；point 区域只报 .pt） */
+  /** 温度 → CAM 的遥测（约定 §2：point 区域只报 .pt；avg / center 驱动给了才报 —— 真机 restv1 有，sim 没有） */
   private telemetryOf(m: Measurement): Record<string, number> {
     const t = m.temps!
     const out: Record<string, number> = { 'ir.max': t.glob.max, 'ir.min': t.glob.min, 'ir.max_x': t.glob.maxX, 'ir.max_y': t.glob.maxY }
+    if (t.glob.avg !== undefined) out['ir.avg'] = t.glob.avg
+    if (t.glob.center !== undefined) out['ir.center'] = t.glob.center
     const byName = new Map(t.regions.map(r => [r.name, r]))
     for (const { id, def } of this.numbered(m)) {
       const r = byName.get(def.name)
@@ -200,7 +246,7 @@ export class VideoService {
         if (r.pt !== undefined) out[`ir.${id}.pt`] = r.pt
         continue
       }
-      for (const [k, v] of [['max', r.max], ['min', r.min], ['max_x', r.maxX], ['max_y', r.maxY]] as const) if (v !== undefined) out[`ir.${id}.${k}`] = v
+      for (const [k, v] of [['max', r.max], ['min', r.min], ['max_x', r.maxX], ['max_y', r.maxY], ['avg', r.avg], ['center', r.center]] as const) if (v !== undefined) out[`ir.${id}.${k}`] = v
     }
     return out
   }
@@ -268,17 +314,25 @@ export class VideoService {
       },
       channels,
       metrics: this.metrics,
-      measure: { ...this.measure, supported: !!this.driver?.measure, temps: this.lastTemps, regions: this.regions, regionsVer: this.regionsVer, alarm: this.alarm?.state ?? null },
+      measure: { ...this.measure, supported: !!this.driver?.measure, rest: this.restState() ?? null, pollMs: this.driver?.pollMs ?? MEASURE_MS, temps: this.lastTemps, regions: this.regions, regionsVer: this.regionsVer, alarm: this.alarm?.state ?? null },
+      driverDetail: this.driver?.detail?.() ?? null,
       bus: { url: this.cfg.conn.bus, connected: !!this.bus?.connected },
     }
   }
 
-  /** 抓一帧（JPEG）：抓图地址优先，否则经本机 mediamtx 拉主码流解一帧 */
+  /** 抓一帧（JPEG）：驱动自己能抓（restv1）优先，其次抓图地址，否则经本机 mediamtx 拉主码流解一帧 */
   async snapshot(ch: 'visible' | 'ir'): Promise<{ jpeg: Buffer; via: 'camera' | 'rtsp'; ts: number }> {
     const key: ChannelKey = ch === 'ir' ? 'thermal' : 'visible'
+    const ts = Date.now()
+    if (this.driver?.snap) {
+      try {
+        return { jpeg: await this.driver.snap(ch), via: 'camera', ts }
+      } catch (e) {
+        this.log.warn(`摄像机抓拍失败（${this.driver.name}）：${(e as Error).message}，改从视频流解一帧`)
+      }
+    }
     const s = this.sources[key]
     if (!s) throw new Error(`${ch === 'ir' ? '热像' : '可见光'}主码流没有地址（驱动没给、也没手填）`)
-    const ts = Date.now()
     if (s.snapshot) {
       try {
         const u = new URL(s.snapshot)
