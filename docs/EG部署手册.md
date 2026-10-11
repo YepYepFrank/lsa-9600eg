@@ -144,9 +144,12 @@
 
 ```bash
 sudo bash LSA-9600SP-<版本>-offline.run --role sp [--ip <站内 IP>]     # 子站：随机口令写 /opt/lsa9600sp/初始账号口令.txt
+sudo bash LSA-9600SP-<版本>-offline.run --role sp --kiosk             # 0.16：子站装好后接着装机柜双屏（安装文件要带 sp/kiosk/）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口>  # EG 第一轮（= 下面 §4 的 install.sh）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --eg-config <目录>   # 子站 provision:eg + pack-eg.sh 之后，带 eg.yaml、sp-ca.pem 起全部
 ```
+
+`--kiosk`（0.16）只用于 `--role sp`：子站装好后调子站的 `scripts/install-kiosk.sh sp/kiosk` 装机柜双屏；安装文件里没有 `sp/kiosk/`（子站离线包打的时候没带 `--with-kiosk`；安装说明与 MANIFEST 里写着「机柜双屏 kiosk：有 / 没有」）时，**装任何东西之前**就报错停下，不会只装一半；双屏装失败时子站本身已装好，修好后重跑 `--role sp --kiosk`（幂等）。不带 `--kiosk` 行为不变。
 
 只支持 x86_64 + **Ubuntu Server 24.04**（子站主机、EG 都是）：EG 0.5.x 起安装文件一开头就查，别的系统（22.04、Debian、麒麟等）直接中文报错退出，子站指向《子站部署手册》§2b、EG 指向本手册 §2a 的改装步骤（以前只在要装离线 Docker 时才查）。不带 `--role` 就交互选；`--extract <目录>` 只解包。重跑更新的安装文件即升级（子站保留 `docker/.env`，EG 保留 `config/`、`.env`）。以下 §4 是 EG 这一段拆开的步骤。
 

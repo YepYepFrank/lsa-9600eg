@@ -7,7 +7,9 @@
 #      不让沙箱 EG 冒充开发机子站上正在跑的柜子；也不给 sp-ca.pem（走「没有证书」那条路）
 #   3. 第二轮：.run --role eg --yes --eg-config → 起全部；查容器（一分钟后没有重启）、agent（maint 登录 /api/status：总线连上、
 #      设备清单）、/api/components（本地 TB、IoT Gateway、总线、视频）
-#   4. 删掉沙箱（--keep 留着，之后 docker rm -f -v egfresh）
+#   4. --kiosk（0.16）的拒绝路径：--role eg --kiosk 要拒绝；安装文件不带 sp/kiosk/ 时 --role sp --kiosk 要在装任何东西之前拒绝（/opt/lsa9600sp 不能出现）。
+#      安装文件带 kiosk 时只验 eg 那条（子站与双屏不在这个沙箱里装）
+#   5. 删掉沙箱（--keep 留着，之后 docker rm -f -v egfresh）
 #
 #   用法（开发机 Git Bash；后端库在 ../lsa-9600sp-backend，开发机子站在跑）：
 #     bash deploy/test/fresh-install.sh <一键安装文件 .run> [柜号，缺省 AH07] [--keep]
@@ -128,6 +130,22 @@ const c=await (await fetch(B+"/api/components",{headers:H})).json();
 for(const x of (Array.isArray(c)?c:c.rows||c.items||[]))console.log("    组件 "+JSON.stringify(x).slice(0,160));
 if(!Array.isArray(c))console.log("    /api/components "+JSON.stringify(c).slice(0,400));
 })().catch(e=>{console.log("    !! "+e.message);process.exit(1)})' || bad 'agent 查不了'
+
+echo; echo "== 5. --kiosk 的拒绝路径（0.16）"
+rc=0; out="$(os bash "/rel/$RUN" --role eg --kiosk --yes 2>&1)" || rc=$?
+[ "$rc" != 0 ] && echo "$out" | grep -q '只用于子站主机' && ok "--role eg --kiosk → 拒绝（rc $rc）：$(echo "$out" | grep '只用于子站主机' | head -1 | sed 's/^错误：//')" || bad "--role eg --kiosk：rc $rc；$(echo "$out" | tail -3)"
+skip=$(awk '/^__LSA_PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$RUNFILE")
+if tail -n +"$skip" "$RUNFILE" | tar -t 2>/dev/null | grep -q '^lsa9600sp-bundle/sp/kiosk/'; then
+  echo "  （安装文件带 sp/kiosk/：--role sp --kiosk 会真装子站与双屏，不在这个沙箱里做）"
+else
+  rc=0; out="$(os bash "/rel/$RUN" --role sp --kiosk --yes 2>&1)" || rc=$?
+  if [ "$rc" != 0 ] && echo "$out" | grep -q '没有机柜双屏组件' && ! os test -e /opt/lsa9600sp; then
+    ok "安装文件不带 kiosk、--role sp --kiosk → 装之前拒绝（rc $rc），/opt/lsa9600sp 没出现"
+    echo "$out" | grep -A1 '没有机柜双屏组件' | sed 's/^/      /'
+  else
+    bad "--role sp --kiosk（不带 kiosk 的安装文件）：rc $rc，/opt/lsa9600sp $(os test -e /opt/lsa9600sp && echo 出现了 || echo 没有)；$(echo "$out" | tail -3)"
+  fi
+fi
 
 echo; [ "$fail" = 0 ] && echo "== 全新安装通过（$RUN）" || echo "== 全新安装有失败项（见上）"
 exit $fail
