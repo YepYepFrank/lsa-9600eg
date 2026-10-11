@@ -167,7 +167,7 @@ writeFileSync(
   join(B, '安装说明.txt'),
   `LSA-9600SP 离线一键安装 ${VERSION}
 
-整个系统就这一个文件，子站主机和各柜 EG 都用它，装的时候选角色。目标机：x86_64，Ubuntu 24.04（其它发行版先自行装好 Docker）。
+整个系统就这一个文件，子站主机和各柜 EG 都用它，装的时候选角色。目标机：x86_64 + Ubuntu Server 24.04（子站主机、EG 都是；别的系统装不了，一开头就会报错，先按部署手册改装）。
 
   子站主机：sudo bash ${NAME}.run --role sp            （本机站内 IP 自动取，或 --ip 指定；口令随机生成，见 /opt/lsa9600sp/初始账号口令.txt）
 ${KIOSK ? `            连机柜双屏一起装：sudo bash ${NAME}.run --role sp --kiosk
