@@ -17,7 +17,8 @@
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
 #   --watchdog-off 关掉并记住，--watchdog-on 重新打开；--status 显示它。本机有硬件看门狗时直接用它、不加载 softdog。
 # 转换程序（I11）：发布件带了它的镜像（CONV_IMAGE.txt）、串口也在时启用 compose 里的 conv 服务；
-#   --conv-serial <设备>（缺省 /dev/ttyS1；样机用 USB 转 485 如 /dev/ttyUSB0，记住）、--conv-off 关掉并记住、--conv-on 重新打开。
+#   --conv-serial <设备>（缺省 /dev/ttyS1；USB 转 485 给 /dev/ttyUSB0 会自动换成 /dev/serial/by-id 的稳定名字记住；路径里不能有「:」「#」空格）、
+#   --conv-off 关掉并记住、--conv-on 重新打开；--status 列出可选串口。
 # 只支持 Ubuntu Server 24.04（离线包 debs/ 按它做）：别的系统在装之前就报错退出（X26A 出厂 22.04 桌面版要先改装，部署手册 §2a）。
 # 装完与 --status 都会列「安全提醒」：初始口令文件还在、lsa-sp 还在、SSH 允许口令登录等（只提醒，不替你改系统配置）。
 #
@@ -50,6 +51,13 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# 串口路径进 .env、再进 compose 的 devices 短写法「宿主机:容器」：带「:」会被拆错，带「#」「空格」会弄坏 .env 的写入 —— 安装时直接拒绝（EG 0.5.1）
+case "$CONV_SERIAL" in
+  *:* | *'#'* | *' '* | *'	'*)
+    echo "--conv-serial 的路径里有「:」「#」或空格：$CONV_SERIAL" >&2
+    echo "  compose 的设备映射会把它拆错。改用 /dev/serial/by-id/ 下不带这些字符的名字，或者直接给 /dev/ttyUSB0（会自动换成 by-id）" >&2
+    exit 2 ;;
+esac
 
 # ---------- LAN1（摄像机网）防火墙：只出不进 ----------
 # --lan1 时装：LAN1 进来的只放已建立 / 相关连接的回包（EG 主动拉摄像机的 RTSP / HTTP 回包），其余一律丢 —— 22、80、8554 都连不上。
@@ -173,12 +181,58 @@ wd_remove() {
   true
 }
 
+# ---------- 串口（转换程序用，EG 0.5.1） ----------
+# 可选的 485 口：真串口 ttyS*（/sys/class/tty 下有 device，且 UART 类型 type 不是 0 —— 没有硬件的 ttyS 也有 device 链接，
+# 只是 type 为 0，Hyper-V 虚拟机上 32 个全是这样）；USB 转 485 列 /dev/serial/by-id 的稳定名字与它现在指向的设备，
+# 没有 by-id 的 ttyUSB / ttyACM 单列并提醒（芯片没有序列号，重启或多插 USB 设备后号可能变）
+serial_list() {
+  local t n ty l d found
+  for t in /sys/class/tty/ttyS*; do
+    [ -e "$t/device" ] || continue
+    ty="$(cat "$t/type" 2>/dev/null || echo 0)"
+    [ "$ty" != 0 ] && echo "  /dev/$(basename "$t")（真串口，UART 类型 $ty）"
+  done
+  for l in /dev/serial/by-id/*; do
+    [ -e "$l" ] && echo "  $l → $(readlink -f "$l")"
+  done
+  for d in /dev/ttyUSB* /dev/ttyACM*; do
+    [ -e "$d" ] || continue
+    found=''
+    for l in /dev/serial/by-id/*; do [ "$(readlink -f "$l" 2>/dev/null || true)" = "$d" ] && found=1; done
+    [ -n "$found" ] || echo "  $d（没有 by-id 名字：芯片没有序列号，重启后设备号可能变，建议换带序列号的模块）"
+  done
+  true
+}
+# ttyUSB / ttyACM 换成指向它的 /dev/serial/by-id 名字（找不到原样返回）
+serial_byid() {
+  local l real
+  real="$(readlink -f "$1" 2>/dev/null || echo "$1")"
+  case "$real" in /dev/ttyUSB* | /dev/ttyACM*) ;; *) echo "$1"; return 0 ;; esac
+  for l in /dev/serial/by-id/*; do
+    [ -e "$l" ] || continue
+    case "$l" in *:* | *'#'* | *' '*) continue ;; esac
+    if [ "$(readlink -f "$l")" = "$real" ]; then echo "$l"; return 0; fi
+  done
+  echo "$1"
+}
+conv_status() {
+  local ser state
+  ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
+  state='没启用'
+  grep -q '^COMPOSE_PROFILES=conv' .env 2>/dev/null && state='启用'
+  grep -q '^EG_CONV=off' .env 2>/dev/null && state='已关（--conv-off）'
+  echo "转换程序：$state；串口 $ser$([ -e "$ser" ] && [ -L "$ser" ] && echo "（→ $(readlink -f "$ser")）")$([ -e "$ser" ] || echo '（不存在）')"
+  echo "可选串口（--conv-serial <设备>）："
+  serial_list
+}
+
 status() {
   $DC ps --format 'table {{.Name}}\t{{.Status}}'
   [ -f .installed/VERSION ] && echo "已装版本：$(cat .installed/VERSION)"
   [ -f .previous/VERSION ] && echo "可回退到：$(cat .previous/VERSION)"
   fw_status
   wd_status
+  conv_status
   true
 }
 # 安全提醒（只提醒，不改系统配置：自动关 SSH 口令登录可能把维护人员锁在外面）
@@ -246,16 +300,31 @@ conv_setup() {
   [ -f CONV_IMAGE.txt ] && img="$(grep -v '^#' CONV_IMAGE.txt | head -1 | tr -d '[:space:]' || true)"
   [ -n "$CONV_SERIAL" ] && env_set EG_CONV_SERIAL "$CONV_SERIAL"
   ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
+  # USB 转 485（ttyUSB / ttyACM）换成 /dev/serial/by-id 的稳定名字记住：ttyUSB 号在重启、多插 USB 设备后可能变（EG 0.5.1）；
+  # Docker 每次起容器时把它解析成当时的实际设备
+  case "$ser" in
+    /dev/ttyUSB* | /dev/ttyACM*)
+      local byid
+      byid="$(serial_byid "$ser")"
+      if [ "$byid" != "$ser" ]; then
+        echo "串口 $ser 改记成稳定路径 $byid（ttyUSB 号在重启、多插 USB 设备后可能变）"
+        ser="$byid"
+        env_set EG_CONV_SERIAL "$ser"
+      elif [ -e "$ser" ]; then
+        echo "!! 提醒：$ser 在 /dev/serial/by-id 下没有对应的名字 —— 芯片没有序列号，重启后设备号可能变，建议换带序列号的模块（部署手册 §2a）" >&2
+      fi ;;
+  esac
   local off=''
   if [ -z "$img" ]; then off='发布件里没有转换程序镜像（按同事自己的方式部署，连 127.0.0.1:1884 就行）'
   elif grep -q '^EG_CONV=off' .env 2>/dev/null; then off='已关（--conv-off；打开：sudo bash install.sh --conv-on）'
   elif ! docker image inspect "$img" >/dev/null 2>&1; then off="!! 发布件说有镜像 $img，但本机没有（导入失败？）"
-  elif [ ! -e "$ser" ]; then off="!! 串口 $ser 不存在：样机没有 485 时用 USB 转 485 —— sudo bash install.sh --conv-serial /dev/ttyUSB0"
+  elif [ ! -e "$ser" ]; then off="!! 串口 $ser 不存在：样机没有 485 时用 USB 转 485 —— sudo bash install.sh --conv-serial /dev/ttyUSB0（可选的见下）"
   fi
   if [ -n "$off" ]; then
     env_set COMPOSE_PROFILES ''
     docker rm -f lsa-eg-conv >/dev/null 2>&1 || true
     echo "转换程序：不起 —— $off"
+    case "$off" in *串口*) echo '可选串口：'; serial_list ;; esac
     return 0
   fi
   env_set EG_CONV_IMAGE "$img"

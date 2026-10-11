@@ -95,7 +95,11 @@
 
 **转换程序**（同事，2026-10-09 答复 B1）：Docker 镜像，Python 3.11 + pymodbus（异步 RTU）+ aiomqtt + aiosqlite + PyYAML，自带守护进程。0.4 起纳入 EG 的编排与离线安装包（I11 框架已搭好，**等同事给镜像与启动参数后接上**，Q5）：
 - compose 里有个可选服务 `conv`（容器 `lsa-eg-conv`）：宿主机网络、连本机总线 `127.0.0.1:1884`（与格式文档 §2 一致）、`restart: unless-stopped`、健康检查（先只看主进程，同事给了命令再换）、日志 10 MB × 3 轮转、内存上限 256 MB；`config/eg.yaml` 只读给它（设备名以它为准），自己的配置与数据放 `config/conv/`、`config/conv-data/`。
-- 串口：宿主机的 `/dev/ttyS1`（X26A 的 COM2）映射成容器里的 `/dev/ttyS1`，加宿主机 `dialout` 组。用 USB 转 485（样机，或批量机按上面方式 A 加隔离）时：`sudo bash install.sh --conv-serial /dev/ttyUSB0`（记住；容器里仍是 `/dev/ttyS1`，程序不用改）。
+- 串口：宿主机的 `/dev/ttyS1`（X26A 的 COM2）映射成容器里的 `/dev/ttyS1`，加宿主机 `dialout` 组。用 USB 转 485（样机，或批量机按上面方式 A 加隔离）时：`sudo bash install.sh --conv-serial /dev/ttyUSB0`（记住；容器里仍是 `/dev/ttyS1`，程序不用改）。EG 0.5.1 起：
+  - 给 `/dev/ttyUSB*` / `/dev/ttyACM*` 时自动换成 `/dev/serial/by-id/…` 的稳定名字记住，并打一行说明（ttyUSB 号在重启、多插 USB 设备后可能变；Docker 每次起容器时把它解析成当时的实际设备）；找不到 by-id 时提醒「芯片没有序列号，重启后设备号可能变，建议换带序列号的模块」。
+  - 路径里有「:」「#」或空格的直接拒绝（compose 的设备映射会把「:」拆错，AH11 实测）。
+  - `--status` 与「串口不存在」的提示里列出可选串口：真串口 ttyS*（`/sys/class/tty` 下有 device、且 UART 类型不是 0 —— 没有硬件的 ttyS 也有 device 链接）、`/dev/serial/by-id` 下的名字与它现在指向的设备、没有 by-id 的 ttyUSB / ttyACM。
+  - 运行中拔插、变号后要 `sudo bash install.sh --conv-on`（或重启 EG）让转换程序重新起来；自动处理（udev）等定了模块、拿到样机再做。
 - 镜像随发布件：出包时 `pnpm pack:eg -- --images --debs --conv <镜像:确切 tag>`，发布件里多 `images-conv.tar.gz` 与 `CONV_IMAGE.txt`；install.sh 导入后**镜像在、串口在才启用**（`.env` 的 `COMPOSE_PROFILES=conv`），否则不起、说明原因。升级随 EG 发布件走；`--rollback` 回到不带它的版本时，转换程序容器一并停掉。
 - 开关：`--conv-off` 关掉并记住、`--conv-on` 重新打开；`--status` 的容器列表里能看到 `lsa-eg-conv`。
 - 在那之前（发布件里没有它的镜像）按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
