@@ -6,6 +6,7 @@
 //   --eg   本库 pnpm pack:eg -- --images --debs 的产物；不给就现打一份（当前提交）
 //   --out  缺省 dist/bundle/
 //   --tag  版本号后缀（同一天重打用，如 r2 → 0.9.3-20261008-r2）
+//   子站离线包带 kiosk/（--with-kiosk）时文件名是 LSA-9600SP-<版本>-kiosk-offline.run
 //
 // 负载 lsa9600sp-bundle/：setup.sh（安装入口）、sp/、eg/、debs/（Docker、compose 插件、chrony；两种角色共用）、docs/、
 //   VERSION、MANIFEST.txt、SHA256SUMS（覆盖负载里每个文件）。
@@ -118,7 +119,10 @@ const day = new Date().toISOString().slice(0, 10).replaceAll('-', '')
 const tag = opt('tag')
 if (tag && !/^[A-Za-z0-9]+$/.test(tag)) throw new Error(`--tag 只能是字母数字：${tag}`)
 const VERSION = `${spVer}-${day}${tag ? `-${tag}` : ''}`
-const NAME = `LSA-9600SP-${VERSION}-offline`
+// 机柜双屏组件（0.16，子站离线包 --with-kiosk 才有 kiosk/）：装时 setup.sh --role sp --kiosk。
+// 带 kiosk 的文件名多个 -kiosk（约多 1.7 GB，只给接了双屏的子站主机），与不带的同一天并排出、不互相覆盖
+const KIOSK = existsSync(join(SP, 'kiosk'))
+const NAME = `LSA-9600SP-${VERSION}${KIOSK ? '-kiosk' : ''}-offline`
 const OUT = resolve(opt('out') ?? resolve(ROOT, 'dist', 'bundle'))
 const STAGE = resolve(ROOT, 'dist', '.stage-bundle')
 const B = join(STAGE, 'lsa9600sp-bundle')
@@ -126,7 +130,7 @@ const B = join(STAGE, 'lsa9600sp-bundle')
 console.log(`LSA-9600SP 离线一键安装 ${VERSION}`)
 console.log(`  子站 ${spVer}（后端 ${spRev}，前端 ${feRev}）← ${SP}`)
 console.log(`  EG   ${egVer} ← ${EG}`)
-console.log(`  机柜双屏 kiosk：${existsSync(join(SP, 'kiosk')) ? '有' : '没有'}\n`)
+console.log(`  机柜双屏 kiosk：${KIOSK ? '有（文件名带 -kiosk）' : '没有'}\n`)
 
 // ---------- 负载 ----------
 console.log('1. 整理负载')
@@ -149,8 +153,6 @@ writeFileSync(join(B, 'VERSION'), VERSION + '\n')
 const egImages = readFileSync(join(EG, 'IMAGES.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => `    ${l.split(' ')[0]}  ${l.split(' ')[1]}`)
 const spEnv = readFileSync(join(SP, 'lsa9600sp-backend/docker/.env.prod.example'), 'utf8')
 const ev = k => spEnv.match(new RegExp(`^${k}=(.*)$`, 'm'))?.[1]?.trim() ?? '?'
-// 机柜双屏组件（0.16，子站离线包 --with-kiosk 才有 kiosk/）：装时 setup.sh --role sp --kiosk
-const KIOSK = existsSync(join(SP, 'kiosk'))
 writeFileSync(
   join(B, 'MANIFEST.txt'),
   [
