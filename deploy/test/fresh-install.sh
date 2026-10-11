@@ -135,7 +135,9 @@ echo; echo "== 5. --kiosk 的拒绝路径（0.16）"
 rc=0; out="$(os bash "/rel/$RUN" --role eg --kiosk --yes 2>&1)" || rc=$?
 [ "$rc" != 0 ] && echo "$out" | grep -q '只用于子站主机' && ok "--role eg --kiosk → 拒绝（rc $rc）：$(echo "$out" | grep '只用于子站主机' | head -1 | sed 's/^错误：//')" || bad "--role eg --kiosk：rc $rc；$(echo "$out" | tail -3)"
 skip=$(awk '/^__LSA_PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$RUNFILE")
-if tail -n +"$skip" "$RUNFILE" | tar -t 2>/dev/null | grep -q '^lsa9600sp-bundle/sp/kiosk/'; then
+# 不能 | grep -q：pipefail 下 grep 一匹配就退出，tar 吃 SIGPIPE 非 0，整条判成「没有」（release-0.16 r2 kiosk 版就这样误跑了 --role sp --kiosk）
+nk=$(tail -n +"$skip" "$RUNFILE" | tar -t 2>/dev/null | grep -c '^lsa9600sp-bundle/sp/kiosk/' || true)
+if [ "${nk:-0}" -gt 0 ]; then
   echo "  （安装文件带 sp/kiosk/：--role sp --kiosk 会真装子站与双屏，不在这个沙箱里做）"
 else
   rc=0; out="$(os bash "/rel/$RUN" --role sp --kiosk --yes 2>&1)" || rc=$?
