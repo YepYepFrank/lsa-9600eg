@@ -255,12 +255,16 @@ ca_key_sum() {
 }
 
 install_sp() {
-  local mem_gb ver ip
+  local mem_gb ver ip img_id
   mem_gb=$(( $(awk '/MemTotal/ { print $2 }' /proc/meminfo) / 1024 / 1024 ))
   [ "$mem_gb" -ge 7 ] || echo "提醒：本机内存约 ${mem_gb} GB，子站 ThingsBoard 缺省堆 4 GB，建议 ≥ 8 GB（docker/.env 的 TB_JAVA_OPTS 可调小）"
 
   say '导入子站镜像（几分钟）'
-  if [ "$(cat "$SP_DEST/.loaded" 2>/dev/null)" = "$(cat VERSION)" ]; then echo '这一版的镜像已导入过，跳过'
+  # 「导入过」认 images.tar.gz 的 sha256（SHA256SUMS 里现成的，开头已校验过），不认版本号：
+  # 版本号没变、内容变了（重打忘加后缀）时照样重导，不会静默用旧镜像
+  img_id="$(awk '$2 == "./sp/images.tar.gz" { print $1 }' SHA256SUMS)"
+  [ -n "$img_id" ] || img_id="$(cat VERSION)"
+  if [ "$(cat "$SP_DEST/.loaded" 2>/dev/null)" = "$img_id" ]; then echo '这一版的镜像已导入过，跳过'
   else gunzip -c sp/images.tar.gz | docker load | sed 's/^/  /'; fi
 
   # 站内 CA 变了，各 EG 手上的 sp-ca.pem 就全部失效、连不上 8883：证书与私钥升级前后都必须一致。
@@ -318,7 +322,7 @@ install_sp() {
     if [ "$ca1" = "$ca0" ] && [ "$k1" = "$k0" ]; then echo "站内 CA 未变（证书 sha256 ${ca0:0:16}…、私钥 sha256 ${k0:0:16}…），各 EG 的 sp-ca.pem 照常可用"
     else die "站内 CA 在升级中变了（证书 ${ca0:0:16}… → ${ca1:0:16}…，私钥 ${k0:0:16}… → ${k1:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls、docker/tls-ca 换回去再跑 up.sh --prod"; fi
   fi
-  cat VERSION > "$SP_DEST/.loaded"
+  echo "$img_id" > "$SP_DEST/.loaded"
   # TB 系统管理员出厂口令改随机：子站 up.sh 自己会改（rotate_sysadmin，与后端会话商定只留那一份）时不再做，
   # 否则这里用出厂口令登不进去会误报「请手工改」；老包的 up.sh 没有这一步，照旧由这里改
   if grep -q 'rotate_sysadmin' "$SP_B/scripts/up.sh" 2>/dev/null; then :; else sp_sysadmin; fi

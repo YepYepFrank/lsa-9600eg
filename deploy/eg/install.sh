@@ -413,9 +413,18 @@ if [ -f .installed/VERSION ] && [ "$(cat .installed/VERSION)" != "$VERSION" ]; t
 fi
 
 # ---------- 3. 镜像（离线） ----------
+# 本机镜像与 IMAGES.txt 逐个对得上（tag 在、ID 一致）才算导入过：版本号没变、镜像变了（重打）时照样重导
+images_ok() {
+  local img id
+  [ -f IMAGES.txt ] || return 1
+  while read -r img _ id; do
+    case "$img" in ''|'#'*) continue ;; esac
+    [ "$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || true)" = "$id" ] || return 1
+  done < IMAGES.txt
+}
 for f in images-*.tar.gz; do
   [ -f "$f" ] || continue
-  [ -f ".loaded-$f" ] && [ "$(cat ".loaded-$f")" = "$VERSION" ] && continue
+  [ -f ".loaded-$f" ] && [ "$(cat ".loaded-$f")" = "$VERSION" ] && images_ok && continue
   echo "导入镜像 $f（几分钟）..."
   gunzip -c "$f" | docker load >/dev/null
   echo "$VERSION" > ".loaded-$f"
