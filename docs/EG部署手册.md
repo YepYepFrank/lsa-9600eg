@@ -148,7 +148,7 @@ sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口>  # 
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --eg-config <目录>   # 子站 provision:eg + pack-eg.sh 之后，带 eg.yaml、sp-ca.pem 起全部
 ```
 
-不带 `--role` 就交互选；`--extract <目录>` 只解包。重跑更新的安装文件即升级（子站保留 `docker/.env`，EG 保留 `config/`、`.env`）。以下 §4 是 EG 这一段拆开的步骤。
+只支持 x86_64 + **Ubuntu Server 24.04**（子站主机、EG 都是）：EG 0.5.x 起安装文件一开头就查，别的系统（22.04、Debian、麒麟等）直接中文报错退出，子站指向《子站部署手册》§2b、EG 指向本手册 §2a 的改装步骤（以前只在要装离线 Docker 时才查）。不带 `--role` 就交互选；`--extract <目录>` 只解包。重跑更新的安装文件即升级（子站保留 `docker/.env`，EG 保留 `config/`、`.env`）。以下 §4 是 EG 这一段拆开的步骤。
 
 ## 4. 安装
 

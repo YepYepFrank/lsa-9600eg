@@ -12,7 +12,7 @@
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
 #
-# 只支持 x86_64；离线 Docker 包按 Ubuntu 24.04 准备，其它发行版（麒麟 / UOS）请先自行装好 Docker 与 compose 插件。
+# 只支持 x86_64 + Ubuntu Server 24.04（子站主机、EG 都是）：开头就查，别的系统直接报错退出（EG 0.5.x；以前只在要装离线 Docker 时才查）。
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
@@ -63,6 +63,25 @@ setv() {
 
 [ "$(id -u)" = 0 ] || die '要用 sudo 跑'
 [ "$(uname -m)" = x86_64 ] || die "只支持 x86_64（本机 $(uname -m)）"
+
+# 系统：只支持 Ubuntu Server 24.04（与 EG install.sh 的检查一致）。不论装哪个角色、不论 Docker 装没装都先查：
+# 以前只在 install_debs（要装离线 Docker）里查，22.04 上已有 Docker 时会照样往下装，报的错也对不上
+os_check() {
+  local f="${1:-/etc/os-release}" id ver name
+  id="$( . "$f" 2>/dev/null; echo "${ID:-?}" )"
+  ver="$( . "$f" 2>/dev/null; echo "${VERSION_ID:-?}" )"
+  name="$( . "$f" 2>/dev/null; echo "${PRETTY_NAME:-未知系统}" )"
+  [ "$id" = ubuntu ] && [ "$ver" = 24.04 ] && return 0
+  echo "错误：本机系统是「$name」。LSA-9600SP 一键安装只支持 Ubuntu Server 24.04 LTS（x86_64）：安装文件里的离线包（Docker、compose 插件、chrony）按 24.04 做，别的系统装不上。" >&2
+  if [ "$ROLE" != eg ]; then
+    echo "  子站主机：请先按《子站部署手册》（lsa-9600sp-backend docs/子站部署手册.md）§2b 改装 Ubuntu Server 24.04，再跑本安装文件。" >&2
+  fi
+  if [ "$ROLE" != sp ]; then
+    echo "  EG（X26A 出厂是 Ubuntu 22.04 桌面版）：请先按《EG 部署手册》§2a「改装 Ubuntu Server 24.04」改装，再跑本安装文件。" >&2
+  fi
+  exit 1
+}
+os_check
 
 echo "LSA-9600SP 离线安装 $(cat VERSION)"
 # set -euo pipefail 下：单独一行的管道、x="$(会失败的管道)"、函数最后一句 [ ] && … 失败都会让脚本悄悄退出 —— 可能失败的都带 || true（0.13 验收后通扫）

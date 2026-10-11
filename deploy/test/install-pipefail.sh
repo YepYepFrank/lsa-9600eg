@@ -49,6 +49,20 @@ if [ -n "$SETUP" ]; then
   ca_key_sum() { return 0; }
   eval "$(grep -E '^    ca1="\$\(sha256sum' "$SETUP")"
   echo "ca1=[${ca1}]"
+  echo "-- setup.sh：开头就查系统（只支持 Ubuntu Server 24.04，两个角色都查）"
+  awk '/^os_check\(\) \{/,/^\}/' "$SETUP" > os.sh
+  osrel() { printf 'ID=%s\nVERSION_ID="%s"\nPRETTY_NAME="%s"\n' "$1" "$2" "$3" > "os-$1-$2"; echo "$W/os-$1-$2"; }
+  U2404="$(osrel ubuntu 24.04 'Ubuntu 24.04.5 LTS')"; U2204="$(osrel ubuntu 22.04 'Ubuntu 22.04.4 LTS')"; D12="$(osrel debian 12 'Debian GNU/Linux 12 (bookworm)')"
+  for c in "sp|$U2404|0|" "eg|$U2404|0|" "eg|$U2204|1|§2a" "sp|$U2204|1|§2b" "sp|$D12|1|§2b" "eg|$D12|1|§2a" "|$U2204|1|§2b.*§2a"; do
+    IFS='|' read -r role f want doc <<< "$c"
+    rc=0; out="$( ( ROLE="$role"; . ./os.sh; os_check "$f" ) 2>&1 )" || rc=$?
+    other=''; [ "$role" = sp ] && other='§2a'; [ "$role" = eg ] && other='§2b'
+    if [ "$rc" = "$want" ] && { [ "$want" = 0 ] || { echo "$out" | tr -d '\n' | grep -q "只支持 Ubuntu Server 24.04.*$doc" && { [ -z "$other" ] || ! echo "$out" | grep -q "$other"; }; }; }; then
+      ok "--role ${role:-（没给）} 在 $(sed -n 's/^PRETTY_NAME="\(.*\)"/\1/p' "$f")：rc $rc$([ "$want" = 1 ] && echo "，中文报错、指向 $doc")"
+    else
+      bad "--role ${role:-（没给）} $f：rc $rc（要 $want）；$out"
+    fi
+  done
 fi
 
 echo "-- 转换程序串口（EG 0.5.1）"
