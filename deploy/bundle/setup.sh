@@ -2,12 +2,13 @@
 # LSA-9600SP 一键安装入口（在解包目录里；通常由 .run 自解压后调用）。
 #
 #   sudo bash setup.sh                                  交互选角色
-#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--yes]
+#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--yes]
 #       子站主机：Docker（没有就装离线包）→ 导入镜像 → /opt/lsa9600sp → 首次自动生成 docker/.env（随机口令、
 #       本机 IP、证书 SAN）→ scripts/up.sh --prod（证书、建库、provision、扩展服务、Nginx、视频）→ TB 系统管理员改随机口令。
 #       已装过的按升级处理：保留 .env。
 #       对时：子站主机给各 EG 当时间服务器（chrony allow 站内私网、local stratum 10 orphan —— 没有上级时全站至少跟子站一致）；
 #       --ntp 给站内时钟源（GPS / 北斗授时或上级 NTP），记住，以后升级不用再给。
+#       --kiosk（0.16）：子站装好后再装机柜双屏（scripts/install-kiosk.sh sp/kiosk）；安装文件里要有 sp/kiosk/（子站离线包带 --with-kiosk 打的）。
 #   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--sp-key <子站公钥>] [--eg-config <目录>] [--yes]
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
@@ -25,18 +26,20 @@ YES=0
 FORCE=0
 SPKEY=''
 NTP=''
+KIOSK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE="${2:?}"; shift ;;
     --ip) IP="${2:?}"; shift ;;
     --ntp) NTP="${2:?--ntp 后面给站内时钟源地址}"; shift ;;
+    --kiosk) KIOSK=1 ;;
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
     --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
     --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
-    --help | -h) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help | -h) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -104,6 +107,15 @@ if [ -z "$ROLE" ]; then
   esac
 fi
 case "$ROLE" in sp | eg) ;; *) die "--role 只能是 sp 或 eg" ;; esac
+
+# 机柜双屏（--kiosk，0.16）：装任何东西之前先查齐，缺了就说清楚停下，不调用、也不悄悄跳过
+if [ "$KIOSK" = 1 ]; then
+  [ "$ROLE" = sp ] || die '--kiosk 只用于子站主机（--role sp）：机柜双屏装在子站主机上，EG 不装'
+  [ -d sp/kiosk ] || die "这个安装文件里没有机柜双屏组件（sp/kiosk/）：打子站离线包时没带 --with-kiosk。
+  要装双屏：换用带 kiosk 的安装文件（后端 scripts/pack-offline.sh --with-kiosk 打的子站离线包），或者去掉 --kiosk 先只装子站。"
+  [ -f sp/lsa9600sp-backend/scripts/install-kiosk.sh ] || die "这个安装文件里的子站（$(cat VERSION)）没有 scripts/install-kiosk.sh：机柜双屏 0.16 起才有"
+  echo "机柜双屏：子站装好后接着装（sp/kiosk/，$(du -sh sp/kiosk 2>/dev/null | cut -f1 || echo '?')）"
+fi
 
 # ---------- Docker（没有就装离线包；Ubuntu 24.04） ----------
 install_debs() {
@@ -318,6 +330,15 @@ install_sp() {
   echo "  接 EG：每台 EG 先用本安装文件 --role eg --sp-key <本机公钥> 装第一轮，再在 $SP_B 跑 scripts/provision-eg.sh --ssh lsa-sp@<EG> …、scripts/pack-eg.sh（docs/子站部署手册.md §5b）"
 }
 
+# 机柜双屏：子站装好以后调子站自己的 install-kiosk.sh（幂等、出错非 0；只支持 Ubuntu 24.04，它自己也查）
+install_kiosk() {
+  say '机柜双屏 kiosk（scripts/install-kiosk.sh）'
+  local rc=0
+  bash "$SP_B/scripts/install-kiosk.sh" "$HERE/sp/kiosk" || rc=$?
+  [ "$rc" = 0 ] || die "机柜双屏没装好（install-kiosk.sh 返回 $rc）：子站本身已经装好、照常可用。看上面的报错修好后，重跑本安装文件 --role sp --kiosk（幂等）；现状：sudo $SP_B/scripts/install-kiosk.sh --status"
+  echo "  机柜双屏装好了；现状：sudo $SP_B/scripts/install-kiosk.sh --status"
+}
+
 # ---------- EG ----------
 install_eg() {
   local DEST=/opt/lsa-eg
@@ -348,6 +369,8 @@ install_eg() {
 }
 
 case "$ROLE" in
-  sp) install_sp ;;
+  sp)
+    install_sp
+    if [ "$KIOSK" = 1 ]; then install_kiosk; fi ;;
   eg) install_eg ;;
 esac

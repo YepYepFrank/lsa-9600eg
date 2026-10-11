@@ -125,7 +125,8 @@ const B = join(STAGE, 'lsa9600sp-bundle')
 
 console.log(`LSA-9600SP 离线一键安装 ${VERSION}`)
 console.log(`  子站 ${spVer}（后端 ${spRev}，前端 ${feRev}）← ${SP}`)
-console.log(`  EG   ${egVer} ← ${EG}\n`)
+console.log(`  EG   ${egVer} ← ${EG}`)
+console.log(`  机柜双屏 kiosk：${existsSync(join(SP, 'kiosk')) ? '有' : '没有'}\n`)
 
 // ---------- 负载 ----------
 console.log('1. 整理负载')
@@ -148,6 +149,8 @@ writeFileSync(join(B, 'VERSION'), VERSION + '\n')
 const egImages = readFileSync(join(EG, 'IMAGES.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => `    ${l.split(' ')[0]}  ${l.split(' ')[1]}`)
 const spEnv = readFileSync(join(SP, 'lsa9600sp-backend/docker/.env.prod.example'), 'utf8')
 const ev = k => spEnv.match(new RegExp(`^${k}=(.*)$`, 'm'))?.[1]?.trim() ?? '?'
+// 机柜双屏组件（0.16，子站离线包 --with-kiosk 才有 kiosk/）：装时 setup.sh --role sp --kiosk
+const KIOSK = existsSync(join(SP, 'kiosk'))
 writeFileSync(
   join(B, 'MANIFEST.txt'),
   [
@@ -156,6 +159,7 @@ writeFileSync(
     `  EG ${egVer}：`,
     ...egImages,
     `  离线包（Ubuntu 24.04 amd64）：${readdirSync(join(B, 'debs')).filter(f => /^(docker-ce|docker-ce-cli|containerd\.io|docker-compose-plugin|chrony)_/.test(f)).join('、')}`,
+    `  机柜双屏 kiosk：${KIOSK ? '有（sp/kiosk/；子站主机 --role sp --kiosk 装）' : '没有（子站离线包没带 --with-kiosk；--kiosk 会报错停下）'}`,
     '',
   ].join('\n'),
 )
@@ -163,10 +167,12 @@ writeFileSync(
   join(B, '安装说明.txt'),
   `LSA-9600SP 离线一键安装 ${VERSION}
 
-整个系统就这一个文件，子站主机和各柜 EG 都用它，装的时候选角色。目标机：x86_64，Ubuntu 24.04（其它发行版先自行装好 Docker）。
+整个系统就这一个文件，子站主机和各柜 EG 都用它，装的时候选角色。目标机：x86_64 + Ubuntu Server 24.04（子站主机、EG 都是；别的系统装不了，一开头就会报错，先按部署手册改装）。
 
   子站主机：sudo bash ${NAME}.run --role sp            （本机站内 IP 自动取，或 --ip 指定；口令随机生成，见 /opt/lsa9600sp/初始账号口令.txt）
-  EG：      sudo bash ${NAME}.run --role eg --lan1 <摄像机网口>（单网口不给）
+${KIOSK ? `            连机柜双屏一起装：sudo bash ${NAME}.run --role sp --kiosk
+` : `            （这个安装文件不带机柜双屏组件，--kiosk 会报错停下）
+`}  EG：      sudo bash ${NAME}.run --role eg --lan1 <摄像机网口>（单网口不给）
             → 给子站授权开隧道：sudo bash ${NAME}.run --role eg --sp-key <子站公钥>
             → 子站主机上 scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<EG> …、scripts/pack-eg.sh --sp <子站> --only <柜号>，拿到 eg.yaml 与 sp-ca.pem 后：
             sudo bash ${NAME}.run --role eg --eg-config <放 eg.yaml 的目录>
