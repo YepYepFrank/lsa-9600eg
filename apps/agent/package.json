@@ -8,6 +8,7 @@
     "gateway:render": "node --import @swc-node/register/esm-register src/gateway/cli.ts",
     "typecheck": "tsc --noEmit",
     "verify:g0": "node --import @swc-node/register/esm-register src/verify-g0.ts",
+    "verify:warmup": "node --import @swc-node/register/esm-register src/verify-warmup.ts",
     "verify:g1": "node --import @swc-node/register/esm-register src/verify-g1.ts",
     "verify:g2": "node --import @swc-node/register/esm-register src/verify-g2.ts",
     "verify:i1": "node --import @swc-node/register/esm-register src/verify-i1.ts",

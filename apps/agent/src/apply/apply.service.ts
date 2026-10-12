@@ -31,6 +31,7 @@ import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
 import { parseCaps, type CapsConfig } from '../caps/caps.js'
 import { CapsService, type DevCommParams } from '../caps/caps.service.js'
 import { MetersService, parseMeters, type Ratio } from '../meters/meters.service.js'
+import { parseGas, type GasParams } from '../warmup/warmup.js'
 
 export interface ApplyReceipt {
   version: string
@@ -70,6 +71,8 @@ export interface Applied {
   devComm?: DevCommParams | null
   /** I3：子站下发的电表变比（没下发为 null / 缺省 —— 用 eg.yaml 的初值） */
   meters?: Record<string, Partial<Ratio>> | null
+  /** 0.17：传感器预热参数（extras 里的 gasWarmupS / gasGapS / gasBootWarmupOffCabs；都没带为 null = 缺省） */
+  gas?: GasParams | null
 }
 
 /** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别；alias = 改名前的类型（@lsa/model 的模板还没跟上时照样认） */
@@ -88,6 +91,11 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string; alias
   // 下挂设备失联（dev.link == 0，通信类、重要；后端 provision:eg 加规则）
   'EG-devlost': { type: '设备失联' },
 }
+
+/** 预热期的降级告警（0.17，与后端 @lsa/model tb-alarms.ts 的 WARMUP_ALARM_PREFIX / warmupTypeOf 一致）：带 warmup 的规则多派生一条
+ *  「预热期读数越限（原类型）」—— 规则开关跟着原类型走（停了原规则，降级那支一起去掉） */
+export const WARMUP_ALARM_PREFIX = '预热期读数越限'
+export const warmupTypeOf = (type: string) => `${WARMUP_ALARM_PREFIX}（${type}）`
 
 /** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用 */
 const DEFAULT_EXTRAS: ThresholdExtras = { pdCnt: 20, pm25Abs: 75, commPeriods: 5 }
@@ -154,7 +162,7 @@ export class ApplyService {
     } catch (e) {
       this.log.warn(`applied-config.json 读不了：${(e as Error).message}`)
     }
-    this.caps.set(this.applied?.caps ?? null, this.applied?.devComm ?? null)
+    this.caps.set(this.applied?.caps ?? null, this.applied?.devComm ?? null, this.applied?.gas ?? null)
     this.meters.set(this.applied?.meters ?? null)
     // 上次没应用成的（比如断电重启时本地 TB 还没起来）：接着重试
     try {
@@ -245,19 +253,14 @@ export class ApplyService {
       return { version, status: 'FAILED', error, errorCode, ...rid }
     }
     const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}`, errorCode: 'LOCAL_NOT_READY', ...rid })
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null }
     try {
       input = this.parse(body)
     } catch (e) {
       if (e instanceof Invalid) return fail(e.message, e.code)
       throw e
     }
-    // 老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，升级后同一份配置不会被当成新内容
-    const parts: unknown[] = [input.thresholds, input.rules, input.extras]
-    if (input.caps || input.devComm) parts.push(input.caps, input.devComm)
-    // I3：带了 meters 才计进哈希（老配置的哈希不变）
-    if (input.meters) parts.push({ meters: input.meters })
-    const hash = createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
+    const hash = configHash(input)
     const ign = input.ignored.length ? { ignored: input.ignored } : {}
     if (input.ignored.length) this.log.warn(`版本 ${input.version}：这台 EG 不认识规则 ${input.ignored.join('、')}（EG 版本比子站旧），跳过，其余照常应用`)
     if (this.applied?.version === input.version && this.applied.hash === hash) {
@@ -305,9 +308,9 @@ export class ApplyService {
       return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`, 'INTERNAL')
     }
 
-    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters }
+    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas }
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
-    this.caps.set(input.caps, input.devComm)
+    this.caps.set(input.caps, input.devComm, input.gas)
     this.meters.set(input.meters)
     // 规则停用 / 类型改名后，没有规则来清的活动告警：清掉
     const typesOf = (ps: TbProfile[]) => new Set(ps.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
@@ -337,7 +340,7 @@ export class ApplyService {
       const profiles = await Promise.all(list.data.filter(x => PROFILES.find(d => d.name === x.name)?.alarms).map(x => this.tb.get<TbProfile>(`/api/deviceProfile/${x.id.id}`)))
       if (!profiles.length) return
       const now = new Set(profiles.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
-      const known = new Set(Object.values(RULE_ALARM).flatMap(r => [r.type, ...(r.alias ?? [])]))
+      const known = new Set(Object.values(RULE_ALARM).flatMap(r => [r.type, ...(r.alias ?? [])]).flatMap(t => [t, warmupTypeOf(t)]))
       const gone = [...known].filter(t => !now.has(t))
       this.swept = true
       const n = gone.length ? await this.clearActive(gone) : 0
@@ -412,11 +415,18 @@ export class ApplyService {
     }
 
     let extras = this.applied?.extras ?? DEFAULT_EXTRAS
+    let gas = this.applied?.gas ?? null
     if (b['extras'] !== undefined) {
       const e = b['extras']
       if (!isObj(e)) throw new Invalid('extras 要是对象')
       extras = { ...extras }
       for (const k of ['pdCnt', 'pm25Abs', 'commPeriods'] as const) if (e[k] !== undefined) extras[k] = num(e[k], `extras.${k}`) ?? extras[k]
+      // 0.17 传感器预热参数：单独存、单独计哈希（extras 只留阈值三项，老配置哈希不变）；都没带 = 缺省
+      try {
+        gas = parseGas(e)
+      } catch (err) {
+        throw new Invalid((err as Error).message)
+      }
     }
 
     if (b['devices'] !== undefined) {
@@ -454,16 +464,37 @@ export class ApplyService {
     } catch (e) {
       throw new Invalid((e as Error).message)
     }
-    return { version, thresholds, rules, extras, ignored, caps, devComm, meters }
+    return { version, thresholds, rules, extras, ignored, caps, devComm, meters, gas }
   }
 }
 
-/** 按规则开关去掉停用的告警 / 级别 */
+/** 配置内容哈希（判重复下发）。老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，
+ *  升级后同一份配置不会被当成新内容；meters（I3）、gas（0.17 预热参数）也是带了才计进去 */
+export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown }): string {
+  const parts: unknown[] = [i.thresholds, i.rules, i.extras]
+  if (i.caps || i.devComm) parts.push(i.caps, i.devComm)
+  if (i.meters) parts.push({ meters: i.meters })
+  if (i.gas) parts.push({ gas: i.gas })
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
+}
+
+/** 按规则开关去掉停用的告警 / 级别。预热期的降级那支（「预热期读数越限（原类型）」，只有 WARNING 一级）跟着原类型：
+ *  原类型整条停用（或分级的各级都停了）就一起去掉 */
 export function filterRules(alarms: TbAlarmDef[], rules: { id: string; on: boolean }[]): TbAlarmDef[] {
   const out: TbAlarmDef[] = []
+  const typeOf = (m: { type: string; alias?: string[] }) => [m.type, ...(m.alias ?? [])]
   for (const a of alarms) {
     const createRules = { ...a.createRules }
     let drop = false
+    const base = Object.values(RULE_ALARM).flatMap(typeOf).find(t => warmupTypeOf(t) === a.alarmType)
+    if (base !== undefined) {
+      // 降级那支：管这个类型的规则全停了才去掉
+      const ids = Object.keys(RULE_ALARM).filter(id => typeOf(RULE_ALARM[id]!).includes(base))
+      const off = new Set(rules.filter(r => !r.on).map(r => r.id))
+      if (ids.length && ids.every(id => off.has(id))) continue
+      out.push({ ...a, createRules })
+      continue
+    }
     for (const r of rules) {
       if (r.on) continue
       const m = RULE_ALARM[r.id]
