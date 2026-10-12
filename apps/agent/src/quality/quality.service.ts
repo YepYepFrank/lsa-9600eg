@@ -20,13 +20,20 @@
  *   - 离线判据：fails ≥ failN 且距 last_ok > max(minMs, periods × 周期)（参数随配置下发 devComm，缺省 5 / 30000 / 5）；
  *     dev.link 保留 = dev.comm != OFFLINE（本地「设备失联」规则照旧按它判）
  *   - 能力全都不启用的设备（caps）不发 dev.*（上送那边也整台不送）
- *   - q / dev.comm / dev.link 变了立即发，dev.last_ok / fails / err 随每分钟那一次 */
+ *   - q / dev.comm / dev.link 变了立即发，dev.last_ok / fails / err 随每分钟那一次
+ *
+ * 0.17 传感器预热（docs/气体传感器预热方案.md v2，WarmupService）：
+ *   - 需要预热的设备：预热中它的量在 q 里标 warmup；另发 dev.warmup_s（剩余秒数，0 = 就绪）：启动后第一次评估就发（哪怕是 0）、
+ *     进出预热立即发、预热中每 10 s、就绪后随每分钟那一次 —— 本地规则带 warmup 的按它分正式 / 降级两支，没有这个值正式那支永远不触发
+ *   - 转换程序标了 warmup（T1，型号自报）时 dev.warmup_s 至少报 1
+ *   - 转换程序发的 q 加新鲜度窗口（同 dev.*：max(minMs, periods × 周期) × 2）：转换程序挂了以后不会永远停在它最后报的状态 */
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import { CAM_MAX_REGIONS, camRegionLimit, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { CapsService } from '../caps/caps.service.js'
+import { WarmupService } from '../warmup/warmup.service.js'
 
 export type Quality = 'stale' | 'invalid'
 export type Comm = 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'UNKNOWN'
@@ -49,6 +56,8 @@ interface DeviceWatch {
   keys: Map<string, Watch>
   /** 同事自己发的 q */
   fromSource: Record<string, string>
+  /** 同事的 q 最近一次来的时刻（新鲜度窗口外就不算数） */
+  fromSourceAt: number
   /** agent 自己算的派生量标的（跨设备的输入：区域温升要看 SAM 的 env.t，DeriveService 标） */
   derived: Record<string, string>
   /** 上一次发出去的 q（JSON） */
@@ -58,6 +67,9 @@ interface DeviceWatch {
   /** 上一次发出去的 dev.comm */
   comm: Comm | null
   publishedAt: number
+  /** 上一次发出去的 dev.warmup_s（不是需要预热的设备一直是 null） */
+  warm: number | null
+  warmAt: number
   /** 判离线用的周期：必有量里最快的（没有必有量取全部里最快的） */
   period: number
 }
@@ -78,6 +90,8 @@ const DERIVED: Record<string, string[]> = {
 const camRegions = (attrs: Record<string, unknown>) => Object.fromEntries(Array.from({ length: camRegionLimit(attrs) }, (_, i) => [`R${i + 1}`, 'region' as const]))
 const EVAL_MS = 2_000
 const REPUBLISH_MS = 60_000
+/** 预热中 dev.warmup_s 的重发间隔 */
+const WARM_REPUBLISH_MS = 10_000
 
 @Injectable()
 export class QualityService implements OnModuleInit, OnModuleDestroy {
@@ -90,6 +104,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
     private readonly caps: CapsService,
+    private readonly warmup: WarmupService,
   ) {
     for (const d of cfg.devices) {
       if (d.kind === 'eg') continue
@@ -103,7 +118,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
       }
       const must = [...keys.values()].filter(w => !w.optional).map(w => w.period)
       const period = Math.min(...(must.length ? must : [...keys.values()].map(w => w.period)), 60_000)
-      this.devices.set(d.name, { keys, fromSource: {}, derived: {}, published: null, link: null, comm: null, publishedAt: 0, period })
+      this.devices.set(d.name, { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, period })
     }
   }
 
@@ -133,8 +148,10 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     const put = (k: string, q: string) => {
       if (rank(q) > rank(out[k])) out[k] = q
     }
-    for (const [k, q] of Object.entries(d.fromSource)) put(k, q)
+    if (this.sourceFresh(d, now)) for (const [k, q] of Object.entries(d.fromSource)) put(k, q)
     for (const [k, q] of Object.entries(d.derived)) put(k, q)
+    // 0.17：预热中，这台设备的量都标 warmup（可选量来过才标）
+    if (this.warmup.remaining(device, now) > 0) for (const [k, w] of d.keys) if (w.seen || !w.optional) put(k, 'warmup')
     for (const [key, w] of d.keys) {
       const q = judge(w, now)
       if (q) put(key, q)
@@ -145,6 +162,21 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
       if (worst) out[derived] = worst
     }
     return out
+  }
+
+  /** 转换程序的 q 还算不算数（窗口同 dev.*） */
+  private sourceFresh(d: DeviceWatch, now: number): boolean {
+    const p = this.caps.devComm
+    return now - d.fromSourceAt <= Math.max(p.minMs, p.periods * d.period) * 2
+  }
+
+  /** 0.17：要报的 dev.warmup_s（不是需要预热的设备返回 null）：agent 判的剩余秒数；转换程序标了 warmup 时至少 1 */
+  warmupOf(device: string, now = Date.now()): number | null {
+    if (!this.warmup.has(device)) return null
+    const r = this.warmup.remaining(device, now)
+    const d = this.devices.get(device)
+    const src = !!d && this.sourceFresh(d, now) && Object.values(d.fromSource).includes('warmup')
+    return src ? Math.max(r, 1) : r
   }
 
   /** 整台失效的设备（dev.comm = OFFLINE；能力不启用的不算） */
@@ -187,16 +219,18 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     if (!d) return
     const now = Date.now()
     let sourceQChanged = false
+    let measured = false
     for (const e of entries) {
       for (const [k, v] of Object.entries(e.values)) {
         if (k === 'q') {
           const parsed = parseQ(v)
-          if (JSON.stringify(parsed) !== JSON.stringify(d.fromSource)) {
-            d.fromSource = parsed
-            sourceQChanged = true
-          }
+          // 过了新鲜度窗口又来了同样的 q：也算变化（窗口外它已经不算数了）
+          if (JSON.stringify(parsed) !== JSON.stringify(d.fromSource) || !this.sourceFresh(d, now)) sourceQChanged = true
+          d.fromSource = parsed
+          d.fromSourceAt = now
           continue
         }
+        if (!k.startsWith('dev.')) measured = true
         const w = d.keys.get(k)
         // 可选量（分区测温）与目录外的量：来过才看护
         if (!w) continue
@@ -204,7 +238,9 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         w.seen = true
       }
     }
-    if (sourceQChanged) this.evaluate(device)
+    // 0.17：读到测量值，交给预热计时（T2 读数中断后恢复、T3 开机后第一次读到）；进了预热马上发
+    const warmed = measured && this.warmup.read(device, now)
+    if (sourceQChanged || warmed) this.evaluate(device)
   }
 
   private evaluate(only?: string): void {
@@ -215,7 +251,10 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
       const enabled = this.caps.deviceEnabled(name)
       const c = this.commOf(name, now)
       const link = c.comm === 'OFFLINE' ? 0 : 1
-      if (q === d.published && link === d.link && c.comm === d.comm && now - d.publishedAt < REPUBLISH_MS) continue
+      const ws = enabled ? this.warmupOf(name, now) : null
+      const warmDue = ws !== null && (d.warm === null || ws > 0 !== d.warm > 0 || (ws > 0 && now - d.warmAt >= WARM_REPUBLISH_MS))
+      if (q === d.published && link === d.link && c.comm === d.comm && now - d.publishedAt < REPUBLISH_MS && !warmDue) continue
+      if (ws !== null && d.warm !== null && ws > 0 !== d.warm > 0) this.log.log(`${name} ${ws > 0 ? (this.warmup.waiting(name, now) ? `读数一回来就要预热（读数中断已满 ${this.caps.gas.gapS} s 或主机刚开机），先报 ${ws} s` : `预热中（剩 ${ws} s）`) : '预热结束，读数可信'}`)
       if (link !== d.link && d.link !== null) this.log.log(`${name} ${link ? '恢复在线' : '整台失效（dev.link = 0）'}`)
       if (c.comm !== d.comm && d.comm !== null) this.log.log(`${name} 通信状态 ${d.comm} → ${c.comm}（fails ${c.fails}${c.err ? `、${c.err}` : ''}）`)
       if (q !== d.published) {
@@ -230,6 +269,11 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         if (!c.fromSource.lastOk && c.lastOk !== null) values['dev.last_ok'] = c.lastOk
         if (!c.fromSource.fails) values['dev.fails'] = c.fails
         if (!c.fromSource.err) values['dev.err'] = c.err
+        if (ws !== null) {
+          values['dev.warmup_s'] = ws
+          d.warm = ws
+          d.warmAt = now
+        }
       }
       this.bus.publish(name, values, now)
       d.published = q

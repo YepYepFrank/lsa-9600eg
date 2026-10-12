@@ -90,7 +90,8 @@
 | CAM | `cam.rest` | 串 OK / DEGRADED / FAIL | eg-video | 测温接口；DEGRADED（EG 0.5 起）= 温度正常、区域配置或报警状态读不到；纯 RTSP 驱动不发 |
 | CAM | `q` `dev.err` | 串 | eg-video | EG 0.5 起测温出错时 eg-video 自己马上发（温度量与 cam.alarm 标 invalid、dev.err 给错误类别 CONNECT / TIMEOUT / AUTH / TOKEN / API / DATA / ALARM），agent 合并后照常发 q（G4 测温约定 §2） |
 | CAM | `cam.alarm` | 串 | eg-video | 摄像机原生报警状态，原样 |
-| 任意 | `q` | 串（JSON 对象：`{"<key>":"invalid"|"stale"|"warmup"|"calibrating"}`） | 同事程序报 + EG 看护合并 | 质量码，只列出有问题的 key；全好时为 `"{}"`。合并优先级 invalid > calibrating / warmup > stale |
+| 任意 | `q` | 串（JSON 对象：`{"<key>":"invalid"|"stale"|"warmup"|"calibrating"}`） | 同事程序报 + EG 看护合并 | 质量码，只列出有问题的 key；全好时为 `"{}"`。合并优先级 invalid > calibrating / warmup > stale。**EG 0.17 起**：需要预热的设备在预热中 EG 自己标 warmup（T2 读数中断后恢复 / T3 主机刚开机，docs/气体传感器预热方案.md）；同事程序报的 q 有新鲜度窗口（同 dev.*），过了窗口不再算数 |
+| 需要预热的设备 | `dev.warmup_s` | 数，秒 | EG（0.17） | 剩余预热秒数，0 = 就绪。agent 启动即发、进出预热立即发、预热中每 10 s、就绪后每分钟；读数中断已满 gasGapS（或主机刚开机还没读到）时提前报满额。本地规则带 warmup 的按它分正式 / 降级两支（降级 =「预热期读数越限（原类型）」WARNING）。现在只有 eg.yaml 设备属性 `warmup: true` / `warmupS` 的设备有，T08 后气体设备缺省有 |
 | 任意 | `dev.comm` | 串 ONLINE / DEGRADED / OFFLINE / UNKNOWN | 同事程序报，没报时 EG 兜底 | §13 下挂设备通信状态 |
 | 任意 | `dev.last_ok` `dev.last_try` | 数，毫秒 | 同上（last_try 只有同事程序报） | |
 | 任意 | `dev.fails` | 数 | 同上 | EG 兜底时 = 错过的周期数 |

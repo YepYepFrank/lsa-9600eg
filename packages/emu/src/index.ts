@@ -12,6 +12,9 @@
  *   GET  /emu/status
  *   POST /emu/dev/<设备名>/dead?on=1|0   这台设备停发（模拟传感器掉线）/ 恢复
  *   POST /emu/dev/<设备名>/drop?keys=a,b  这台设备只停发这几个量（模拟单个传感器坏）；keys 为空 = 恢复
+ *   POST /emu/dev/<设备名>/powercycle?off=70[&spikeKey=pm.2.5&spikeValue=300&spikeS=60][&selfq=1]
+ *        0.17 传感器预热的两个场景：断电 off 秒再来电（≥ 60 s = 断电，EG 进预热；十几秒 = 总线抖动，不该进）；
+ *        来电后 spikeS 秒内 spikeKey 报 spikeValue（预热期读数偏高），selfq=1 另发 q:warmup（型号自报 T1）
  *   POST /emu/arc?intensity=85&ms=22     热点隔室的 SAM 打一次弧光脉冲（强度按 %，0–100：ALS10 Arc Level ÷ 100，格式文档 v0.6；出厂阈值 70）
  *
  * 仿真摄像机（G4 摄像机测温约定 §6，camera.ts）：eg-video 的 sim 驱动取 GET /emu/cam/state；
@@ -163,6 +166,40 @@ async function main() {
       else dead.add(seg[2])
       log(`${seg[2]} ${dead.has(seg[2]) ? '停发（仿真掉线）' : '恢复'}`)
       return json(200, { ok: true, dead: [...dead] })
+    }
+    if (req.method === 'POST' && seg[1] === 'dev' && seg[2] && seg[3] === 'powercycle') {
+      // 0.17 传感器预热的两个场景：断电再来电（off ≥ 60 s，EG 判 T2 进预热）/ 总线抖动（off 十几秒，不该进预热）。
+      // 来电后 spikeS 秒内 spikeKey 报 spikeValue（预热期读数偏高、不可信）；selfq=1 时这段时间另发 q:warmup（型号自报，T1）
+      const name = seg[2]
+      if (!cab.subs.some(s => s.name === name)) return json(404, { error: `没有设备 ${name}` })
+      const off = Math.max(1, num('off', 70))
+      const spikeKey = url.searchParams.get('spikeKey') ?? ''
+      const spikeValue = num('spikeValue', 0)
+      const spikeS = num('spikeS', 0)
+      const selfq = url.searchParams.get('selfq') === '1'
+      dead.add(name)
+      log(`${name} 断电 ${off} s${spikeKey ? `，来电后 ${spikeS} s 内 ${spikeKey} = ${spikeValue}${selfq ? '、发 q:warmup' : ''}` : ''}`)
+      setTimeout(() => {
+        dead.delete(name)
+        log(`${name} 来电`)
+        if (!spikeKey || spikeS <= 0) return
+        const until = Date.now() + spikeS * 1000
+        // 这段时间正常发数不再发这个量（只发偏高的值），结束后照旧
+        const prevDrop = drop.get(name)
+        drop.set(name, new Set([...(prevDrop ?? []), spikeKey]))
+        const t = setInterval(() => {
+          const now = Date.now()
+          if (now >= until) {
+            clearInterval(t)
+            if (prevDrop) drop.set(name, prevDrop)
+            else drop.delete(name)
+            if (selfq) pub(name, { q: '{}' }, now)
+            return
+          }
+          pub(name, { [spikeKey]: spikeValue, ...(selfq ? { q: JSON.stringify({ [spikeKey]: 'warmup' }) } : {}) }, now)
+        }, 1000)
+      }, off * 1000)
+      return json(200, { ok: true, device: name, off, spike: spikeKey ? { key: spikeKey, value: spikeValue, s: spikeS, selfq } : null })
     }
     if (req.method === 'POST' && seg[1] === 'dev' && seg[2] && seg[3] === 'drop') {
       if (!cab.subs.some(s => s.name === seg[2])) return json(404, { error: `没有设备 ${seg[2]}` })

@@ -3,6 +3,7 @@
  * caps.actual（CapsActualService）、本地页（/api/caps）来读。 */
 import { Injectable, Logger } from '@nestjs/common'
 import { capEnabled, deviceEnabled, deviceLocal, type CapsConfig } from './caps.js'
+import { DEFAULT_GAS, type GasParams } from '../warmup/warmup.js'
 
 /** 下挂设备离线判据（§13）：fails ≥ failN 且距 last_ok 超过 max(minMs, periods × 周期) */
 export interface DevCommParams {
@@ -17,16 +18,18 @@ export class CapsService {
   private readonly log = new Logger('能力')
   private current: CapsConfig | null = null
   private comm: DevCommParams = DEFAULT_DEVCOMM
+  private gasP: GasParams = DEFAULT_GAS
   private readonly listeners: (() => void)[] = []
   private enabledCache = new Map<string, boolean>()
 
-  /** 应用配置后调用（null = 子站没下发能力，全部照旧） */
-  set(c: CapsConfig | null, devComm: DevCommParams | null): void {
-    const before = JSON.stringify([this.current, this.comm])
+  /** 应用配置后调用（null = 子站没下发能力 / 参数，全部照旧）；gas = 传感器预热参数（0.17，extras.gas*） */
+  set(c: CapsConfig | null, devComm: DevCommParams | null, gas: GasParams | null = null): void {
+    const before = JSON.stringify([this.current, this.comm, this.gasP])
     this.current = c
     this.comm = devComm ?? DEFAULT_DEVCOMM
+    this.gasP = gas ?? DEFAULT_GAS
     this.enabledCache = new Map()
-    if (JSON.stringify([this.current, this.comm]) === before) return
+    if (JSON.stringify([this.current, this.comm, this.gasP]) === before) return
     if (c) {
       const off = Object.entries(c.caps).filter(([, s]) => s !== 'confirmed').map(([k, s]) => `${k}=${s}`)
       this.log.log(`能力清单：${Object.keys(c.caps).length} 项${off.length ? `，不启用 ${off.join('、')}` : '，全部启用'}`)
@@ -45,6 +48,11 @@ export class CapsService {
 
   get devComm(): DevCommParams {
     return this.comm
+  }
+
+  /** 传感器预热参数（子站没下发 = 缺省 180 / 60 / []） */
+  get gas(): GasParams {
+    return this.gasP
   }
 
   capEnabled(cap: string): boolean {
