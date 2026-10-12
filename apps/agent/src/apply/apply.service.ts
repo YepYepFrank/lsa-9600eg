@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Inject, Injectable, Logger } from '@nestjs/common'
-import { PROFILES, profileBody, type ThresholdExtras, type ThresholdRow } from '@lsa/model'
+import { PROFILES, profileBody, WARMUP_KEY, warmupTypeOf, type ThresholdExtras, type ThresholdRow } from '@lsa/model'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
@@ -92,10 +92,31 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string; alias
   'EG-devlost': { type: '设备失联' },
 }
 
-/** 预热期的降级告警（0.17，与后端 @lsa/model tb-alarms.ts 的 WARMUP_ALARM_PREFIX / warmupTypeOf 一致）：带 warmup 的规则多派生一条
- *  「预热期读数越限（原类型）」—— 规则开关跟着原类型走（停了原规则，降级那支一起去掉） */
-export const WARMUP_ALARM_PREFIX = '预热期读数越限'
-export const warmupTypeOf = (type: string) => `${WARMUP_ALARM_PREFIX}（${type}）`
+/** 预热期的降级告警（0.17，@lsa/model warmupTypeOf）：带 warmup 的规则多派生一条「预热期读数越限（原类型）」——
+ *  规则开关跟着原类型走（停了原规则，降级那支一起去掉） */
+export { warmupTypeOf }
+
+/** 安全兜底（0.17，协调要求「dev.warmup_s 缺失时正式告警不能因此不触发」）：
+ *  TB 告警条件里的 key 没值时判假 —— 带 warmup 的正式规则（越限 且 dev.warmup_s < 1）在 dev.warmup_s 从没上送时永远不报。
+ *  所以凡是设备配置的规则里用到 dev.warmup_s 的，它下面的设备在本地 TB 里**没有**这个值时，预置一条 ts = 1 的 0：
+ *  以后真上送的值时刻都比它新、照常生效；从没上送（agent 漏发、eg.yaml 没标 warmup、老配置）时正式那支照常能报。
+ *  只在「没有」时预置：已经有值（比如正在预热的 150）时再写 ts = 1 的 0，TB 的告警状态不看时刻、会被它覆盖成「就绪」（一次性 TB 实测，E4）。
+ *  调用：应用配置写完设备配置之后、开机清扫时。返回预置了几台 */
+export async function seedWarmupKey(tb: { get<T>(path: string): Promise<T>; req<T>(method: string, path: string, body?: unknown): Promise<T> }, profiles: { id: { id: string }; name: string; profileData: { alarms: unknown } }[]): Promise<string[]> {
+  const seeded: string[] = []
+  for (const p of profiles) {
+    if (!JSON.stringify(p.profileData.alarms ?? null).includes(`"${WARMUP_KEY}"`)) continue
+    const list = await tb.get<{ data: { id: { id: string }; name: string }[] }>(`/api/tenant/deviceInfos?pageSize=1000&page=0&deviceProfileId=${p.id.id}`)
+    for (const d of list.data) {
+      // TB 对没有的 key 也回一条 { ts: 现在, value: null }：value 不为 null 才算有
+      const have = await tb.get<Record<string, { value: unknown }[]>>(`/api/plugins/telemetry/DEVICE/${d.id.id}/values/timeseries?keys=${encodeURIComponent(WARMUP_KEY)}`)
+      if ((have[WARMUP_KEY] ?? []).some(x => x.value !== null && x.value !== undefined)) continue
+      await tb.req('POST', `/api/plugins/telemetry/DEVICE/${d.id.id}/timeseries/ANY`, { ts: 1, values: { [WARMUP_KEY]: 0 } })
+      seeded.push(d.name)
+    }
+  }
+  return seeded
+}
 
 /** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用 */
 const DEFAULT_EXTRAS: ThresholdExtras = { pdCnt: 20, pm25Abs: 75, commPeriods: 5 }
@@ -318,6 +339,7 @@ export class ApplyService {
     const after = typesOf(profiles.map(x => plan.find(y => y.before === x)?.after ?? x))
     const gone = [...before].filter(t => !after.has(t))
     const cleared = gone.length ? await this.clearActive(gone) : 0
+    await this.seedWarmup(profiles.map(x => plan.find(y => y.before === x)?.after ?? x))
     this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
     const off = input.rules.filter(r => !r.on).map(r => r.id)
     const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}`
@@ -339,6 +361,7 @@ export class ApplyService {
       const list = await this.tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')
       const profiles = await Promise.all(list.data.filter(x => PROFILES.find(d => d.name === x.name)?.alarms).map(x => this.tb.get<TbProfile>(`/api/deviceProfile/${x.id.id}`)))
       if (!profiles.length) return
+      await this.seedWarmup(profiles)
       const now = new Set(profiles.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
       const known = new Set(Object.values(RULE_ALARM).flatMap(r => [r.type, ...(r.alias ?? [])]).flatMap(t => [t, warmupTypeOf(t)]))
       const gone = [...known].filter(t => !now.has(t))
@@ -352,6 +375,16 @@ export class ApplyService {
     })
     this.chain = p.catch(() => undefined)
     return p.catch(() => undefined)
+  }
+
+  /** seedWarmupKey 的包装：失败只记日志（不影响应用；开机清扫下次还会再查） */
+  private async seedWarmup(profiles: TbProfile[]): Promise<void> {
+    try {
+      const n = await seedWarmupKey(this.tb, profiles)
+      if (n.length) this.log.log(`${n.join('、')} 在本地 TB 里还没有 ${WARMUP_KEY}：预置 0（ts = 1），正式告警不会因缺这个值而不报`)
+    } catch (e) {
+      this.log.warn(`预置 ${WARMUP_KEY} 失败：${(e as Error).message}`)
+    }
   }
 
   /** 本地 TB 上这些类型的活动告警清掉（规则已没了，不清就一直挂着）；失败只记日志，不影响这次应用 */
