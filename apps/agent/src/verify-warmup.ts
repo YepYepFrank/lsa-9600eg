@@ -1,7 +1,9 @@
 /* 0.17 传感器预热框架自检（docs/气体传感器预热方案.md v2）。
  *
  *   pnpm warmup:verify                  只跑不需要环境的（判定逻辑、参数、规则开关、配置哈希、转换程序 q 的新鲜度）
- *   pnpm warmup:verify -- --live        另连一套在跑的 agent + 仿真器 + 总线（约 4 分钟）：启动即发、总线抖动、断电再来电、型号自报
+ *   pnpm warmup:verify -- --live        另连一套在跑的 agent + 仿真器 + 总线（约 4 分钟）：启动即发、总线抖动、断电再来电、型号自报、读数与 dev.warmup_s 同行上送
+ *   pnpm warmup:verify -- --tb <URL>    另在一个一次性 TB 上验安全兜底（约 1 分钟；租户 tenant@thingsboard.org / tenant，LOAD_DEMO 建的库）：
+ *                                       dev.warmup_s 从没上送、读数越限 → 正式告警必须触发（seedWarmupKey 预置 0）；正在预热的不能被预置覆盖
  *
  * --live 的前提：一套与开发样机隔离的 agent / 仿真器 / 总线（不要连 AH03 那套 lsa-eg-*）。eg.yaml 里要有一台 attrs.warmupS: 40 的 pm 设备
  * （「虚拟气体设备」，PM6 代用 —— 气体点表等 T08）。agent 要刚起（30 s 内）才能查「启动即发」。地址用环境变量：
@@ -11,9 +13,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import mqtt from 'mqtt'
+import Database from 'better-sqlite3'
+import { toTbAlarms, warmupTypeOf, WARMUP_KEY, type RuleSpec } from '@lsa/model'
 import { BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { agent, AGENT, BUS, check, done, EMU, post, sleep } from './verify/lib.js'
-import { configHash, filterRules, warmupTypeOf } from './apply/apply.service.js'
+import { configHash, filterRules, seedWarmupKey } from './apply/apply.service.js'
 import { CapsService } from './caps/caps.service.js'
 import { QualityService } from './quality/quality.service.js'
 import type { BusService } from './bus/bus.service.js'
@@ -21,6 +25,7 @@ import { bootTrigger, DEFAULT_GAS, deviceWarmupS, parseGas, warmupDevice, Warmup
 import { WarmupService } from './warmup/warmup.service.js'
 
 const LIVE = process.argv.includes('--live')
+const TB_URL = process.argv.includes('--tb') ? process.argv[process.argv.indexOf('--tb') + 1] : undefined
 const throws = (fn: () => unknown) => {
   try {
     fn()
@@ -97,7 +102,8 @@ function quality(): void {
       devices: [{ name: 'PM6-AH99', kind: 'pm', label: '', attrs: { warmupS: 40 } }],
     } as unknown as EgConfig
     let listener: ((dev: string, entries: { ts: number; values: Record<string, unknown> }[], own: boolean) => void) | null = null
-    const bus = { onTelemetry: (fn: typeof listener) => (listener = fn), publish: () => undefined, live: new Map() } as unknown as BusService
+    const sent: { dev: string; values: Record<string, unknown>; ts: number }[] = []
+    const bus = { onTelemetry: (fn: typeof listener) => (listener = fn), publish: (dev: string, values: Record<string, unknown>, ts: number) => sent.push({ dev, values, ts }), live: new Map() } as unknown as BusService
     const caps = new CapsService()
     const warm = new WarmupService(cfg, caps)
     const q = new QualityService(cfg, bus, caps, warm)
@@ -112,11 +118,73 @@ function quality(): void {
       listener!('PM6-AH99', [{ ts: now, values: { q: '{}' } }], false)
       check(q.warmupOf('PM6-AH99') === 0, '转换程序发 "{}"：清掉')
       check(q.warmupOf('SAM-AH99-A') === null, '不是需要预热的设备：null（不发 dev.warmup_s）')
+      sent.length = 0
+      const ts = now - 1234
+      listener!('PM6-AH99', [{ ts, values: { 'pm.2.5': 31, 'pm.10': 40 } }], false)
+      const w = sent.find(x => x.dev === 'PM6-AH99' && WARMUP_KEY in x.values)
+      check(!!w && w.ts === ts && w.values[WARMUP_KEY] === 0, `每条读数后马上补发一条同一时刻的 dev.warmup_s（ts 与读数相同：${w?.ts === ts}，值 ${String(w?.values[WARMUP_KEY])}）`)
     } finally {
       q.onModuleDestroy()
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** 安全兜底（协调要求）：dev.warmup_s 从没上送、读数越限，正式告警必须触发 —— 一次性 TB 实测 seedWarmupKey */
+async function tbSafety(url: string): Promise<void> {
+  console.log(`\n8. 安全兜底：dev.warmup_s 从没上送时正式告警照常（一次性 TB ${url}）`)
+  const login = async () => ((await (await fetch(`${url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'tenant@thingsboard.org', password: 'tenant' }) })).json()) as { token: string }).token
+  const jwt = await login()
+  const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+    const r = await fetch(`${url}${path}`, { method, headers: { 'content-type': 'application/json', 'X-Authorization': `Bearer ${jwt}` }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+    if (!r.ok) throw new Error(`${method} ${path} → ${r.status} ${(await r.text()).slice(0, 200)}`)
+    const t = await r.text()
+    return (t ? JSON.parse(t) : null) as T
+  }
+  const tb = { get: <T>(p: string) => call<T>('GET', p), req: <T>(m: string, p: string, b?: unknown) => call<T>(m, p, b) }
+  const SPEC: RuleSpec = { type: '自检气体越限', rule: '气体浓度越限', cls: 'dev', levels: [{ severity: 'MAJOR', when: [{ key: 'gas.ppm', op: 'GREATER', value: 50 }], forSeconds: 10 }], clearWhen: [{ key: 'gas.ppm', op: 'LESS_OR_EQUAL', value: 40 }], warmup: true }
+  const name = `eg-warmup-safety-${Date.now()}`
+  const prof = await call<{ id: { id: string }; name: string; profileData: { alarms: unknown } }>('POST', '/api/deviceProfile', {
+    name, type: 'DEFAULT', transportType: 'DEFAULT',
+    profileData: { configuration: { type: 'DEFAULT' }, transportConfiguration: { type: 'DEFAULT' }, provisionConfiguration: { type: 'DISABLED' }, alarms: toTbAlarms(SPEC) },
+  })
+  const mk = async (n: string) => {
+    const d = await call<{ id: { id: string } }>('POST', '/api/device', { name: `${name}-${n}`, deviceProfileId: { id: prof.id.id, entityType: 'DEVICE_PROFILE' } })
+    const c = await call<{ credentialsId: string }>('GET', `/api/device/${d.id.id}/credentials`)
+    return { id: d.id.id, name: `${name}-${n}`, token: c.credentialsId }
+  }
+  const send = (d: { token: string }, v: Record<string, number>) => fetch(`${url}/api/v1/${d.token}/telemetry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(v) })
+  const hold = async (ds: { token: string }[], v: Record<string, number>, sec: number) => {
+    for (let t = 0; t < sec; t += 2) {
+      await Promise.all(ds.map(d => send(d, v)))
+      await sleep(2000)
+    }
+  }
+  const act = async (d: { id: string }) => (await call<{ data: { type: string; severity: string }[] }>('GET', `/api/alarm/DEVICE/${d.id}?searchStatus=ACTIVE&pageSize=20&page=0`)).data
+  const fmt = (as: { type: string; severity: string }[]) => as.map(a => `${a.type}/${a.severity}`).join('、') || '无'
+  // 不预置时正式那支永远不报（TB 条件里 key 没值判假）的基线：后端 tb-provision verify:warmup 的 f 项已实测
+  const ds = await Promise.all(['never-flowing', 'never-before', 'warming'].map(mk))
+  const [flowing, before, warming] = ds as [typeof ds[0], typeof ds[0], typeof ds[0]]
+  try {
+    // 已在发读数、从没发过 dev.warmup_s（TB 里告警状态已建）
+    await hold([flowing], { 'gas.ppm': 30 }, 4)
+    await send(warming, { [WARMUP_KEY]: 150 })
+    await sleep(1000)
+    const seeded = await seedWarmupKey(tb, [prof])
+    check(seeded.length === 2 && seeded.includes(flowing.name) && seeded.includes(before.name) && !seeded.includes(warming.name),
+      `只预置 TB 里没有 dev.warmup_s 的设备，正在预热（150）的不碰（预置了 ${seeded.length} 台）`)
+    await hold([flowing, before, warming], { 'gas.ppm': 80 }, 16)
+    type Al = { type: string; severity: string }[]
+    const [a1, a2, a3] = (await Promise.all([flowing, before, warming].map(act))) as [Al, Al, Al]
+    check(a1.length === 1 && a1[0]!.type === SPEC.type && a1[0]!.severity === 'MAJOR', `已在发读数、dev.warmup_s 从没上送，预置后越限 16 s：正式告警触发（${fmt(a1)}）`)
+    check(a2.length === 1 && a2[0]!.type === SPEC.type && a2[0]!.severity === 'MAJOR', `先预置、之后才开始发读数，越限 16 s：正式告警触发（${fmt(a2)}）`)
+    check(a3.length === 1 && a3[0]!.type === warmupTypeOf(SPEC.type) && a3[0]!.severity === 'WARNING', `正在预热（150）的：没被预置覆盖，只出降级告警（${fmt(a3)}）`)
+    const again = await seedWarmupKey(tb, [prof])
+    check(again.length === 0, `再跑一次（开机清扫）：都已有值，一台都不再预置（${again.length} 台）`)
+  } finally {
+    for (const d of ds) await call('DELETE', `/api/device/${d.id}`).catch(() => undefined)
+    await call('DELETE', `/api/deviceProfile/${prof.id.id}`).catch(() => undefined)
   }
 }
 
@@ -218,6 +286,20 @@ async function live(): Promise<void> {
       if (d.warmupS === 0 && !Object.values(d.q).includes('warmup')) clear = d
     }
     check(!!clear, '转换程序发 "{}" 之后：回到 0')
+
+    console.log('   读数与 dev.warmup_s：本机总线上同一时刻补发，上送子站并进同一行')
+    const meas = log.filter(m => !m.own && Object.keys(m.values).some(k => k.startsWith('pm.')))
+    const pairs = meas.slice(-20).filter(m => log.some(o => o.own && WARMUP_KEY in o.values && Math.abs(o.at - m.at) < 1000))
+    check(meas.length >= 5 && pairs.length === Math.min(20, meas.length), `总线：最近 ${Math.min(20, meas.length)} 条读数，每条 1 s 内都有 agent 补发的 dev.warmup_s（${pairs.length} 条）`)
+    // 上送：隔离环境的子站地址是死的，行都积在 outbox 里 —— 只读打开看读数行
+    const db = new Database(join(cfg.dir, 'outbox.db'), { readonly: true, fileMustExist: true })
+    try {
+      const rows = db.prepare("select body from outbox where dev = ? and kind = 't' order by seq desc limit 200").all(name) as { body: string }[]
+      const withPm = rows.map(r => JSON.parse(r.body) as Record<string, unknown>).filter(v => Object.keys(v).some(k => k.startsWith('pm.')))
+      check(withPm.length > 0 && withPm.every(v => typeof v[WARMUP_KEY] === 'number'), `上送：outbox 里 ${name} 的读数行 ${withPm.length} 条，全都带 dev.warmup_s`)
+    } finally {
+      db.close()
+    }
   } finally {
     await bus.endAsync()
   }
@@ -228,6 +310,7 @@ async function main() {
   logic()
   quality()
   if (LIVE) await live()
+  if (TB_URL) await tbSafety(TB_URL)
   done()
 }
 void main().catch(e => {

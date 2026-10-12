@@ -21,6 +21,8 @@ import { attrKey, chunkRows, dropStaleAttrs, MAX_PAYLOAD_BYTES } from './chunk.j
 import { AuditService } from '../audit/audit.service.js'
 import { CapsService } from '../caps/caps.service.js'
 import { MetersService } from '../meters/meters.service.js'
+import { QualityService } from '../quality/quality.service.js'
+import { WARMUP_KEY } from '@lsa/model'
 
 export type UplinkState = 'ok' | 'backfill' | 'paused' | 'offline' | 'stuck' | 'none' | 'unknown'
 
@@ -95,6 +97,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     private readonly audit: AuditService,
     private readonly caps: CapsService,
     private readonly meters: MetersService,
+    private readonly quality: QualityService,
   ) {}
 
   private readonly upListeners: (() => void)[] = []
@@ -128,10 +131,16 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     const s = this.store.stats()
     if (s.depth) this.log.log(`outbox 里有上次没送完的 ${s.depth} 条，连上后补传`)
     // 能力全都不启用的设备（阶段 A caps）：源头丢，不进 outbox —— 改成启用后从那一刻起送，以前的不补传
-    this.bus.onTelemetry((dev, entries) => {
+    this.bus.onTelemetry((dev, entries, own) => {
       if (!this.caps.deviceEnabled(dev)) return
-      // I3：电表的 el.* 在入队这一刻换成一次值（子站一律按一次量处理）；补传队列里的旧数入队时已按当时变比换过
-      for (const e of entries) this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(this.meters.toPrimary(dev, e.values)) })
+      // 0.17：需要预热的设备，转换程序发来的读数行里并上 dev.warmup_s —— 与读数同一行到子站，子站那边不会出现「有读数没有预热状态」
+      const ws = own ? null : this.quality.warmupOf(dev)
+      for (const e of entries) {
+        let v = e.values
+        if (ws !== null && !(WARMUP_KEY in v) && Object.keys(v).some(k => k !== 'q' && !k.startsWith('dev.'))) v = { ...v, [WARMUP_KEY]: ws }
+        // I3：电表的 el.* 在入队这一刻换成一次值（子站一律按一次量处理）；补传队列里的旧数入队时已按当时变比换过
+        this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(this.meters.toPrimary(dev, v)) })
+      }
     })
     this.bus.onAttributes((dev, attrs) => {
       if (!this.caps.deviceEnabled(dev)) return

@@ -26,6 +26,8 @@
  *   - 需要预热的设备：预热中它的量在 q 里标 warmup；另发 dev.warmup_s（剩余秒数，0 = 就绪）：启动后第一次评估就发（哪怕是 0）、
  *     进出预热立即发、预热中每 10 s、就绪后随每分钟那一次 —— 本地规则带 warmup 的按它分正式 / 降级两支，没有这个值正式那支永远不触发
  *   - 转换程序标了 warmup（T1，型号自报）时 dev.warmup_s 至少报 1
+ *   - 每收到这台设备的一条读数，马上补发一条同一时刻的 dev.warmup_s（读数是转换程序发的，agent 改不了那条消息；
+ *     上送子站那边 UplinkService 直接并进同一行）；本地 TB 从没收到过的另由 ApplyService 预置 0（seedWarmupKey）
  *   - 转换程序发的 q 加新鲜度窗口（同 dev.*：max(minMs, periods × 周期) × 2）：转换程序挂了以后不会永远停在它最后报的状态 */
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
@@ -240,6 +242,17 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     }
     // 0.17：读到测量值，交给预热计时（T2 读数中断后恢复、T3 开机后第一次读到）；进了预热马上发
     const warmed = measured && this.warmup.read(device, now)
+    // 每条读数后补发同一时刻的 dev.warmup_s（evaluate 的定时发照旧）
+    if (measured && this.caps.deviceEnabled(device)) {
+      const ws = this.warmupOf(device, now)
+      if (ws !== null) {
+        this.bus.publish(device, { 'dev.warmup_s': ws }, Math.max(...entries.map(e => e.ts)))
+        if (!warmed) {
+          d.warm = ws
+          d.warmAt = now
+        }
+      }
+    }
     if (sourceQChanged || warmed) this.evaluate(device)
   }
 
