@@ -13,6 +13,7 @@ import { Public } from '../auth/guard.js'
 import { AGENT_VERSION } from '../attrs/attrs.service.js'
 import { MetersService } from '../meters/meters.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
+import { ConvGuardService } from '../conv/conv-guard.service.js'
 import { CapsService } from '../caps/caps.service.js'
 
 const STARTED = Date.now()
@@ -29,6 +30,7 @@ export class StatusController {
     private readonly derive: DeriveService,
     private readonly uplink: UplinkService,
     private readonly meters: MetersService,
+    private readonly convGuard: ConvGuardService,
   ) {}
 
   @Get('status')
@@ -76,6 +78,8 @@ export class StatusController {
         }
       }),
       unknownDevices: [...this.bus.unknown.keys()],
+      // 0.17：转换程序保险（自动重启次数、最近一次原因）
+      convGuard: this.convGuard.info(),
     }
   }
 

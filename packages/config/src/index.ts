@@ -66,7 +66,9 @@ export interface LocalFile {
   /** 上行网口名（算 eg.up_kbps）；空 = 按默认路由自动找 */
   net: { uplink: string }
   /** 本机容器：看状态、取日志、重启（只开放本地 TB 与 IoT Gateway 的重启）。api：unix:///var/run/docker.sock、npipe:////./pipe/docker_engine、http://docker-proxy:2375 */
-  docker: { api: string; containers: { tb: string; gateway: string; mosquitto: string; mediamtx: string } }
+  docker: { api: string; containers: { tb: string; gateway: string; mosquitto: string; mediamtx: string; conv: string } }
+  /** 转换程序保险（0.17，eg-agent ConvGuardService）：总线重启后重启 conv；conv 在跑但 silentS 秒没有读数就重启它，连续重启按 silentS × 2^n 退避（最多 maxBackoffS） */
+  convGuard: { enabled: boolean; silentS: number; maxBackoffS: number }
   /** EG 本机 mediamtx（G4，docs/G4视频接口约定.md）：配置由 eg-video 生成到 <配置目录>/mediamtx/mediamtx.yml */
   video: {
     /** 子站从这里拉流：rtsp://<EG 上行 IP>:<rtspPort>/<柜号>[-sub|-ir|-ir-sub]（开发样机 18554，与子站的 8554 错开） */
@@ -154,8 +156,9 @@ export const LOCAL_DEFAULTS: LocalFile = {
   net: { uplink: '' },
   docker: {
     api: 'unix:///var/run/docker.sock',
-    containers: { tb: 'lsa-eg-tb', gateway: 'lsa-eg-gateway', mosquitto: 'lsa-eg-mosquitto', mediamtx: 'lsa-eg-mediamtx' },
+    containers: { tb: 'lsa-eg-tb', gateway: 'lsa-eg-gateway', mosquitto: 'lsa-eg-mosquitto', mediamtx: 'lsa-eg-mediamtx', conv: 'lsa-eg-conv' },
   },
+  convGuard: { enabled: true, silentS: 60, maxBackoffS: 1800 },
   video: { rtspPort: 8554, api: 'http://127.0.0.1:9997', apiListen: '127.0.0.1:9997', readFrom: [], apiFrom: [], closeAfter: '10s', playback: 'http://127.0.0.1:9996', playbackListen: '127.0.0.1:9996', webrtc: 'http://127.0.0.1:8889', webrtcListen: '127.0.0.1:8889', webrtcUdp: 8189, webrtcHosts: [], hls: 'http://127.0.0.1:8888', hlsListen: '127.0.0.1:8888' },
   evidence: {
     ringHours: 24,
