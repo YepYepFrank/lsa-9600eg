@@ -3,7 +3,8 @@
 发布数据到 EG 本机 Mosquitto (127.0.0.1:1884)
 再由 TB IoT Gateway 转发到 EG 本地 TB, eg-agent 上送子站
 
-LSA 补丁 (2026-10-13, 《EG 内部 MQTT 格式》v0.7 §2; 用户定: Mosquitto 这一侧由 EG 方改):
+LSA 补丁 (2026-10-13, 基于 1.1.0 —— 1.1.0 的这个文件与 1.0 相同; 《EG 内部 MQTT 格式》v0.7 §2、§3; 用户定: Mosquitto 这一侧由 EG 方改):
+    - 按设备发: publish_* 多一个 device 参数, 发到 lsa/<device>/...; 不给用配置里的设备名。每次连上给每个设备名各发一次 attributes
     - 断线后每 reconnect_interval (3 s) 重连; 启动时连不上也循环重试 (run() 常驻)
     - 每次连上: 先发 attributes, 再通知补传 (on_connected 回调)
     - publish 加短超时 (publish_timeout, 缺省 2 s): 超时 / 出错当作断线, 立即返回 False (调用方转入缓存),
@@ -88,8 +89,9 @@ class InternalMQTTClient:
         self._connected = False
         self._lost: Optional[asyncio.Event] = None
         self._stopping = False
-        # 每次连上先发的属性 (上电/重连后发一次, §3)
+        # 每次连上先发的属性 (上电/重连后发一次, §3), 每个设备名各发一次
         self._attributes: Dict[str, Any] = {"status": "online", "fw": "1.0.0"}
+        self._devices: List[str] = [device_name]
         # 连上后要做的事 (补传), 由 app 注册
         self._on_connected: List[Callable[[], Awaitable[None]]] = []
         self.connects = 0
@@ -121,6 +123,10 @@ class InternalMQTTClient:
         """每次连上先发的属性 (覆盖缺省的 status / fw)"""
         self._attributes = dict(attributes)
 
+    def set_devices(self, devices: List[str]) -> None:
+        """本程序发数据的全部设备名 (各传感器 yaml 的 device:), 每次连上各发一次 attributes"""
+        self._devices = sorted({d for d in devices if d}) or [self._device_name]
+
     async def run(self) -> None:
         """常驻: 连上 → 发属性 → 通知补传 → 等到断开 → 隔 reconnect_interval 再连。启动时连不上也一直重试"""
         self._quiet_aiomqtt_futures()
@@ -138,7 +144,8 @@ class InternalMQTTClient:
                                 self._host, self._port, self._client_id, self.connects,
                                 f", 尝试 {attempt} 次" if attempt > 1 else "")
                     attempt = 0
-                    await self.publish_attributes(self._attributes)
+                    for dev in self._devices:
+                        await self.publish_attributes(self._attributes, dev)
                     for fn in self._on_connected:
                         asyncio.create_task(self._safe(fn))
                     watch = asyncio.create_task(self._watch(client))
@@ -248,28 +255,31 @@ class InternalMQTTClient:
         self._connected = False
         logger.info("MQTT 连接已断开")
 
-    async def publish_telemetry(self, ts: int, values: Dict[str, Any]) -> bool:
+    def _prefix(self, device: Optional[str]) -> str:
+        return f"lsa/{device}" if device else self._topic_prefix
+
+    async def publish_telemetry(self, ts: int, values: Dict[str, Any], device: Optional[str] = None) -> bool:
         """
-        发布遥测数据 (§4): {"ts": 采样时刻毫秒, "values": {...}}, 本周期全部量打成一条
+        发布遥测数据 (§4): {"ts": 采样时刻毫秒, "values": {...}}, 本周期全部量打成一条; 发到 lsa/<device>/telemetry
 
         Returns:
             发布是否成功 (没连上 / 超时返回 False, 调用方转入缓存)
         """
         payload = json.dumps({"ts": ts, "values": values}, ensure_ascii=False)
-        ok = await self._publish(f"{self._topic_prefix}/telemetry", payload)
+        ok = await self._publish(f"{self._prefix(device)}/telemetry", payload)
         if ok:
-            logger.debug("发布遥测: ts=%d, keys=%s", ts, list(values.keys()))
+            logger.debug("发布遥测: %s ts=%d, keys=%s", device or self._device_name, ts, list(values.keys()))
         return ok
 
-    async def publish_telemetry_batch(self, data_list: list) -> bool:
+    async def publish_telemetry_batch(self, data_list: list, device: Optional[str] = None) -> bool:
         """
-        批量发布遥测数据 (用于断点补传): [{"ts": ..., "values": {...}}, ...], ts 保持原采样时刻
+        批量发布遥测数据 (用于断点补传): [{"ts": ..., "values": {...}}, ...], ts 保持原采样时刻; 同一批只能是一个设备的
         """
-        return await self._publish(f"{self._topic_prefix}/telemetry", json.dumps(data_list, ensure_ascii=False))
+        return await self._publish(f"{self._prefix(device)}/telemetry", json.dumps(data_list, ensure_ascii=False))
 
-    async def publish_attributes(self, attributes: Dict[str, Any]) -> bool:
+    async def publish_attributes(self, attributes: Dict[str, Any], device: Optional[str] = None) -> bool:
         """发布静态属性 (上电/重连后发一次)"""
-        ok = await self._publish(f"{self._topic_prefix}/attributes", json.dumps(attributes, ensure_ascii=False))
+        ok = await self._publish(f"{self._prefix(device)}/attributes", json.dumps(attributes, ensure_ascii=False))
         if ok:
-            logger.info("发布属性: topic=%s/attributes, keys=%s", self._topic_prefix, list(attributes.keys()))
+            logger.info("发布属性: topic=%s/attributes, keys=%s", self._prefix(device), list(attributes.keys()))
         return ok

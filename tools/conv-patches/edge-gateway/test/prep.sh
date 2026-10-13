@@ -1,7 +1,7 @@
 #!/bin/bash
 # 准备 MQTT 补丁的联调工作目录（不改同事的目录）：
 #   bash prep.sh <edge-gateway 源码目录> <pyserial-3.5-py2.py3-none-any.whl> <工作目录>
-# 工作目录里：app/（同事的 src + config，覆盖本补丁的两个文件；串口指向模拟器 /tmp/ttyV0、打开弧光）、
+# 工作目录里：app/（同事的 src + config，覆盖本补丁的文件；串口指向模拟器 /tmp/ttyV0、打开弧光、温湿度 device 改成 SAM-AH03-A 验「按设备发」）、
 #             eg/eg.yaml（柜号 AH03）、deps/（同事 wheels/ 里的包 + pyserial，在断网的 python:3.12-slim 里装；PyYAML 只取纯 Python 部分）
 # 之后：bash run.sh <工作目录>，再 python3 analyze.py <工作目录>
 set -euo pipefail
@@ -14,10 +14,12 @@ PATCH="$(cd "$HERE/.." && pwd)"
 mkdir -p "$W/app" "$W/eg" "$W/wheels" "$W/out"
 rm -rf "$W/app/src" "$W/app/config"
 cp -r "$SRC/src" "$SRC/config" "$W/app/"
-cp "$PATCH/src/core/app.py" "$W/app/src/core/app.py"
-cp "$PATCH/src/north/mqtt_client.py" "$W/app/src/north/mqtt_client.py"
+# 本补丁改过的文件（src/ 下全部 .py）覆盖上去
+(cd "$PATCH" && find src -name '*.py') | while read -r f; do cp "$PATCH/$f" "$W/app/$f"; done
 sed -i 's#^\(  port: \)"/dev/ttyS[0-9]*"#\1"/tmp/ttyV0"#' "$W/app/config/gateway.yaml"
 sed -i 's/^\(  enabled: \)false\(.*\)$/\1true\2/' "$W/app/config/sensors/arc_light.yaml"
+# 温湿度挂 A 隔室（1.1.0 起每个传感器 yaml 有 device:）：看读数是不是按设备发到 lsa/SAM-AH03-A/…
+if grep -q '^  device:' "$W/app/config/sensors/temperature.yaml"; then sed -i 's/^\(  device: \)"[^"]*"/\1"SAM-AH03-A"/' "$W/app/config/sensors/temperature.yaml"; fi
 grep -q '"/tmp/ttyV0"' "$W/app/config/gateway.yaml" || { echo 'gateway.yaml 的 serial.port 没改成 /tmp/ttyV0' >&2; exit 1; }
 printf 'schema: 1\ncabinet:\n  code: AH03\n  name: 联调柜\n' > "$W/eg/eg.yaml"
 cp "$SRC"/wheels/*.whl "$SERIAL_WHL" "$W/wheels/"
