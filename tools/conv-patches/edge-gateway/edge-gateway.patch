@@ -1,0 +1,543 @@
+--- a/src/north/mqtt_client.py
++++ b/src/north/mqtt_client.py
+@@ -1,46 +1,98 @@
+ """
+ 内部 MQTT 客户端
+ 发布数据到 EG 本机 Mosquitto (127.0.0.1:1884)
+-再由 TB IoT Gateway 转发到 TB Edge / 子站
++再由 TB IoT Gateway 转发到 EG 本地 TB, eg-agent 上送子站
++
++LSA 补丁 (2026-10-13, 《EG 内部 MQTT 格式》v0.7 §2; 用户定: Mosquitto 这一侧由 EG 方改):
++    - 断线后每 reconnect_interval (3 s) 重连; 启动时连不上也循环重试 (run() 常驻)
++    - 每次连上: 先发 attributes, 再通知补传 (on_connected 回调)
++    - publish 加短超时 (publish_timeout, 缺省 2 s): 超时 / 出错当作断线, 立即返回 False (调用方转入缓存),
++      并让 run() 断开重连 —— 总线卡住时不会把调用方挂住几十秒
++    - clientId = lsa-conv-<柜号>: 柜号从 EG 只读挂进来的 eg.yaml (环境变量 LSA_EG_YAML, 缺省 /eg/eg.yaml) 取;
++      取不到用配置里的 client_id; 配置还是老的 lsa-conv-eg 时从设备名 (SAM-AH03-B → AH03) 推
++    - 总线地址可由环境变量 LSA_MQTT_URL (mqtt://127.0.0.1:1884) 覆盖, EG 的 compose 会给
+ """
+ 
+ import asyncio
+ import json
+-from typing import Any, Callable, Dict, Optional
++import os
++import re
++from typing import Any, Awaitable, Callable, Dict, List, Optional
+ import aiomqtt
+ from src.core.logger import setup_logger
+ 
+ logger = setup_logger("mqtt_client")
++
++
++def _cabinet_from_eg_yaml(path: str) -> Optional[str]:
++    """eg.yaml 的 cabinet.code (如 AH03); 读不到返回 None"""
++    try:
++        import yaml
++        with open(path, encoding="utf-8") as f:
++            doc = yaml.safe_load(f) or {}
++        code = (doc.get("cabinet") or {}).get("code")
++        return str(code) if code else None
++    except FileNotFoundError:
++        return None
++    except Exception as e:
++        logger.warning("读 %s 取柜号失败: %s", path, e)
++        return None
++
++
++def _resolve_client_id(cfg_id: str, device_name: str) -> str:
++    cab = _cabinet_from_eg_yaml(os.environ.get("LSA_EG_YAML", "/eg/eg.yaml"))
++    if cab:
++        return f"lsa-conv-{cab}"
++    if cfg_id and cfg_id != "lsa-conv-eg":
++        return cfg_id
++    m = re.match(r"^(?:SAM|PM2?|PM6|EG)-([A-Za-z0-9]+)", device_name or "")
++    return f"lsa-conv-{m.group(1)}" if m else (cfg_id or "lsa-conv-eg")
+ 
+ 
+ class InternalMQTTClient:
+     """
+     EG 内部 MQTT 客户端
+ 
+-    依据《EG内部MQTT格式 v0.1》:
++    依据《EG内部MQTT格式 v0.7》:
+         - 只与本机 Mosquitto 通信 (127.0.0.1:1884)
+-        - 不直连 TB Edge / 子站
+-        - 断网、补传、告警由后续环节处理
++        - 不直连本地 TB / 子站
++        - QoS 1, 不用 retain; 断开后 3 s 重连
+ 
+     主题格式:
+         - lsa/<设备名>/telemetry   遥测数据
+         - lsa/<设备名>/attributes  静态属性 (上电/重连后发一次)
++
++    用法: 启动时 asyncio.create_task(client.run()) 常驻; publish_* 在没连上 / 超时时返回 False, 由调用方转入缓存
+     """
+ 
+     def __init__(self, mqtt_config: Dict[str, Any], device_name: str):
+         self._config = mqtt_config
+         self._device_name = device_name
+         self._host = mqtt_config.get("host", "127.0.0.1")
+-        self._port = mqtt_config.get("port", 1884)
++        self._port = int(mqtt_config.get("port", 1884))
++        url = os.environ.get("LSA_MQTT_URL", "")
++        m = re.match(r"^mqtts?://([^:/]+)(?::(\d+))?", url)
++        if m:
++            self._host = m.group(1)
++            self._port = int(m.group(2) or 1883)
+         self._username = mqtt_config.get("username", "")
+         self._password = mqtt_config.get("password", "")
+-        self._client_id = mqtt_config.get("client_id", "lsa-conv-eg")
++        self._client_id = _resolve_client_id(mqtt_config.get("client_id", "lsa-conv-eg"), device_name)
+         self._keepalive = mqtt_config.get("keepalive", 30)
+         self._qos = mqtt_config.get("qos", 1)
+         self._reconnect_interval = mqtt_config.get("reconnect_interval", 3)
++        self._publish_timeout = mqtt_config.get("publish_timeout", 2)
++        self._connect_timeout = mqtt_config.get("connect_timeout", 5)
+ 
+         self._client: Optional[aiomqtt.Client] = None
+         self._connected = False
++        self._lost: Optional[asyncio.Event] = None
++        self._stopping = False
++        # 每次连上先发的属性 (上电/重连后发一次, §3)
++        self._attributes: Dict[str, Any] = {"status": "online", "fw": "1.0.0"}
++        # 连上后要做的事 (补传), 由 app 注册
++        self._on_connected: List[Callable[[], Awaitable[None]]] = []
++        self.connects = 0
+ 
+         # 主题前缀: lsa/<设备名>/
+         self._topic_prefix = f"lsa/{self._device_name}"
+@@ -57,121 +109,167 @@
+     def topic_prefix(self) -> str:
+         return self._topic_prefix
+ 
+-    async def connect(self) -> bool:
+-        """建立 MQTT 连接"""
++    @property
++    def client_id(self) -> str:
++        return self._client_id
++
++    def on_connected(self, fn: Callable[[], Awaitable[None]]) -> None:
++        """注册「每次连上后」要做的事 (在发完 attributes 之后调用)"""
++        self._on_connected.append(fn)
++
++    def set_connect_attributes(self, attributes: Dict[str, Any]) -> None:
++        """每次连上先发的属性 (覆盖缺省的 status / fw)"""
++        self._attributes = dict(attributes)
++
++    async def run(self) -> None:
++        """常驻: 连上 → 发属性 → 通知补传 → 等到断开 → 隔 reconnect_interval 再连。启动时连不上也一直重试"""
++        self._quiet_aiomqtt_futures()
++        attempt = 0
++        while not self._stopping:
++            attempt += 1
++            client = self._new_client()
++            try:
++                async with client:
++                    self._client = client
++                    self._lost = asyncio.Event()
++                    self._connected = True
++                    self.connects += 1
++                    logger.info("MQTT 连接成功: %s:%d (client_id=%s, 第 %d 次连上%s)",
++                                self._host, self._port, self._client_id, self.connects,
++                                f", 尝试 {attempt} 次" if attempt > 1 else "")
++                    attempt = 0
++                    await self.publish_attributes(self._attributes)
++                    for fn in self._on_connected:
++                        asyncio.create_task(self._safe(fn))
++                    watch = asyncio.create_task(self._watch(client))
++                    lost = asyncio.create_task(self._lost.wait())
++                    done, pending = await asyncio.wait({watch, lost}, return_when=asyncio.FIRST_COMPLETED)
++                    for t in pending:
++                        t.cancel()
++                    self._connected = False
++                    if not self._stopping:
++                        logger.warning("MQTT 连接断开, %ss 后重连", self._reconnect_interval)
++            except asyncio.CancelledError:
++                self._connected = False
++                raise
++            except Exception as e:
++                self._connected = False
++                if attempt == 1 or attempt % 20 == 0:
++                    logger.error("MQTT 连接失败 (%s:%d, 第 %d 次): %s; %ss 后重试",
++                                 self._host, self._port, attempt, e, self._reconnect_interval)
++            finally:
++                self._connected = False
++                self._client = None
++                # aiomqtt 断线时把异常放在内部的 _disconnected 里, 没人取的话会打一条 "Future exception was never retrieved" —— 取掉它
++                fut = getattr(client, "_disconnected", None)
++                if fut is not None and fut.done() and not fut.cancelled():
++                    fut.exception()
++            if not self._stopping:
++                await asyncio.sleep(self._reconnect_interval)
++
++    @staticmethod
++    def _quiet_aiomqtt_futures() -> None:
++        """总线卡住时, 没连成的 aiomqtt 客户端过后才收到 paho 的断线回调, 把 MqttError 放进一个没人等的 future,
++        回收时 asyncio 会打 "Future exception was never retrieved"。断线我们自己已经处理并记了日志, 这类只记 debug; 别的异常照常处理"""
++        loop = asyncio.get_running_loop()
++        prev = loop.get_exception_handler()
++
++        def handler(lp: asyncio.AbstractEventLoop, ctx: Dict[str, Any]) -> None:
++            if isinstance(ctx.get("exception"), aiomqtt.MqttError) and "never retrieved" in str(ctx.get("message", "")):
++                logger.debug("aiomqtt 断线 future 未取回 (已处理): %s", ctx.get("exception"))
++                return
++            if prev:
++                prev(lp, ctx)
++            else:
++                lp.default_exception_handler(ctx)
++
++        loop.set_exception_handler(handler)
++
++    def _new_client(self) -> aiomqtt.Client:
++        kw: Dict[str, Any] = {
++            "hostname": self._host,
++            "port": self._port,
++            "identifier": self._client_id,
++            "keepalive": self._keepalive,
++            "timeout": self._connect_timeout,
++        }
++        # 有账号密码时才设置
++        if self._username:
++            kw["username"] = self._username
++            if self._password:
++                kw["password"] = self._password
++        return aiomqtt.Client(**kw)
++
++    async def _watch(self, client: aiomqtt.Client) -> None:
++        """不订阅任何主题, 只靠消息迭代器察觉断线 (aiomqtt 断线时抛 MqttError)"""
+         try:
+-            # 构建连接参数
+-            connect_kwargs = {
+-                "hostname": self._host,
+-                "port": self._port,
+-                "identifier": self._client_id,
+-                "keepalive": self._keepalive,
+-            }
+-            # 有账号密码时才设置
+-            if self._username:
+-                connect_kwargs["username"] = self._username
+-                if self._password:
+-                    connect_kwargs["password"] = self._password
+-
+-            self._client = aiomqtt.Client(**connect_kwargs)
+-            await self._client.__aenter__()
+-            self._connected = True
+-            logger.info("MQTT 连接成功: %s:%d (client_id=%s)",
+-                        self._host, self._port, self._client_id)
+-
+-            # 上电/重连后发送一次属性
+-            await self.publish_attributes({"status": "online", "fw": "1.0.0"})
+-            return True
+-
++            async for _ in client.messages:
++                pass
++        except aiomqtt.MqttError as e:
++            logger.warning("MQTT 断线: %s", e)
++
++    async def _safe(self, fn: Callable[[], Awaitable[None]]) -> None:
++        try:
++            await fn()
+         except Exception as e:
+-            logger.error("MQTT 连接失败: %s", e)
+-            self._connected = False
++            logger.error("连上后的回调出错: %s", e)
++
++    def _mark_lost(self, why: str) -> None:
++        if self._connected:
++            logger.warning("MQTT 发布失败 (%s): 当作断线, 转入缓存并重连", why)
++        self._connected = False
++        if self._lost:
++            self._lost.set()
++
++    async def _publish(self, topic: str, payload: str) -> bool:
++        client = self._client
++        if not self._connected or client is None:
+             return False
+-
+-    async def disconnect(self) -> None:
+-        """断开 MQTT 连接"""
+-        if self._client:
+-            try:
+-                await self._client.__aexit__(None, None, None)
+-            except Exception as e:
+-                logger.warning("MQTT 断开异常: %s", e)
+-            self._connected = False
+-            logger.info("MQTT 连接已断开")
+-
+-    async def publish_telemetry(self, ts: int, values: Dict[str, Any]) -> bool:
+-        """
+-        发布遥测数据
+-
+-        依据《EG内部MQTT格式 §4》:
+-            - ts: 采样时刻, 毫秒
+-            - values: 本周期全部量打成一条, 不要一个值一条
+-            - 采不到的量不发0, 不发这个key
+-
+-        Args:
+-            ts: 采样时刻 (毫秒时间戳)
+-            values: 遥测值字典, 如 {"env.t": 25.3, "env.rh": 60.1}
+-
+-        Returns:
+-            发布是否成功
+-        """
+-        if not self._connected or not self._client:
+-            return False
+-
+         try:
+-            payload = {"ts": ts, "values": values}
+-            topic = f"{self._topic_prefix}/telemetry"
+-            await self._client.publish(
+-                topic,
+-                payload=json.dumps(payload, ensure_ascii=False),
+-                qos=self._qos,
+-            )
+-            logger.debug("发布遥测: topic=%s, ts=%d, keys=%s",
+-                         topic, ts, list(values.keys()))
++            await client.publish(topic, payload=payload, qos=self._qos, timeout=self._publish_timeout)
+             return True
+         except Exception as e:
+-            logger.error("发布遥测失败: %s", e)
+-            self._connected = False
++            self._mark_lost(str(e) or type(e).__name__)
+             return False
+ 
++    async def connect(self) -> bool:
++        """兼容老调用: 现在由 run() 常驻负责连接。这里只等最多 connect_timeout 秒看能不能连上"""
++        for _ in range(int(self._connect_timeout * 10)):
++            if self._connected:
++                return True
++            await asyncio.sleep(0.1)
++        return self._connected
++
++    async def disconnect(self) -> None:
++        """停止重连并断开"""
++        self._stopping = True
++        if self._lost:
++            self._lost.set()
++        self._connected = False
++        logger.info("MQTT 连接已断开")
++
++    async def publish_telemetry(self, ts: int, values: Dict[str, Any]) -> bool:
++        """
++        发布遥测数据 (§4): {"ts": 采样时刻毫秒, "values": {...}}, 本周期全部量打成一条
++
++        Returns:
++            发布是否成功 (没连上 / 超时返回 False, 调用方转入缓存)
++        """
++        payload = json.dumps({"ts": ts, "values": values}, ensure_ascii=False)
++        ok = await self._publish(f"{self._topic_prefix}/telemetry", payload)
++        if ok:
++            logger.debug("发布遥测: ts=%d, keys=%s", ts, list(values.keys()))
++        return ok
++
+     async def publish_telemetry_batch(self, data_list: list) -> bool:
+         """
+-        批量发布遥测数据 (用于断点补传)
+-
+-        Args:
+-            data_list: [{"ts": ..., "values": {...}}, ...]
+-        """
+-        if not self._connected or not self._client:
+-            return False
+-        try:
+-            topic = f"{self._topic_prefix}/telemetry"
+-            await self._client.publish(
+-                topic,
+-                payload=json.dumps(data_list, ensure_ascii=False),
+-                qos=self._qos,
+-            )
+-            return True
+-        except Exception as e:
+-            logger.error("批量发布失败: %s", e)
+-            return False
++        批量发布遥测数据 (用于断点补传): [{"ts": ..., "values": {...}}, ...], ts 保持原采样时刻
++        """
++        return await self._publish(f"{self._topic_prefix}/telemetry", json.dumps(data_list, ensure_ascii=False))
+ 
+     async def publish_attributes(self, attributes: Dict[str, Any]) -> bool:
+-        """
+-        发布静态属性 (上电/重连后发一次)
+-
+-        Args:
+-            attributes: 属性字典, 如 {"fw": "1.0.0", "ir.boxes": "..."}
+-        """
+-        if not self._connected or not self._client:
+-            return False
+-        try:
+-            topic = f"{self._topic_prefix}/attributes"
+-            await self._client.publish(
+-                topic,
+-                payload=json.dumps(attributes, ensure_ascii=False),
+-                qos=self._qos,
+-            )
+-            logger.info("发布属性: topic=%s, keys=%s", topic, list(attributes.keys()))
+-            return True
+-        except Exception as e:
+-            logger.error("发布属性失败: %s", e)
+-            return False
++        """发布静态属性 (上电/重连后发一次)"""
++        ok = await self._publish(f"{self._topic_prefix}/attributes", json.dumps(attributes, ensure_ascii=False))
++        if ok:
++            logger.info("发布属性: topic=%s/attributes, keys=%s", self._topic_prefix, list(attributes.keys()))
++        return ok
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -3,6 +3,13 @@
+ 负责初始化、启动、优雅关闭所有子系统
+ 依据《EG内部MQTT格式 v0.1》架构:
+     转换程序 → EG本机Mosquitto → TB IoT Gateway → TB Edge → 子站
++
++LSA 补丁 (2026-10-13, 《EG 内部 MQTT 格式》v0.7 §2; 用户定: Mosquitto 这一侧由 EG 方改, 传感器解析不动):
++    - 采集和发布分开: 采到的数据放进队列 (_pub_queue), 由单独的发布任务 (_publisher) 发;
++      没连上 / 发布超时 (2 s) 就转入缓存 —— 总线卡住时不会拖住轮询
++    - MQTT 连接由 InternalMQTTClient.run() 常驻负责: 断线 3 s 重连, 启动时连不上也一直重试
++    - 每次连上 (发完 attributes 之后) 马上触发补传, 把缓存按原 ts 发完 (_replay_loop); 平时每 replay_interval 也查一次
++    - 关闭时队列里没发的转入缓存, 不丢
+ """
+ 
+ import asyncio
+@@ -57,6 +64,12 @@
+         self._replayer: Optional[DataReplayer] = None
+         self._health: Optional[HealthMonitor] = None
+ 
++        # LSA 补丁: 采集 → 队列 → 发布任务 (发不出去转缓存); 连上后触发补传
++        self._pub_queue: Optional[asyncio.Queue] = None
++        self._replay_kick: Optional[asyncio.Event] = None
++        self._replay_lock: Optional[asyncio.Lock] = None
++        self._replay_interval = 5
++
+     def initialize(self) -> None:
+         """加载配置并初始化所有子系统"""
+         logger.info("=" * 50)
+@@ -75,6 +88,7 @@
+         self._db = DatabaseManager(storage_cfg.get("db_path", "/data/cache.db"))
+         self._cache = DataCache(self._db, storage_cfg)
+         self._replayer = DataReplayer(self._db, storage_cfg)
++        self._replay_interval = storage_cfg.get("replay_interval", 5)
+ 
+         # 4. 初始化 Modbus RTU 客户端
+         serial_cfg = self._config.get_serial_config()
+@@ -98,6 +112,8 @@
+         # 8. 初始化内部 MQTT 客户端 (发布到本机Mosquitto)
+         mqtt_cfg = self._config.get_mqtt_config()
+         self._mqtt_client = InternalMQTTClient(mqtt_cfg, device_name)
++        # 每次连上 (发完 attributes 之后) 触发补传
++        self._mqtt_client.on_connected(self._kick_replay)
+ 
+         # 9. 初始化健康监控
+         monitor_cfg = self._config.get_monitor_config()
+@@ -164,11 +180,71 @@
+         # 提取ts和values用于发布
+         ts, values = self._normalizer.to_publish_format(normalized)
+ 
+-        # MQTT在线则发布, 否则缓存
+-        if self._mqtt_client and self._mqtt_client.is_connected:
+-            await self._mqtt_client.publish_telemetry(ts, values)
+-        else:
++        # LSA 补丁: 只放进队列, 不在采集路径上等发布 (总线卡住时不能拖住轮询); 队列满了直接进缓存
++        item = (sensor_name, ts, values)
++        if self._pub_queue is None:
+             await self._cache.save(sensor_name, {"ts": ts, "values": values})
++            return
++        try:
++            self._pub_queue.put_nowait(item)
++        except asyncio.QueueFull:
++            await self._cache.save(sensor_name, {"ts": ts, "values": values})
++
++    # ── LSA 补丁: 发布任务 / 补传 ─────────────────────────────
++
++    async def _publisher(self) -> None:
++        """从队列取数据发布; 没连上或发布失败 (超时 2 s) 就写进缓存, 等连上后按原 ts 补传"""
++        while True:
++            sensor_name, ts, values = await self._pub_queue.get()
++            ok = False
++            try:
++                if self._mqtt_client.is_connected:
++                    ok = await self._mqtt_client.publish_telemetry(ts, values)
++                if not ok:
++                    await self._cache.save(sensor_name, {"ts": ts, "values": values})
++            except asyncio.CancelledError:
++                if not ok:
++                    await self._cache.save(sensor_name, {"ts": ts, "values": values})
++                raise
++            except Exception as e:
++                logger.error("发布 / 缓存出错: %s", e)
++            finally:
++                self._pub_queue.task_done()
++
++    async def _kick_replay(self) -> None:
++        """连上后马上补传 (由 InternalMQTTClient 在发完 attributes 之后调用)"""
++        if self._replay_kick:
++            self._replay_kick.set()
++
++    async def _replay_loop(self) -> None:
++        """补传: 连上时立即、平时每 replay_interval 秒查一次缓存; 一批 (replay_batch_size 条) 接一批发到空为止, ts 保持原采样时刻"""
++        while True:
++            try:
++                await asyncio.wait_for(self._replay_kick.wait(), timeout=self._replay_interval)
++            except asyncio.TimeoutError:
++                pass
++            self._replay_kick.clear()
++            async with self._replay_lock:
++                try:
++                    total = await self._db.count()
++                    if total and self._mqtt_client.is_connected:
++                        logger.info("发现 %d 条缓存数据, 开始补传", total)
++                    sent = 0
++                    while self._mqtt_client.is_connected:
++                        before = await self._db.count()
++                        if not before:
++                            break
++                        await self._replayer._replay_batch(self._mqtt_client)
++                        after = await self._db.count()
++                        if after >= before:
++                            break  # 这一批没发出去 (断了), 等下次连上
++                        sent += before - after
++                    if sent:
++                        logger.info("补传完成: 共 %d 条, 剩 %d 条", sent, await self._db.count())
++                except asyncio.CancelledError:
++                    raise
++                except Exception as e:
++                    logger.error("补传异常: %s", e)
+ 
+     async def _on_alarm(self, sensor_name: str, alarm_info: dict) -> None:
+         """告警回调: 记录日志"""
+@@ -193,13 +269,17 @@
+         # 启动 Modbus 连接
+         await self._modbus_client.connect()
+ 
+-        # 启动 MQTT 连接 (到本机Mosquitto)
+-        await self._mqtt_client.connect()
+-
+-        # 启动断点补传任务
+-        replay_task = asyncio.create_task(self._replayer.start_replay(
+-            mqtt_client=self._mqtt_client,
+-        ))
++        # LSA 补丁: 启动时就打开缓存库 —— 原来要等第一次写缓存才打开, 上次没补传完的缓存在下次断线前一直不补
++        await self._db.initialize()
++
++        # LSA 补丁: 队列与发布任务、补传任务; MQTT 连接常驻 (断线 3 s 重连, 启动时连不上也一直重试, 不挡采集启动)
++        self._pub_queue = asyncio.Queue(maxsize=2000)
++        self._replay_kick = asyncio.Event()
++        self._replay_lock = asyncio.Lock()
++        mqtt_task = asyncio.create_task(self._mqtt_client.run())
++        publish_task = asyncio.create_task(self._publisher())
++        replay_task = asyncio.create_task(self._replay_loop())
++        logger.info("MQTT: %s (client_id=%s), 连上前的数据先进缓存", self._mqtt_client.topic_prefix, self._mqtt_client.client_id)
+ 
+         # 启动采集调度器
+         scheduler_task = asyncio.create_task(self._scheduler.run())
+@@ -219,7 +299,13 @@
+         scheduler_task.cancel()
+         health_task.cancel()
+         replay_task.cancel()
++        publish_task.cancel()
++        # 队列里还没发的转入缓存 (下次启动补传)
++        while self._pub_queue and not self._pub_queue.empty():
++            sensor_name, ts, values = self._pub_queue.get_nowait()
++            await self._cache.save(sensor_name, {"ts": ts, "values": values})
+         await self._mqtt_client.disconnect()
++        mqtt_task.cancel()
+         await self._modbus_client.close()
+         await self._db.close()
+         logger.info("边缘网关已安全关闭")
