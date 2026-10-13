@@ -1,6 +1,6 @@
 {
-  "generatedFrom": "@lsa/points v1.1（0.11）",
-  "format": "EG 内部 MQTT 格式 v0.4",
+  "generatedFrom": "@lsa/points v1.3（I18 摄像机）",
+  "format": "EG 内部 MQTT 格式 v0.7",
   "devices": {
     "sam": {
       "send": [
@@ -8,41 +8,98 @@
           "key": "us.amp",
           "label": "超声局放幅值",
           "unit": "dBμV",
-          "periodMs": 2000,
+          "periodMs": 3000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pdAmplitude",
+          "capState": "confirmed"
         },
         {
           "key": "us.cnt",
           "label": "超声局放次数",
-          "unit": "次",
-          "periodMs": 2000,
+          "unit": "次/秒（采样值）",
+          "periodMs": 3000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pdCount",
+          "capState": "confirmed"
         },
         {
           "key": "us.type",
           "label": "局放类型码",
           "unit": "",
-          "periodMs": 2000,
+          "periodMs": 3000,
           "optional": true,
-          "type": "number"
+          "type": "number",
+          "cap": "pdType",
+          "capState": "pending",
+          "note": "能力「局放类型码」现场口径是「待定」（等 T05 · 清单 B′ us.type）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "us.level",
           "label": "局放设备告警等级",
           "unit": "",
-          "periodMs": 2000,
+          "periodMs": 3000,
           "optional": true,
-          "type": "number"
+          "type": "number",
+          "cap": "pdLevel",
+          "capState": "pending",
+          "note": "能力「局放设备告警等级」现场口径是「待定」（等 T05 · 清单 B′ us.level）：本柜装了才发，检查工具不报缺"
+        },
+        {
+          "key": "tev.amp",
+          "label": "地电波幅值",
+          "unit": "dBmV",
+          "periodMs": 3000,
+          "optional": false,
+          "type": "number",
+          "cap": "tev",
+          "capState": "unsupported",
+          "note": "能力「地电波」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
+        },
+        {
+          "key": "tev.level",
+          "label": "地电波设备告警等级",
+          "unit": "",
+          "periodMs": 3000,
+          "optional": true,
+          "type": "number",
+          "cap": "tev",
+          "capState": "unsupported",
+          "note": "能力「地电波」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
+        },
+        {
+          "key": "uhf.amp",
+          "label": "特高频幅值",
+          "unit": "dBmV",
+          "periodMs": 3000,
+          "optional": false,
+          "type": "number",
+          "cap": "uhf",
+          "capState": "unsupported",
+          "note": "能力「特高频」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
+        },
+        {
+          "key": "uhf.level",
+          "label": "特高频设备告警等级",
+          "unit": "",
+          "periodMs": 3000,
+          "optional": true,
+          "type": "number",
+          "cap": "uhf",
+          "capState": "unsupported",
+          "note": "能力「特高频」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "uv.int",
           "label": "紫外弧光强度",
-          "unit": "",
+          "unit": "%",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "arcIntensity",
+          "capState": "pending",
+          "note": "能力「弧光强度」现场口径是「待定」（等 T07 · 清单 E2、ARC1–ARC8、R3、R5）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "uv.pulse",
@@ -50,7 +107,10 @@
           "unit": "",
           "periodMs": null,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "arcEvents",
+          "capState": "pending",
+          "note": "能力「弧光事件」现场口径是「待定」（等 T07 · 清单 E2、B4、ARC2、ARC4、ARC5）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "env.t",
@@ -58,7 +118,9 @@
           "unit": "℃",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "envTH",
+          "capState": "confirmed"
         },
         {
           "key": "env.rh",
@@ -66,7 +128,20 @@
           "unit": "%",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "envTH",
+          "capState": "confirmed"
+        },
+        {
+          "key": "smoke.ppm",
+          "label": "烟雾参考浓度",
+          "unit": "ppm",
+          "periodMs": null,
+          "optional": true,
+          "type": "number",
+          "cap": "smokePpm",
+          "capState": "pending",
+          "note": "能力「烟雾参考浓度」待定（等 T08 · 清单 E1、GAS1–GAS3、R4）：EG 本地显示、暂不上送子站；预热由 EG 0.17 自己判，量程寄存器不用发"
         }
       ],
       "forbid": [
@@ -81,7 +156,9 @@
           "unit": "V",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Ub",
@@ -89,7 +166,9 @@
           "unit": "V",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Uc",
@@ -97,7 +176,9 @@
           "unit": "V",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Ia",
@@ -105,7 +186,9 @@
           "unit": "A",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Ib",
@@ -113,7 +196,9 @@
           "unit": "A",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Ic",
@@ -121,7 +206,9 @@
           "unit": "A",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.P",
@@ -129,7 +216,9 @@
           "unit": "kW",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Q",
@@ -137,7 +226,9 @@
           "unit": "kvar",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.S",
@@ -145,7 +236,9 @@
           "unit": "kVA",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.PF",
@@ -153,7 +246,9 @@
           "unit": "",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.F",
@@ -161,7 +256,9 @@
           "unit": "Hz",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.Ep",
@@ -169,7 +266,9 @@
           "unit": "kWh",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterBasic",
+          "capState": "confirmed"
         },
         {
           "key": "el.THDu",
@@ -177,7 +276,10 @@
           "unit": "%",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterThd",
+          "capState": "pending",
+          "note": "能力「电表总谐波畸变率」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.THDi",
@@ -185,7 +287,10 @@
           "unit": "%",
           "periodMs": 2000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "meterThd",
+          "capState": "pending",
+          "note": "能力「电表总谐波畸变率」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.hu.A",
@@ -193,7 +298,10 @@
           "unit": "%",
           "periodMs": 60000,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "meterHarmonics",
+          "capState": "pending",
+          "note": "能力「电表谐波」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.hu.B",
@@ -201,7 +309,10 @@
           "unit": "%",
           "periodMs": 60000,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "meterHarmonics",
+          "capState": "pending",
+          "note": "能力「电表谐波」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.hu.C",
@@ -209,7 +320,10 @@
           "unit": "%",
           "periodMs": 60000,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "meterHarmonics",
+          "capState": "pending",
+          "note": "能力「电表谐波」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.hi.A",
@@ -217,7 +331,10 @@
           "unit": "%",
           "periodMs": 60000,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "meterHarmonics",
+          "capState": "pending",
+          "note": "能力「电表谐波」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.hi.B",
@@ -225,7 +342,10 @@
           "unit": "%",
           "periodMs": 60000,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "meterHarmonics",
+          "capState": "pending",
+          "note": "能力「电表谐波」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "el.hi.C",
@@ -233,7 +353,10 @@
           "unit": "%",
           "periodMs": 60000,
           "optional": false,
-          "type": "json"
+          "type": "json",
+          "cap": "meterHarmonics",
+          "capState": "pending",
+          "note": "能力「电表谐波」现场口径是「待定」（等 T09 · 清单 E4）：本柜装了才发，检查工具不报缺"
         }
       ],
       "forbid": [
@@ -249,7 +372,10 @@
           "unit": "个/L",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pm6",
+          "capState": "unsupported",
+          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "pm.0.5",
@@ -257,7 +383,10 @@
           "unit": "个/L",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pm6",
+          "capState": "unsupported",
+          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "pm.1.0",
@@ -265,7 +394,10 @@
           "unit": "个/L",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pm6",
+          "capState": "unsupported",
+          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "pm.2.5",
@@ -273,7 +405,10 @@
           "unit": "μg/m³",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pm6",
+          "capState": "unsupported",
+          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "pm.5.0",
@@ -281,7 +416,10 @@
           "unit": "μg/m³",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pm6",
+          "capState": "unsupported",
+          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "pm.10",
@@ -289,7 +427,10 @@
           "unit": "μg/m³",
           "periodMs": 10000,
           "optional": false,
-          "type": "number"
+          "type": "number",
+          "cap": "pm6",
+          "capState": "unsupported",
+          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         }
       ],
       "forbid": [
@@ -382,8 +523,14 @@
     ],
     "forbid": [
       "dev.comm",
-      "dev.link"
-    ]
+      "dev.link",
+      "dev.warmup_s"
+    ],
+    "forbidWhy": {
+      "dev.comm": "通信状态由 eg-agent 按你报的 dev.last_ok / fails 算（§6b），转换程序不要发",
+      "dev.link": "设备链路由 eg-agent 算（§6b），转换程序不要发",
+      "dev.warmup_s": "传感器预热由 EG 0.17 自己判（读数中断后恢复 / 主机刚开机），转换程序不要发；型号能读出预热状态时用 q 标 \"warmup\"（§6）"
+    }
   },
   "retired": {
     "sam": [

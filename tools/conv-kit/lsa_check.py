@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LSA-9600EG 转换程序自检工具 —— 按《EG 内部 MQTT 格式 v0.4》逐条检查总线上的消息。
+"""LSA-9600EG 转换程序自检工具 —— 按《EG 内部 MQTT 格式 v0.7》逐条检查总线上的消息。
 
 只用 Python 标准库（3.8+），自带一个最小的 MQTT 5 客户端，不用 pip 装任何东西。
 
@@ -27,7 +27,7 @@ import threading
 import time
 from collections import defaultdict
 
-VERSION = '1.0'
+VERSION = '1.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
@@ -215,10 +215,12 @@ SPEC = None
 ROOMS = {'mv': 'AB', 'tr': 'ABC', 'lv': 'A'}
 ROOM_NAMES = {'mv': '中压开关柜', 'tr': '干式变压器', 'lv': '低压柜'}
 KIND_NAMES = {'sam': '感知模块 SAM', 'meter': '多功能电表', 'pm': '颗粒物 / 烟气', 'eg': 'EG 级信号', 'camera': '摄像机'}
-PERIOD_NAMES = {2000: '快 2 s', 10000: '慢 10 s', 60000: '分钟 60 s'}
+PERIOD_NAMES = {2000: '快 2 s', 3000: '局放 3 s', 10000: '慢 10 s', 60000: '分钟 60 s'}
 DEV_ERR = {'', 'TIMEOUT', 'CRC', 'REFUSED', 'PARSE', 'AUTH'}
 Q_VALUES = {'invalid', 'stale', 'warmup', 'calibrating'}
 SOUTH5 = ['dev.req_24h', 'dev.timeout_24h', 'dev.crc_24h', 'dev.retry_24h', 'dev.rate_24h']
+# 局放装置没装这一路时读出的固定值（寄存器原值 187 / 269，÷10 后 18.7 / 26.9）：这一路没装，不要发（§5.1）
+PD_ABSENT = {'tev.amp': (18.7, 187), 'uhf.amp': (26.9, 269)}
 NAME_RE = [
     (re.compile(r'^SAM-([A-Za-z0-9]+)-([A-Z])$'), 'sam'),
     (re.compile(r'^PM6-([A-Za-z0-9]+)$'), 'pm'),
@@ -250,6 +252,10 @@ def forbidden(kind):
     if kind == 'eg':
         return set(SPEC['eg']['forbid'])
     return set(SPEC['devices'][kind]['forbid']) | set(SPEC['common']['forbid'])
+
+
+def forbid_why(key):
+    return SPEC['common'].get('forbidWhy', {}).get(key)
 
 
 def retired(kind, key):
@@ -329,6 +335,11 @@ class Dev:
         self.attrs = 0
         self.south_seen = set()
         self.stale_flagged = set()
+        self.caps_seen = set()     # 收到过量的能力（本柜装了）：同一能力的其他量照常查缺
+        self.fails_last = None     # 上一条 dev.fails
+        self.fails_seq = []        # 最近的 dev.fails（报问题时给例子）
+        self.fails_jumps = 0       # 0 之后紧接着 ≥ 2 的次数
+        self.fails_flips = []      # 0 ↔ 非 0 来回切换的时刻（本机 ms）
 
 
 class Checker:
@@ -492,7 +503,7 @@ class Checker:
             dev.last_ts[key] = ts
             dev.stale_flagged.discard(key)
             if key in forb or key.startswith('eg.') and dev.kind != 'eg' or key.startswith('cam.'):
-                self.issue('ERROR', name, 'forbid', '「%s」由 eg-agent / eg-video 算，转换程序不要发（§6）' % key, key, payload)
+                self.issue('ERROR', name, 'forbid', '「%s」%s' % (key, forbid_why(key) or '由 eg-agent / eg-video 算，转换程序不要发（§6）'), key, payload)
                 continue
             if retired(dev.kind, key):
                 self.issue('ERROR', name, 'retired', '「%s」已退役：G4 起热像测温改由摄像机（eg-video），SAM 不再发 ir.*' % key, key, payload)
@@ -501,6 +512,11 @@ class Checker:
             if not d:
                 self.issue('WARN', name, 'unknown', '「%s」不在 %s 的点表里，子站不认（拼写？大小写？）' % (key, KIND_NAMES.get(dev.kind)), key, payload)
                 continue
+            if d.get('cap'):
+                dev.caps_seen.add(d['cap'])
+            if d.get('note'):
+                # 同一能力只说一次（谐波 6 个量、颗粒物 6 个量……）
+                self.issue('INFO', name, 'cap-note', '收到「%s」等。%s' % (key, d['note']), d.get('cap') or key, payload, once=True)
             self.check_value(dev, key, d, v, payload)
             if key in SOUTH5:
                 dev.south_seen.add(key)
@@ -516,6 +532,13 @@ class Checker:
                 dev.ep = values['el.Ep']
         if dev.kind == 'sam' and 'uv.pulse' in values and 'uv.int' not in values:
             self.issue('ERROR', name, 'pulse-int', '弧光脉冲那条要同时带 uv.int = 峰值（§5.1）', '', payload)
+        if dev.kind == 'sam' and isinstance(values.get('uv.pulse'), str) and isinstance(values.get('uv.int'), (int, float)):
+            try:
+                pk = json.loads(values['uv.pulse']).get('peak')
+            except (ValueError, AttributeError):
+                pk = None
+            if isinstance(pk, (int, float)) and pk and abs(values['uv.int'] - pk) > 0.01:
+                self.issue('WARN', name, 'pulse-int-val', '弧光脉冲那条的 uv.int（%s）要等于事件峰值（%s），不是当时的背景值（§5.1）' % (values['uv.int'], pk), '', payload)
         if dev.kind == 'pm':
             m = [values.get(k) for k in ('pm.2.5', 'pm.5.0', 'pm.10')]
             if all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in m) and not (m[0] <= m[1] <= m[2]):
@@ -558,7 +581,11 @@ class Checker:
                     self.issue('ERROR', name, 'harm', '%s 要是 30 个数（2–31 次谐波含有率），现在是 %s' % (key, ('%d 项' % len(j)) if isinstance(j, list) else type(j).__name__), key, payload)
             elif key == 'uv.pulse':
                 if not (isinstance(j, dict) and isinstance(j.get('peak'), (int, float)) and isinstance(j.get('ms'), (int, float))):
-                    self.issue('ERROR', name, 'pulse', 'uv.pulse 要是 "{\\"peak\\":463,\\"ms\\":21}"（峰值、持续毫秒，§5.1）', key, payload)
+                    self.issue('ERROR', name, 'pulse', 'uv.pulse 要是 "{\\"peak\\":72.35,\\"ms\\":21}"（峰值 %、持续毫秒，§5.1）', key, payload)
+                elif j['peak'] == 0 or j['ms'] == 0:
+                    self.issue('ERROR', name, 'pulse-zero',
+                               'uv.pulse 峰值或持续时间为 0（%s）：疑似把上电 / 复位事件当放电。ALS10 只有事件类型 1（弧光告警）才发 uv.pulse；'
+                               '类型 2（故障）用 q 把 uv.int 标 invalid，类型 3（上电 / 复位）只记日志（§5.1）' % v, key, payload)
             elif key == 'q':
                 if not isinstance(j, dict):
                     self.issue('ERROR', name, 'q', 'q 要是对象：{"env.t":"invalid"}，好了发 "{}"（§6）', key, payload)
@@ -572,8 +599,31 @@ class Checker:
         if key in ('dev.last_ok', 'dev.last_try') and isinstance(v, (int, float)) and not isinstance(v, bool):
             if v < 1e11 or v > 1e14:
                 self.issue('ERROR', name, 'dev-ts', '%s 要是毫秒时间戳（13 位），现在是 %s' % (key, v), key, payload)
-        if key == 'dev.fails' and isinstance(v, (int, float)) and (v < 0 or v != int(v)):
-            self.issue('ERROR', name, 'dev-fails', 'dev.fails 要是 ≥ 0 的整数', key, payload)
+        if key == 'dev.fails' and isinstance(v, (int, float)) and not isinstance(v, bool):
+            if v < 0 or v != int(v):
+                self.issue('ERROR', name, 'dev-fails', 'dev.fails 要是 ≥ 0 的整数', key, payload)
+            else:
+                self.track_fails(dev, int(v), payload)
+        if key in PD_ABSENT and isinstance(v, (int, float)) and not isinstance(v, bool) and v in PD_ABSENT[key]:
+            self.issue('WARN', name, 'pd-absent', '%s = %s 是局放装置「没装这一路」时读出的固定值（寄存器 %d）：本柜没装就不要发这个量（§5.1）' % (key, v, PD_ABSENT[key][1]), key, payload)
+
+    def track_fails(self, dev, v, payload):
+        """同一设备名下几路传感器各报各的 dev.fails：一路读成功把它清 0、另一路失败又接着往上数，
+        相邻消息里就会 0 → 2、0 → 3 地跳（单路的 fails 清 0 后下一次失败只能是 1），或者 0 / 非 0 来回切。"""
+        t = now_ms()
+        last = dev.fails_last
+        dev.fails_seq = (dev.fails_seq + [v])[-12:]
+        if last == 0 and v >= 2:
+            dev.fails_jumps += 1
+        if last is not None and (last > 0) != (v > 0):
+            dev.fails_flips = [x for x in dev.fails_flips if t - x < 60000] + [t]
+        dev.fails_last = v
+        if dev.fails_jumps >= 2 or len(dev.fails_flips) >= 6:
+            self.issue('ERROR', dev.name, 'dev-share',
+                       'dev.fails 在相邻消息里回 0 又跳回（最近：%s）：疑似多路传感器共用设备名、dev.* 互相覆盖，EG 永远判不出离线。'
+                       '设备名按传感器配（SAM-<柜号>-A / -B…，以 eg.yaml 为准）；同一设备名下有几路的，汇总后再发'
+                       '（fails 取各路最大、err 取那一路的、last_ok 取最早），或者不发 dev.*（EG 兜底，§6b）' % ' '.join(map(str, dev.fails_seq)),
+                       'dev.fails', payload)
 
     RANGES = {
         'el.PF': (-1, 1), 'el.F': (45, 65), 'env.rh': (0, 100), 'env.t': (-40, 125),
@@ -601,6 +651,8 @@ class Checker:
             for key, d in keydefs(dev.kind).items():
                 p = d.get('periodMs')
                 if not p or d['optional']:
+                    continue
+                if d.get('capState') not in (None, 'confirmed') and d.get('cap') not in dev.caps_seen:
                     continue
                 last = dev.last_arrive.get(key)
                 if last is None:
@@ -648,7 +700,7 @@ class Checker:
             else:
                 st = '正常'
             delay = ('%.2f s' % (sum(dev.delays) / len(dev.delays) / 1000)) if dev.delays else '-'
-            fast = [dev.gaps[k] for k, d in keydefs(dev.kind).items() if d.get('periodMs') == 2000 and k in dev.gaps]
+            fast = [dev.gaps[k] for k, d in keydefs(dev.kind).items() if d.get('periodMs') and d['periodMs'] <= 3000 and k in dev.gaps]
             lines.append('| %s | %s | %d | %d | %s | %s | %s | %s |' % (
                 dev.name, KIND_NAMES.get(dev.kind, dev.kind), dev.msgs, len(dev.counts), delay,
                 ('%.1f s' % (max(fast) / 1000)) if fast else '-', dev.attrs or '-', st))
@@ -779,25 +831,32 @@ def run_demo(args):
             ts = now_ms()
             n += 1
             for i, s in enumerate(sams):
-                v = {'us.amp': round(random.uniform(8, 16), 1), 'us.cnt': random.randint(0, 6), 'uv.int': random.randint(1, 5)}
+                v = {'us.amp': round(random.uniform(8, 16), 1), 'us.cnt': random.randint(0, 6), 'uv.int': round(random.uniform(0.02, 0.08), 2)}
                 if n % 5 == 1:
                     v.update({'env.t': round(26 + i + random.uniform(-0.3, 0.3), 1), 'env.rh': round(random.uniform(40, 50), 1)})
                 v.update({'dev.last_try': ts, 'dev.last_ok': ts, 'dev.err': '', 'dev.fails': 0})
+                if i == 0 and n % 5 == 1:
+                    v['smoke.ppm'] = 6                       # 气体（能力待定，T08）：发在 SAM 下
                 if bad and i == 0:
+                    v['dev.warmup_s'] = 0                    # 预热由 EG 判，转换程序不要发
                     v['us.amp'] = str(v['us.amp'])          # 数值发成字符串
                     v['ir.t_max'] = 62.1                     # 退役的 key
                     v.pop('uv.int')                          # 不发背景值
                 if bad and i == 1:
+                    v['tev.amp'] = 18.7                      # 没装地电波，读出的固定值照发
+                    v['dev.fails'] = [1, 0, 0, 2, 0, 0, 3][n % 7]   # 多路传感器共用这个设备名，fails 互相覆盖
                     pub(s, v, ts=ts // 1000)                 # ts 用秒
                 else:
                     pub(s, v, ts=ts)
             if n % 15 == 7:
                 s = sams[-1]
-                peak = random.randint(300, 600)
+                peak = round(random.uniform(60, 95), 2)      # 弧光强度按 %（Arc Level ÷ 100，§5.1）
                 pv = {'uv.pulse': json.dumps({'peak': peak, 'ms': random.randint(5, 40)})}
                 if not bad:
                     pv['uv.int'] = peak
                 pub(s, pv, ts=now_ms())
+            if bad and n % 15 == 3:
+                pub(sams[-1], {'uv.pulse': json.dumps({'peak': 0, 'ms': 0}), 'uv.int': 0.03}, ts=now_ms())   # ALS10 上电事件当成放电发了
             ia, ib, ic = [round(random.uniform(40, 48), 1) for _ in range(3)]
             ep += 0.05
             mv = {'el.Ua': 5773.5, 'el.Ub': 5770.1, 'el.Uc': 5776.0, 'el.Ia': ia, 'el.Ib': ib, 'el.Ic': ic,
@@ -856,7 +915,7 @@ def run_clear(args):
 def main():
     global SPEC
     SPEC = load_spec()
-    ap = argparse.ArgumentParser(description='LSA-9600EG 转换程序自检（EG 内部 MQTT 格式 v0.4）')
+    ap = argparse.ArgumentParser(description='LSA-9600EG 转换程序自检（EG 内部 MQTT 格式 v0.7）')
     ap.add_argument('cmd', nargs='?', default='check', choices=['check', 'demo', 'clear-retained'], help='check 检查（缺省）/ demo 发示范数据 / clear-retained 清 retain')
     ap.add_argument('--host', default=os.environ.get('LSA_BUS_HOST', '127.0.0.1'))
     ap.add_argument('--port', type=int, default=int(os.environ.get('LSA_BUS_PORT', '1884')))
