@@ -18,6 +18,8 @@
  *     dev.last_ok：转换程序报了用它的，否则按 agent 收到测量值的时刻；dev.last_try / dev.err / dev.fails 转换程序报了原样转发
  *     （它们本来就随它的遥测走），没报时 EG 兜底：fails = 错过的周期数 floor(距 last_ok / 周期) - 1（正常到达的抖动不算失败），err 在 fails > 0 时为 TIMEOUT、恢复清空，last_try 不发
  *   - 离线判据：fails ≥ failN 且距 last_ok > max(minMs, periods × 周期)（参数随配置下发 devComm，缺省 5 / 30000 / 5）；
+ *     0.17 起另加一条：这台设备最近 max(30 s, 5 个周期) 内还有测量值到达，就最多 DEGRADED、不判 OFFLINE
+ *     （转换程序按「fails 取最大、last_ok 取最早」汇总一个设备名下几路传感器后，一路坏了不能把整台判成离线）；
  *     dev.link 保留 = dev.comm != OFFLINE（本地「设备失联」规则照旧按它判）
  *   - 能力全都不启用的设备（caps）不发 dev.*（上送那边也整台不送）
  *   - q / dev.comm / dev.link 变了立即发，dev.last_ok / fails / err 随每分钟那一次
@@ -208,10 +210,14 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     const since = lastOk ?? this.startedAt
     const fails = typeof sFails === 'number' ? sFails : Math.max(0, Math.floor((now - since) / d.period) - 1)
     const err = typeof sErr === 'string' ? sErr : fails > 0 ? 'TIMEOUT' : ''
+    // 0.17：转换程序按「fails 取最大、last_ok 取最早」把一个设备名下几路传感器的 dev.* 汇总以后，一路坏了整台看起来就像离线；
+    // 这台设备最近 max(30 s, 5 个周期) 内还有测量值到达 → 最多判 DEGRADED，不判 OFFLINE（dev.link 仍是 1，不出「设备失联」）
+    const alive = [...d.keys.values()].some(w => w.seen && now - w.lastAt <= Math.max(30_000, 5 * w.period))
+    const failing = fails >= p.failN && now - since > Math.max(p.minMs, p.periods * d.period)
     let comm: Comm
     if (lastOk === null && now - this.startedAt < UNKNOWN_MS) comm = 'UNKNOWN'
-    else if (fails >= p.failN && now - since > Math.max(p.minMs, p.periods * d.period)) comm = 'OFFLINE'
-    else comm = Object.keys(this.qualityOf(device, now)).length ? 'DEGRADED' : 'ONLINE'
+    else if (failing && !alive) comm = 'OFFLINE'
+    else comm = failing || Object.keys(this.qualityOf(device, now)).length ? 'DEGRADED' : 'ONLINE'
     return { comm, lastOk, fails, err, fromSource: { lastOk: sLastOk !== undefined, fails: sFails !== undefined, err: sErr !== undefined } }
   }
 
