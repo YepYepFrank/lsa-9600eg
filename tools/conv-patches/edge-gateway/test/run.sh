@@ -11,7 +11,7 @@ REPO="$(cd "$(dirname "$0")/../../../.." && (pwd -W 2>/dev/null || pwd))"
 KIT="$REPO/tools/conv-kit"
 EV="$W/out/events.log"
 ev() { echo "$(date +%s%3N) $*" | tee -a "$EV"; }
-cleanup() { docker rm -f ct-conv ct-rec ct-mosq >/dev/null 2>&1; docker network rm lsa-ct >/dev/null 2>&1; }
+cleanup() { docker rm -f ct-conv ct-rec ct-mosq ct-check >/dev/null 2>&1; docker network rm lsa-ct >/dev/null 2>&1; }
 cleanup
 mkdir -p "$W/out" && rm -f "$W"/out/*
 docker network create lsa-ct >/dev/null
@@ -19,6 +19,9 @@ docker run -d --pull never --name ct-mosq --network lsa-ct -v "$KIT/mosquitto/mo
 sleep 2
 docker run --rm --pull never --network lsa-ct -v "$W:/ct" -e PYTHONPATH=/ct/deps python:3.12-slim python3 /ct/rec.py ct-mosq /ct/out/rec.jsonl --prime
 docker run -d --pull never --name ct-rec --network lsa-ct -v "$W:/ct" -e PYTHONPATH=/ct/deps python:3.12-slim python3 /ct/rec.py ct-mosq /ct/out/rec.jsonl >/dev/null
+# conv-kit 的检查工具全程看着（自动认设备；断开期间它自己重连），400 s 到点自己结束、写报告
+docker run -d --pull never --name ct-check --network lsa-ct -v "$W:/ct" -v "$KIT:/kit:ro" -e PYTHONUNBUFFERED=1 python:3.12-slim \
+  python3 /kit/lsa_check.py --host ct-mosq --port 1883 --duration 400 --quiet --report /ct/out/lsa_check.md >/dev/null
 docker run -d --pull never --name ct-conv --network lsa-ct -v "$W:/ct" -v "$W/app:/app" -v "$KIT:/kit:ro" -v "$W/eg:/eg:ro" \
   -e PYTHONPATH=/ct/deps:/app -e TZ=Asia/Shanghai -e EDGE_GATEWAY_CONFIG=/app/config -e LSA_MQTT_URL=mqtt://ct-mosq:1883 -e LSA_EG_YAML=/eg/eg.yaml -e PYTHONUNBUFFERED=1 \
   python:3.12-slim sh -c 'python3 /kit/sim.py /tmp/ttyV0 > /ct/out/sim.log 2>&1 & sleep 1; cd /app && exec python3 -m src.main' >/dev/null
@@ -35,6 +38,8 @@ docker start ct-mosq >/dev/null; ev "c-broker-started"
 sleep 60
 ev "end"
 docker logs ct-conv > "$W/out/conv.log" 2>&1
+for i in $(seq 1 60); do [ -f "$W/out/lsa_check.md" ] && break; sleep 2; done
+docker logs ct-check > "$W/out/lsa_check.log" 2>&1
 docker logs ct-mosq > "$W/out/mosq.log" 2>&1
 cleanup
 ev "cleaned"
