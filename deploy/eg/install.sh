@@ -222,6 +222,13 @@ conv_status() {
   grep -q '^COMPOSE_PROFILES=conv' .env 2>/dev/null && state='启用'
   grep -q '^EG_CONV=off' .env 2>/dev/null && state='已关（--conv-off）'
   echo "转换程序：$state；串口 $ser$([ -e "$ser" ] && [ -L "$ser" ] && echo "（→ $(readlink -f "$ser")）")$([ -e "$ser" ] || echo '（不存在）')"
+  # 0.17 转换程序保险（eg-agent）：自动重启过的话说出来
+  if [ -f config/conv-guard.json ]; then
+    local n last
+    n="$(sed -n 's/.*"restarts":\([0-9]*\).*//p' config/conv-guard.json)"
+    last="$(sed -n 's/.*"detail":"\([^"]*\)".*//p' config/conv-guard.json)"
+    [ "${n:-0}" -gt 0 ] 2>/dev/null && echo "  eg-agent 自动重启过转换程序 $n 次；最近一次：${last:-?}"
+  fi
   echo "可选串口（--conv-serial <设备>）："
   serial_list
 }

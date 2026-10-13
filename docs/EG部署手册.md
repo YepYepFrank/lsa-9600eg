@@ -102,6 +102,7 @@
   - 运行中拔插、变号后要 `sudo bash install.sh --conv-on`（或重启 EG）让转换程序重新起来；自动处理（udev）等定了模块、拿到样机再做。
 - 镜像随发布件：出包时 `pnpm pack:eg -- --images --debs --conv <镜像:确切 tag>`，发布件里多 `images-conv.tar.gz` 与 `CONV_IMAGE.txt`；install.sh 导入后**镜像在、串口在才启用**（`.env` 的 `COMPOSE_PROFILES=conv`），否则不起、说明原因。升级随 EG 发布件走；`--rollback` 回到不带它的版本时，转换程序容器一并停掉。
 - 开关：`--conv-off` 关掉并记住、`--conv-on` 重新打开；`--status` 的容器列表里能看到 `lsa-eg-conv`。
+- **转换程序保险**（0.17，eg-agent 自动做，不管用的是哪个转换程序）：本机总线 `lsa-eg-mosquitto` 重启过、而 `lsa-eg-conv` 是在它之前起的 → 重启 conv；conv 在跑、但 60 s 总线上没有它的任何读数（SAM / 电表 / 颗粒物的遥测）→ 重启 conv，连续重启按 60 s × 2^n 退避（最多 30 min），读数回来清零。每次重启记本地审计「自动重启转换程序」、上送 EG 遥测 `eg.conv_restarts` / `eg.conv_restart`（子站 check.sh 据此提示），`--status` 也会显示次数与最近一次原因。参数在 `config/local.yaml` 的 `convGuard: { enabled, silentS, maxBackoffS }`（缺省 true / 60 / 1800）；conv 没启用时什么也不做。
 - 在那之前（发布件里没有它的镜像）按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
 
 **改装 Ubuntu Server 24.04**（X26A 出厂是 22.04 桌面版；我们只支持 24.04 Server。改装会清空整块盘，出厂系统不保留）
