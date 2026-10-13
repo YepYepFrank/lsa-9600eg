@@ -6,6 +6,7 @@
  *
  * 查的是 EG 本地 TB（开发计划 v0.4）。前提同 G0：dev:up、dev:emu、dev:agent（EG_DEBUG=1）在跑，本地 TB 已 provision:eg。
  * 断上行补传另见 i2:verify（上送 outbox）。 */
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import mqtt from 'mqtt'
@@ -66,6 +67,9 @@ async function main() {
   }
   check(!missing.length, '文档列出了点表目录里 SAM / 电表 / 颗粒物的每个量', missing.slice(0, 6).join(' '))
   check(/不要发的量[\s\S]*`el\.load_pct`/.test(doc), '文档写明负荷率由 eg-agent 算、同事不发')
+  // 给同事的检查工具（tools/conv-kit/spec.json）也要跟点表目录一致：pnpm conv-kit:spec -- --check 只比对不写
+  const spec = spawnSync('pnpm', ['-s', 'conv-kit:spec', '--', '--check'], { cwd: repoRoot()!, encoding: 'utf8', shell: process.platform === 'win32' })
+  check(spec.status === 0, '转换程序测试套件 conv-kit 的 spec.json 与点表目录一致（不一致就 pnpm conv-kit:spec 重新导出）', `${spec.stderr ?? ''}${spec.stdout ?? ''}`.trim().slice(0, 200))
 
   console.log('\n2. 初始状态：各设备质量有效')
   let st = await status()

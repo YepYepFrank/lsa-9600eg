@@ -1,20 +1,53 @@
 /* 转换程序测试套件（tools/conv-kit）的点表：从 @lsa/points 目录导出成 spec.json，lsa_check.py 按它校验。
- * 点表改了要重跑：pnpm conv-kit:spec（pack 时也会跑）。
- * 只导出「转换程序该发 / 可以发 / 不许发」三类，供校验用；周期、单位与目录一致。 */
-import { writeFileSync } from 'node:fs'
+ * 点表改了要重跑：pnpm conv-kit:spec（pack 时也会跑）。pnpm conv-kit:spec -- --check 只比对、不写：不一致退出 1（g1:verify 第 1 节调它）。
+ * 只导出「转换程序该发 / 可以发 / 不许发」三类，供校验用；周期取设备实际刷新周期（expectedPeriodMs：局放 3 s），单位与目录一致。
+ *
+ * v0.7（格式文档 docs/EG内部MQTT格式.md v0.7，2026-10-13 转换程序联调）：
+ *   - 每个量带能力 cap 与它在现场口径（production）下的状态 capState：不是 confirmed 的（局放类型 / 等级待定、地电波 / 特高频「本柜装了才发」）
+ *     检查工具不报「一直没收到」，收到了给一条说明；
+ *   - smoke.ppm（烟雾参考浓度，能力 smokePpm 待定、T08）点目录里还没有，先按 SAM 的可选量放进来，标 pending，不报「不在点表」；
+ *   - 各设备通用的「不要发」带原因（forbidWhy）：dev.warmup_s（0.17 预热由 EG 判）、dev.comm / dev.link。 */
+import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CATALOG, CATALOG_VERSION, DEVICE_STATUS, SOUTH, periodMs, pointsOf, sourceOf, type PointDef } from '@lsa/points'
+import { CATALOG, CATALOG_VERSION, DEVICE_STATUS, SOUTH, expectedPeriodMs, pointsOf, sourceOf, type PointDef } from '@lsa/points'
+import { CAP_DEFAULT_PRODUCTION, CAP_LABEL, pendingText, type CapKey } from '@lsa/model'
 
 type Kind = 'sam' | 'meter' | 'pm'
 const KINDS: Kind[] = ['sam', 'meter', 'pm']
 
-interface Key { key: string; label: string; unit: string; periodMs: number | null; optional: boolean; type: 'number' | 'string' | 'json' | 'bool' }
+interface Key {
+  key: string
+  label: string
+  unit: string
+  periodMs: number | null
+  optional: boolean
+  type: 'number' | 'string' | 'json' | 'bool'
+  cap?: string
+  capState?: string
+  note?: string
+}
 
-const toKey = (p: PointDef, optional = !!p.optional): Key => ({
-  key: p.key, label: p.label, unit: p.unit, periodMs: periodMs(p.period), optional,
-  type: p.json ? 'json' : (p.type ?? 'number'),
-})
+const capNote = (cap: CapKey) => {
+  const st = CAP_DEFAULT_PRODUCTION[cap]
+  if (st === 'confirmed') return undefined
+  const why = st === 'pending' ? pendingText(cap) : ''
+  return `能力「${CAP_LABEL[cap]}」现场口径是「${st === 'pending' ? '待定' : '不支持'}」${why ? `（${why}）` : ''}：本柜装了才发，检查工具不报缺`
+}
+
+const toKey = (p: PointDef, optional = !!p.optional): Key => {
+  const note = p.cap ? capNote(p.cap) : undefined
+  return {
+    key: p.key,
+    label: p.label,
+    unit: p.unit,
+    periodMs: expectedPeriodMs(p),
+    optional,
+    type: p.json ? 'json' : (p.type ?? 'number'),
+    ...(p.cap ? { cap: p.cap, capState: CAP_DEFAULT_PRODUCTION[p.cap] } : {}),
+    ...(note ? { note } : {}),
+  }
+}
 
 const devices: Record<string, { send: Key[]; forbid: string[] }> = {}
 for (const kind of KINDS) {
@@ -25,6 +58,18 @@ for (const kind of KINDS) {
     forbid: pts.filter(p => sourceOf(kind, p) !== 'device').map(p => p.key),
   }
 }
+// 烟雾参考浓度：点目录等 T08 型号定了才加（后端 caps smokePpm: ['SAM:smoke.*']），先让检查工具认得、不报「不在点表」
+devices['sam']!.send.push({
+  key: 'smoke.ppm',
+  label: '烟雾参考浓度',
+  unit: 'ppm',
+  periodMs: null,
+  optional: true,
+  type: 'number',
+  cap: 'smokePpm',
+  capState: CAP_DEFAULT_PRODUCTION.smokePpm,
+  note: `能力「${CAP_LABEL.smokePpm}」待定（${pendingText('smokePpm')}）：EG 本地显示、暂不上送子站；预热由 EG 0.17 自己判，量程寄存器不用发`,
+})
 
 // 各下挂设备都能带的：通信状态（§6b，可选）、质量码（§6，可选）、南向统计（§6，要发就五个一起发）
 const common = {
@@ -33,7 +78,12 @@ const common = {
     { ...toKey(DEVICE_STATUS.find(p => p.key === 'q')!, true) },
     ...SOUTH.map(p => toKey(p, true)),
   ],
-  forbid: ['dev.comm', 'dev.link'],
+  forbid: [...new Set(['dev.comm', 'dev.link', ...DEVICE_STATUS.filter(p => p.src === 'eg' && p.key !== 'q').map(p => p.key)])],
+  forbidWhy: {
+    'dev.comm': '通信状态由 eg-agent 按你报的 dev.last_ok / fails 算（§6b），转换程序不要发',
+    'dev.link': '设备链路由 eg-agent 算（§6b），转换程序不要发',
+    'dev.warmup_s': '传感器预热由 EG 0.17 自己判（读数中断后恢复 / 主机刚开机），转换程序不要发；型号能读出预热状态时用 q 标 "warmup"（§6）',
+  } as Record<string, string>,
 }
 
 // G4 起 SAM 不再报热像（改由摄像机）；老程序按 v0.1 发的这些 key 不会被识别
@@ -51,10 +101,29 @@ const eg = {
 
 const spec = {
   generatedFrom: `@lsa/points ${CATALOG_VERSION}`,
-  format: 'EG 内部 MQTT 格式 v0.4',
-  devices, common, retired, eg,
+  format: 'EG 内部 MQTT 格式 v0.7',
+  devices,
+  common,
+  retired,
+  eg,
 }
 
 const out = resolve(dirname(fileURLToPath(import.meta.url)), '../../../tools/conv-kit/spec.json')
-writeFileSync(out, JSON.stringify(spec, null, 2) + '\n')
-console.log(`已写 ${out}（${KINDS.map(k => `${k} ${devices[k]!.send.length}`).join(' / ')}）`)
+const text = JSON.stringify(spec, null, 2) + '\n'
+if (process.argv.includes('--check')) {
+  let now = ''
+  try {
+    now = readFileSync(out, 'utf8').replace(/\r\n/g, '\n')
+  } catch {
+    /* 没有文件 = 不一致 */
+  }
+  if (now === text) {
+    console.log(`conv-kit spec.json 与点目录一致（@lsa/points ${CATALOG_VERSION}）`)
+  } else {
+    console.error(`conv-kit spec.json 与点目录不一致：跑 pnpm conv-kit:spec 重新导出（${out}）`)
+    process.exit(1)
+  }
+} else {
+  writeFileSync(out, text)
+  console.log(`已写 ${out}（${KINDS.map(k => `${k} ${devices[k]!.send.length}`).join(' / ')}）`)
+}
