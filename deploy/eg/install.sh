@@ -3,7 +3,8 @@
 #
 #   sudo bash install.sh [--lan1 <网口>]   装 / 升级：没有 Docker 先装离线包、导入镜像、起本地 TB；config/eg.yaml 齐了就起全部
 #   sudo bash install.sh --status          只看状态
-#   sudo bash install.sh --rollback        回到上一个装好的版本（镜像还在本机；本地 TB 版本变过的不许回退）
+#   sudo bash install.sh --rollback        回到上一个装好的版本（镜像还在本机）
+#   sudo bash install.sh --rollback --restore-tb   本地 TB 升过补丁（如 4.2.2.5 → 4.2.2.6）时的回退：用升级前的本地库备份恢复
 #
 # --lan1：摄像机网口名（如 enp2s0）。管理页对从它进来的请求一律 403（I5-2），记在 .env 里，以后不用再给。
 #   网口必须存在；本机只有一个对外网口时拒绝（那样唯一的网口也会被挡住，管理页谁都打不开），确实要这样加 --force。
@@ -19,6 +20,10 @@
 # 转换程序（I11）：发布件带了它的镜像（CONV_IMAGE.txt）、串口也在时启用 compose 里的 conv 服务；
 #   --conv-serial <设备>（缺省 /dev/ttyS1；USB 转 485 给 /dev/ttyUSB0 会自动换成 /dev/serial/by-id 的稳定名字记住；路径里不能有「:」「#」空格）、
 #   --conv-off 关掉并记住、--conv-on 重新打开；--status 列出可选串口。
+# 本地 TB 升级（0.17）：只做同一补丁线（只差第 4 位，如 4.2.2.5 → 4.2.2.6）—— 不跑 TB 的升级脚本（TB 官方：同补丁线 DO NOT run the upgrade script，
+#   跑了报「database version … is not supported for upgrade」停在半路），先把本地库（含遥测）备份到 backups/，换镜像起，TB 启动时自己补数据，
+#   起来后核对库里 tb_schema_settings.schema_version 变成新版本（最多约 2 分钟）。降级、跨小版本直接拒绝。
+#   备份要的空间不够时拒绝；确实不要备份加 --no-tb-backup（那样回不去旧版 TB）。
 # 只支持 Ubuntu Server 24.04（离线包 debs/ 按它做）：别的系统在装之前就报错退出（X26A 出厂 22.04 桌面版要先改装，部署手册 §2a）。
 # 装完与 --status 都会列「安全提醒」：初始口令文件还在、lsa-sp 还在、SSH 允许口令登录等（只提醒，不替你改系统配置）。
 #
@@ -32,6 +37,8 @@ SPKEY=''
 MODE='install'
 FORCE=0
 CONV_SERIAL=''
+RESTORE_TB=0
+TB_BACKUP=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --status) MODE='status' ;;
@@ -47,6 +54,8 @@ while [ $# -gt 0 ]; do
     --conv-serial) CONV_SERIAL="${2:?--conv-serial 后面给串口设备，如 /dev/ttyS1}"; shift ;;
     --conv-off) MODE='conv-off' ;;
     --conv-on) MODE='conv-on' ;;
+    --restore-tb) RESTORE_TB=1 ;;
+    --no-tb-backup) TB_BACKUP=0 ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
@@ -250,6 +259,11 @@ status() {
   $DC ps --format 'table {{.Name}}\t{{.Status}}'
   [ -f .installed/VERSION ] && echo "已装版本：$(cat .installed/VERSION)"
   [ -f .previous/VERSION ] && echo "可回退到：$(cat .previous/VERSION)"
+  local tbv bk
+  tbv="$(tb_db_version)"
+  [[ "$tbv" =~ ^[0-9]+$ ]] && echo "本地 TB：$(tb_num_ver "$tbv")"
+  bk="$(ls -1t "$TB_BACKUPS"/tb-*.dump 2>/dev/null | head -1 || true)"
+  [ -n "$bk" ] && echo "本地库备份（补丁升级前）：$bk —— 回到旧版 TB 用 --rollback --restore-tb"
   fw_status
   wd_status
   conv_status
@@ -309,8 +323,49 @@ if [ "$MODE" = 'fw-on' ]; then
   [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
   env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
 fi
-# 本地 TB 的版本（compose.yaml 里 tb-node 的缺省标签）：回退不能跨它（库结构只升不降）
+# 本地 TB 的版本（compose.yaml 里 tb-node 的缺省标签）
 tb_version() { grep -o 'tb-node:\${TB_VERSION:-[^}]*}' "$1" | head -1 | sed 's/.*:-//; s/}//'; }
+# TB 版本号 ↔ 库里 tb_schema_settings.schema_version 的数字（4.2.2.6 ↔ 4002002006；与子站 scripts/up.sh 同）
+tb_ver_num() {
+  local v="${1%%-*}" a b c d
+  IFS=. read -r a b c d <<< "$v" || true
+  echo $(( ${a:-0} * 1000000000 + 10#${b:-0} * 1000000 + 10#${c:-0} * 1000 + 10#${d:-0} ))
+}
+tb_num_ver() { local n="$1"; echo "$((n / 1000000000)).$((n / 1000000 % 1000)).$((n / 1000 % 1000)).$((n % 1000))"; }
+tb_db_version() { $DC exec -T postgres psql -U postgres -d thingsboard -tAc 'select schema_version from tb_schema_settings limit 1' 2>/dev/null | tr -d '[:space:]' || true; }
+# 补丁升级前的本地库备份（含遥测，pg_dump 自定义格式）：只留最近一份 —— 回退只回一步
+TB_BACKUPS=backups
+tb_backup() {  # $1 = 库里现在的版本（数字）
+  local from f need avail
+  from="$(tb_num_ver "$1")"
+  mkdir -p "$TB_BACKUPS" && chmod 700 "$TB_BACKUPS"
+  f="$TB_BACKUPS/tb-$from-$(date +%Y%m%d-%H%M%S).dump"
+  need="$($DC exec -T postgres psql -U postgres -d thingsboard -tAc 'select pg_database_size(current_database())' | tr -d '[:space:]' || true)"
+  avail="$(df -PB1 "$TB_BACKUPS" | awk 'NR==2{print $4}')"
+  # 自定义格式是压缩的，通常是库大小的几分之一；按库大小留足，宁可多要
+  if [ "${need:-0}" -gt "${avail:-0}" ]; then
+    echo "✗ 本地 TB 升级前要备份本地库（约 $(( ${need:-0} / 1048576 )) MB），$(pwd -P)/$TB_BACKUPS 所在盘只剩 $(( ${avail:-0} / 1048576 )) MB。" >&2
+    echo "  先腾空间（sudo bash diskcheck.sh 看各部分占用）再跑；确实不要备份加 --no-tb-backup（那样回不去旧版 TB）" >&2
+    return 1
+  fi
+  echo "先备份本地 TB 的库（含遥测，约 $(( ${need:-0} / 1048576 )) MB）→ $f ..."
+  if ! $DC exec -T postgres pg_dump -U postgres -Fc thingsboard > "$f.part"; then
+    rm -f "$f.part"
+    echo '✗ 本地库备份失败，没有升级本地 TB（上面是 pg_dump 的报错）' >&2
+    return 1
+  fi
+  mv "$f.part" "$f"
+  find "$TB_BACKUPS" -maxdepth 1 -name 'tb-*.dump' ! -name "$(basename "$f")" -delete
+  echo "✓ 备份好了：$f（$(( $(stat -c %s "$f") / 1048576 )) MB）"
+}
+# 用备份恢复本地库（回退到旧版 TB 时）：停 TB → 删库重建 → pg_restore。备份之后本地 TB 新写的数据会丢（子站那边是全的）
+tb_restore() {  # $1 = 备份文件
+  echo "停本地 TB，用 $1 恢复本地库 ..."
+  $DC stop tb >/dev/null
+  $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -qc 'drop database if exists thingsboard with (force)' -c 'create database thingsboard'
+  $DC exec -T postgres pg_restore -U postgres -d thingsboard --no-owner < "$1"
+  echo "✓ 本地库已恢复（库里记的版本 $(tb_num_ver "$(tb_db_version)")）"
+}
 # 部署文件（升级时整个发布件覆盖过来的那些）
 DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt'
 
@@ -368,11 +423,43 @@ fi
 if [ "$MODE" = 'rollback' ]; then
   [ -f .previous/VERSION ] || { echo '没有上一个版本可回退（.previous/ 不存在）' >&2; exit 1; }
   prev="$(cat .previous/VERSION)"
-  if [ "$(tb_version .previous/compose.yaml)" != "$(tb_version compose.yaml)" ]; then
-    echo "上一个版本 $prev 的本地 TB 是 $(tb_version .previous/compose.yaml)，现在是 $(tb_version compose.yaml)：库结构已升级，不能回退" >&2
-    exit 1
-  fi
   docker image inspect "lsa-eg-app:$prev" >/dev/null 2>&1 || { echo "本机没有镜像 lsa-eg-app:$prev（被清掉了？）" >&2; exit 1; }
+  # 本地 TB 版本不同（0.17 起同一补丁线可以升）：看库里记的版本 ——
+  #   库 = 要回到的版本（新版 TB 没起来过 / 没补库）：直接回；
+  #   库比要回到的新（已补成新版，往旧版回）：旧 TB 起不来（库只升不降），要用升级前的备份恢复（--restore-tb）；
+  #   库比要回到的旧（回退之后再 --rollback 回新版）：同升级 —— 先备份、换镜像起、等库里版本变过来
+  prev_tb="$(tb_version .previous/compose.yaml)"
+  TB_PATCH=''
+  if [ "$prev_tb" != "$(tb_version compose.yaml)" ]; then
+    $DC up -d --wait postgres >/dev/null 2>&1
+    have="$(tb_db_version)"
+    want="$(tb_ver_num "$prev_tb")"
+    if [[ "$have" =~ ^[0-9]+$ ]] && [ $((have / 1000)) != $((want / 1000)) ]; then
+      echo "✗ 本地 TB 的库是 $(tb_num_ver "$have")，$prev 用的是 $prev_tb：跨了小版本，不能这样回退" >&2
+      exit 1
+    elif [[ "$have" =~ ^[0-9]+$ ]] && [ "$have" -lt "$want" ]; then
+      echo "本地 TB 从 $(tb_num_ver "$have") 回到 $prev 的 $prev_tb：同一补丁线，换镜像起（TB 启动时自己补数据）"
+      if [ "$TB_BACKUP" = 1 ]; then tb_backup "$have" || exit 1; fi
+      TB_PATCH="$want"
+    elif [ "$have" != "$want" ]; then
+      bk="$(ls -1t "$TB_BACKUPS"/tb-"$prev_tb"-*.dump 2>/dev/null | head -1 || true)"
+      docker image inspect "thingsboard/tb-node:$prev_tb" >/dev/null 2>&1 || { echo "✗ 本机没有旧版 TB 镜像 thingsboard/tb-node:$prev_tb，回不去" >&2; exit 1; }
+      if [ -z "$bk" ]; then
+        echo "✗ 本地 TB 的库已是 $(tb_num_ver "${have:-0}")，$prev 用的是 $prev_tb：要用升级前的本地库备份恢复，但 $TB_BACKUPS/ 里没有 tb-$prev_tb-*.dump（升级时加了 --no-tb-backup？）" >&2
+        exit 1
+      fi
+      if [ "$RESTORE_TB" != 1 ]; then
+        echo "本地 TB 的库已是 $(tb_num_ver "${have:-0}")，回到 $prev（TB $prev_tb）要用升级前的备份恢复本地库：$bk" >&2
+        echo "  备份之后本地 TB 新写的遥测、告警会丢（子站那边是全的，本地页近期曲线会缺这一段）。" >&2
+        echo "  确认就跑：sudo bash install.sh --rollback --restore-tb" >&2
+        exit 1
+      fi
+      tb_restore "$bk"
+      [ "$(tb_db_version)" = "$want" ] || { echo "✗ 恢复后库里记的版本是 $(tb_num_ver "$(tb_db_version)")，不是 $prev_tb" >&2; exit 1; }
+    else
+      echo "本地 TB 的库还是 $prev_tb（新版 TB 没补过库）：直接回退"
+    fi
+  fi
   echo "回退到 $prev ..."
   rm -rf .rollback-tmp && mkdir .rollback-tmp
   for f in $DEPLOY_FILES; do [ -e "$f" ] && cp -a "$f" .rollback-tmp/; done
@@ -381,6 +468,12 @@ if [ "$MODE" = 'rollback' ]; then
   env_set EG_APP_IMAGE "lsa-eg-app:$prev"
   conv_setup
   $DC up -d --remove-orphans
+  if [ -n "$TB_PATCH" ]; then
+    $DC up -d --wait tb
+    for _ in $(seq 1 40); do [ "$(tb_db_version)" = "$TB_PATCH" ] && break; sleep 3; done
+    [ "$(tb_db_version)" = "$TB_PATCH" ] || { echo "✗ 本地 TB 已换成 $prev_tb，但库里记的还是 $(tb_num_ver "$(tb_db_version)")：docker logs lsa-eg-tb | grep -i SystemPatchApplier" >&2; exit 1; }
+    echo "✓ 本地 TB 的库已升到 $prev_tb"
+  fi
   rm -rf .installed && mv .previous .installed && mv .rollback-tmp .previous
   # 回到的版本不管 LAN1 防火墙（早于它）：把规则清掉，与那个版本一致；它也管的话留着
   grep -q 'lsa-eg-fw' install.sh || { fw_remove; echo '（回到的版本不管 LAN1 防火墙，规则已清掉）'; }
@@ -517,15 +610,44 @@ if [ -n "$SPKEY" ]; then
   chown lsa-sp:lsa-sp "$ak"; chmod 600 "$ak"
 fi
 
-# ---------- 5. 本地 TB：库是空的先建库 ----------
+# ---------- 5. 本地 TB：库是空的先建库；已有库按版本判断（0.17：同一补丁线换镜像起，不跑升级脚本） ----------
 $DC up -d --wait postgres
+TB_PATCH=''
+tb_want="$(tb_ver_num "$(tb_version compose.yaml)")"
 if ! $DC exec -T postgres psql -U postgres -d thingsboard -tAc "select 1 from information_schema.tables where table_name='tb_user'" | grep -q 1; then
   echo '首次安装：建本地 TB 的库（约 1 分钟）...'
   $DC --profile install run --rm tb-install
+else
+  tb_have="$(tb_db_version)"
+  if [[ "$tb_have" =~ ^[0-9]+$ ]] && [ "$tb_have" -gt "$tb_want" ]; then
+    echo "✗ 本地 TB 的库是 $(tb_num_ver "$tb_have")，这个发布件的 TB 是 $(tb_version compose.yaml)，更旧：TB 不能降级。" >&2
+    echo "  回到上一个版本用 sudo bash install.sh --rollback（会提示怎么用升级前的备份恢复）" >&2
+    exit 1
+  elif [[ "$tb_have" =~ ^[0-9]+$ ]] && [ "$tb_have" -lt "$tb_want" ] && [ $((tb_have / 1000)) != $((tb_want / 1000)) ]; then
+    echo "✗ 本地 TB 的库是 $(tb_num_ver "$tb_have")，这个发布件的 TB 是 $(tb_version compose.yaml)：跨了小版本，本发布件只做同一补丁线的升级（不跑 TB 的库升级脚本）。" >&2
+    echo "  这台先回到上一个版本：sudo bash install.sh --rollback" >&2
+    exit 1
+  elif [[ "$tb_have" =~ ^[0-9]+$ ]] && [ "$tb_have" -lt "$tb_want" ]; then
+    TB_PATCH="$tb_want"
+    echo "本地 TB 从 $(tb_num_ver "$tb_have") 升到 $(tb_version compose.yaml)：同一补丁线，不跑升级脚本，换镜像起（TB 启动时自己补数据）"
+    if [ "$TB_BACKUP" = 1 ]; then tb_backup "$tb_have" || exit 1
+    else echo "！ --no-tb-backup：没备份本地库，补库后回不去 $(tb_num_ver "$tb_have")" >&2; fi
+  fi
 fi
 $DC up -d mosquitto tb
 echo '等本地 TB 起来（首次约 1–2 分钟）...'
 $DC up -d --wait tb
+if [ -n "$TB_PATCH" ]; then
+  # 同一补丁线：新 TB 起来后自己把库里的版本记成新的（日志 SystemPatchApplier「Version increased from …」），等它一会儿
+  for _ in $(seq 1 40); do [ "$(tb_db_version)" = "$TB_PATCH" ] && break; sleep 3; done
+  tb_now="$(tb_db_version)"
+  if [ "$tb_now" != "$TB_PATCH" ]; then
+    echo "✗ 本地 TB 已换成 $(tb_version compose.yaml)，但库里记的还是 $(tb_num_ver "${tb_now:-0}")：docker logs lsa-eg-tb | grep -i SystemPatchApplier 看原因" >&2
+    echo "  回到上一个版本：sudo bash install.sh --rollback（库没变时直接回；变了会提示用备份恢复）" >&2
+    exit 1
+  fi
+  echo "✓ 本地 TB 的库已升到 $(tb_num_ver "$tb_now")（补丁升级，TB 启动时自己补的）"
+fi
 
 # ---------- 6. eg.yaml 齐了（带本地 TB 账号 tb:）才起其余 ----------
 if [ ! -f config/eg.yaml ] || ! grep -q '^tb:' config/eg.yaml; then

@@ -11,7 +11,7 @@
 | 容器 | 作用 | 端口 | 谁访问 |
 |---|---|---|---|
 | lsa-eg-agent | eg-agent：派生量与质量码、上送子站、告警事件、配置下发、本地管理页 | **80/TCP**（宿主机网络） | 维护笔记本（LAN2 直连）、子站 Nginx 反代 `/eg/<柜号>/`、子站扩展服务下发配置 |
-| lsa-eg-tb | EG 本地 ThingsBoard CE 4.2.2.5：存 7 天数据、算 7 类设备告警 | 18080/TCP 只绑 127.0.0.1 | agent；部署时子站经 SSH 隧道 |
+| lsa-eg-tb | EG 本地 ThingsBoard CE 4.2.2.6（0.17 起；之前 4.2.2.5）：存 7 天数据、算 7 类设备告警 | 18080/TCP 只绑 127.0.0.1 | agent；部署时子站经 SSH 隧道 |
 | lsa-eg-postgres | 本地 TB 的库 | 不对外 | 本地 TB |
 | lsa-eg-mosquitto | 本机总线 | 1884/TCP 只绑 127.0.0.1 | 同事的采集程序（本机）、agent、IoT Gateway |
 | lsa-eg-gateway | TB IoT Gateway 3.8.5：总线 → 本地 TB | 不对外 | — |
@@ -246,7 +246,20 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 
 - **升级**：新发布件直接解压覆盖到 `/opt/lsa-eg`（`config/`、`recordings/`、`.env` 不在发布件里、不会被覆盖），`sudo bash install.sh`。install.sh 把上一次装好的部署文件（`.installed/`）挪成 `.previous/`、`.env` 的 `EG_APP_IMAGE` 改成新版本；更早的 `lsa-eg-app` 镜像清掉，只留现在的与可回退的。
   **一定要在 `/opt/lsa-eg` 里跑**：在解压出来的别的目录直接跑会生成另一份 `.env`（新的本地库口令），把正在跑的本地库 / TB 按新口令重建、TB 连不上库反复重启（0.9.1 现场流程验收踩到）。install.sh 发现本机已装在别处会拒绝并给出正确命令（确实要另装加 `--force`）。
-- **回滚**：`sudo bash install.sh --rollback` —— 部署文件换回 `.previous/`、镜像改回旧版本、`docker compose up -d`；再跑一次 `--rollback` 又回到新版。本地 TB 版本（`compose.yaml` 里 tb-node 的标签）变过的不许回退（库结构只升不降）。
+- **回滚**：`sudo bash install.sh --rollback` —— 部署文件换回 `.previous/`、镜像改回旧版本、`docker compose up -d`；再跑一次 `--rollback` 又回到新版。本地 TB 版本变过时见下「本地 TB 升级与回退」。
+- **本地 TB 升级与回退**（0.17：4.2.2.5 → 4.2.2.6，与子站、平台同步，修了十几个 CVE）：
+  - **升级**照常跑新安装文件 `--role eg`（或新发布件 + `install.sh`）。install.sh 看库里记的版本（`tb_schema_settings.schema_version`，4.2.2.6 记作 4002002006）：
+    同一补丁线（只差第 4 位）→ **先把本地库（含遥测）备份**到 `/opt/lsa-eg/backups/tb-<旧版本>-<时间>.dump`（只留最近一份；盘上空间不够库大小就拒绝，确实不要备份加 `--no-tb-backup`，那样回不去），
+    **不跑 TB 的升级脚本**（TB 官方：同补丁线 DO NOT run the upgrade script；跑了会报「database version … is not supported for upgrade」停在半路），直接换镜像起，
+    新 TB 启动时自己补数据（`docker logs lsa-eg-tb` 里 SystemPatchApplier「Version increased from 4.2.2.5 to 4.2.2.6」），install.sh 等库里版本变成新的（最多约 2 分钟）再往下走。
+    降级、跨小版本（如 4.2 → 4.3）直接拒绝，什么都不动。`--status` 显示本地 TB 版本与备份文件。
+  - **回退**：库已补成新版后旧 TB 起不来（库只升不降），只能用升级前的备份恢复：
+    1. `sudo bash install.sh --rollback` —— 不动任何东西，说明要用哪个备份、会丢什么；
+    2. 确认后 `sudo bash install.sh --rollback --restore-tb` —— 停本地 TB → 删库重建 → `pg_restore` 备份 → 部署文件、镜像换回旧版（旧 TB 镜像 `tb-node:4.2.2.5` 还在本机）→ 起来。约 1–2 分钟。
+    **丢什么**：备份之后本地 TB 新写的遥测、告警（子站那边是全的；本地页近期曲线缺这一段）。上送 outbox、配置目录（eg.yaml、生效配置、审计）不在库里，不受影响。
+    新版 TB 没起来过 / 库没补过（比如升级中途停了）时库还是旧的，`--rollback` 直接回，不用恢复。
+  - 回退之后要再升：跑新安装文件 `--role eg`（同上，会再备份一次）。
+  - 验收：`bash deploy/test/upgrade-eg.sh <旧 .run> <新 .run>`（一次性沙箱：旧版装好、种数据 → 升级 → 回退 → 再升级，每步核对设备、告警规则、告警、历史点、cfg 与库里版本）。
 - **子站回滚时的电表变比**：子站回滚到 0.12（下发的配置不带 `meters`）后，EG 变比会回到 eg.yaml 初值（电表属性 `ctRatio` / `ptRatio`，没写就是 1），这次变化子站侧不会留倍率变更记录；如需追溯，在维护记录里手工登记。（EG 0.4 起：配置体没有 `meters`、或没有本柜那一块，就按初值；重启后也是初值，不会恢复上一次下发的变比）
 - `sudo bash install.sh --status`：容器状态、已装版本、可回退到哪个版本。
 - 升级期间 agent 停几秒：同事的数据由 Mosquitto 持久会话排着，上送 outbox 在磁盘上，都不丢（I2 实测重启无断档）。
