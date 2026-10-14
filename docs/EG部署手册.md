@@ -103,6 +103,7 @@
 - 镜像随发布件：出包时 `pnpm pack:eg -- --images --debs --conv <镜像:确切 tag>`，发布件里多 `images-conv.tar.gz` 与 `CONV_IMAGE.txt`；install.sh 导入后**镜像在、串口在才启用**（`.env` 的 `COMPOSE_PROFILES=conv`），否则不起、说明原因。升级随 EG 发布件走；`--rollback` 回到不带它的版本时，转换程序容器一并停掉。
 - 开关：`--conv-off` 关掉并记住、`--conv-on` 重新打开；`--status` 的容器列表里能看到 `lsa-eg-conv`。
 - **转换程序保险**（0.17，eg-agent 自动做，不管用的是哪个转换程序）：本机总线 `lsa-eg-mosquitto` 重启过、而 `lsa-eg-conv` 是在它之前起的 → 重启 conv；conv 在跑、但 60 s 总线上没有它的任何读数（SAM / 电表 / 颗粒物的遥测）→ 重启 conv，连续重启按 60 s × 2^n 退避（最多 30 min），读数回来清零。每次重启记本地审计「自动重启转换程序」、上送 EG 遥测 `eg.conv_restarts` / `eg.conv_restart`（子站 check.sh 据此提示），`--status` 也会显示次数与最近一次原因。参数在 `config/local.yaml` 的 `convGuard: { enabled, silentS, maxBackoffS }`（缺省 true / 60 / 1800）；conv 没启用时什么也不做。
+- **MQTT 连接保活**（0.17）：上送子站（8883）、本机总线（1884）的连接被对端拒绝（CONNACK 非 0，如子站 TB 重启中途回「Server unavailable」、令牌错回「Not authorized」）时照样重连 —— mqtt.js 默认被拒一次就再也不连；连续被拒按 5 s → 60 s 翻倍退避，连上恢复；断了而库没在重连时换个客户端重连。上送被拒时日志写 CONNACK 码与原因，EG 遥测 `eg.uplink_err`、本地管理页上送状态、`--status`（读 `config/uplink-state.json`）都显示原因；4 / 5 / 134 / 135（令牌类）提示查 `eg.yaml` 的 `station.token` 与子站上这台 EG 的设备。
 - 在那之前（发布件里没有它的镜像）按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
 
 **改装 Ubuntu Server 24.04**（X26A 出厂是 22.04 桌面版；我们只支持 24.04 Server。改装会清空整块盘，出厂系统不保留）

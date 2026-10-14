@@ -225,12 +225,25 @@ conv_status() {
   # 0.17 转换程序保险（eg-agent）：自动重启过的话说出来
   if [ -f config/conv-guard.json ]; then
     local n last
-    n="$(sed -n 's/.*"restarts":\([0-9]*\).*//p' config/conv-guard.json)"
-    last="$(sed -n 's/.*"detail":"\([^"]*\)".*//p' config/conv-guard.json)"
+    n="$(sed -n 's/.*"restarts":\([0-9]*\).*/\1/p' config/conv-guard.json)"
+    last="$(sed -n 's/.*"detail":"\([^"]*\)".*/\1/p' config/conv-guard.json)"
     [ "${n:-0}" -gt 0 ] 2>/dev/null && echo "  eg-agent 自动重启过转换程序 $n 次；最近一次：${last:-?}"
   fi
   echo "可选串口（--conv-serial <设备>）："
   serial_list
+}
+
+# 0.17 上送子站被拒（eg-agent 写 config/uplink-state.json：CONNACK 码与原因；连上后清空）
+uplink_status() {
+  [ -f config/uplink-state.json ] || return 0
+  grep -q '"refused":null' config/uplink-state.json && return 0
+  local code reason count
+  code="$(sed -n 's/.*"code":\([0-9]*\).*/\1/p' config/uplink-state.json)"
+  reason="$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' config/uplink-state.json)"
+  count="$(sed -n 's/.*"count":\([0-9]*\).*/\1/p' config/uplink-state.json)"
+  [ -n "$code" ] || return 0
+  echo "!! 子站拒绝上送连接：CONNACK $code ${reason:-?}（连续 ${count:-?} 次；eg-agent 在退避重试，最长每 60 s 一次）" >&2
+  case "$code" in 4|5|134|135) echo "   查 config/eg.yaml 的 station.token 与子站上这台 EG 的设备 / 令牌" >&2 ;; esac
 }
 
 status() {
@@ -240,6 +253,7 @@ status() {
   fw_status
   wd_status
   conv_status
+  uplink_status
   true
 }
 # 安全提醒（只提醒，不改系统配置：自动关 SSH 口令登录可能把维护人员锁在外面）
