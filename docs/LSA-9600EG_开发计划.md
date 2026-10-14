@@ -76,7 +76,7 @@ lsa-9600eg/
 
 | 部分 | 选型 | 理由 |
 |---|---|---|
-| EG 本地数据与告警 | **ThingsBoard CE 4.2.2.5 单体**（与子站同版，以后可各自升级）+ PostgreSQL 16 | 本地存 7 天、用与子站同一份设备配置算 7 类告警；两端都不是 TB Edge（交接说明 V3.0 §2.1） |
+| EG 本地数据与告警 | **ThingsBoard CE 4.2.2.6 单体**（0.17 起，之前 4.2.2.5）（与子站同版，以后可各自升级）+ PostgreSQL 16 | 本地存 7 天、用与子站同一份设备配置算 7 类告警；两端都不是 TB Edge（交接说明 V3.0 §2.1） |
 | eg-agent | **Node 22 + TS + NestJS**，与子站扩展服务同一套（`@swc-node/register` 跑）；outbox / 事件库用 better-sqlite3 | 维护人员只学一套；SQLite 本机落盘、断电安全（WAL） |
 | 本地管理页 | Vue 3 + TS + Element Plus，样式 token 与前端一致；哈希路由 + 相对路径，能挂在 `/eg/<柜号>/` 下 | 与子站页面同一套观感 |
 | 数据接入 | Mosquitto 2.1 + `thingsboard/tb-gateway` 3.8.5（MQTT 连接器 + 自定义连接器） | 用户选定 IoT Gateway |

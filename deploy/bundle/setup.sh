@@ -2,16 +2,18 @@
 # LSA-9600SP 一键安装入口（在解包目录里；通常由 .run 自解压后调用）。
 #
 #   sudo bash setup.sh                                  交互选角色
-#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--yes]
+#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--no-tb-backup] [--yes]
 #       子站主机：Docker（没有就装离线包）→ 导入镜像 → /opt/lsa9600sp → 首次自动生成 docker/.env（随机口令、
 #       本机 IP、证书 SAN）→ scripts/up.sh --prod（证书、建库、provision、扩展服务、Nginx、视频）→ TB 系统管理员改随机口令。
 #       已装过的按升级处理：保留 .env。
 #       对时：子站主机给各 EG 当时间服务器（chrony allow 站内私网、local stratum 10 orphan —— 没有上级时全站至少跟子站一致）；
 #       --ntp 给站内时钟源（GPS / 北斗授时或上级 NTP），记住，以后升级不用再给。
 #       --kiosk（0.16）：子站装好后再装机柜双屏（scripts/install-kiosk.sh sp/kiosk）；安装文件里要有 sp/kiosk/（子站离线包带 --with-kiosk 打的）。
-#   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--sp-key <子站公钥>] [--eg-config <目录>] [--yes]
+#   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--sp-key <子站公钥>] [--eg-config <目录>] [--no-tb-backup] [--yes]
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
+#   --no-tb-backup（0.17）：TB 同一补丁线升级（如 4.2.2.5 → 4.2.2.6）时不做升级前备份、直接升（备份失败又腾不出空间时用；放弃退回旧版 TB 的能力）。
+#       原样传给子站 up.sh --prod / EG install.sh；不是 TB 补丁升级时不起作用。老版本的 up.sh / install.sh 不认它时不传、提示一句。
 #
 # 只支持 x86_64 + Ubuntu Server 24.04（子站主机、EG 都是）：开头就查，别的系统直接报错退出（EG 0.5.x；以前只在要装离线 Docker 时才查）。
 set -euo pipefail
@@ -27,19 +29,21 @@ FORCE=0
 SPKEY=''
 NTP=''
 KIOSK=0
+NO_TB_BACKUP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE="${2:?}"; shift ;;
     --ip) IP="${2:?}"; shift ;;
     --ntp) NTP="${2:?--ntp 后面给站内时钟源地址}"; shift ;;
     --kiosk) KIOSK=1 ;;
+    --no-tb-backup) NO_TB_BACKUP=1 ;;
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
     --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
     --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
-    --help | -h) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help | -h) sed -n '2,18p' "$HERE/$(basename "$0")" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -310,7 +314,12 @@ install_sp() {
   sp_chrony
 
   say '启动（证书 → 建库 → provision → 扩展服务、Nginx、视频）'
-  bash "$SP_B/scripts/up.sh" --prod
+  local upargs=(--prod)
+  if [ "$NO_TB_BACKUP" = 1 ]; then
+    if grep -q 'no-tb-backup' "$SP_B/scripts/up.sh" 2>/dev/null; then upargs+=(--no-tb-backup)
+    else echo '（这个子站版本的 up.sh 不认 --no-tb-backup，没传）'; fi
+  fi
+  bash "$SP_B/scripts/up.sh" "${upargs[@]}"
   # 早先版本的安装文件升级时换过前端目录，Nginx 可能还挂着已删除的旧目录：看不到 index.html 就重启它（重新挂载）
   if ! docker exec lsa-nginx sh -c 'test -f /usr/share/nginx/web-root/current/index.html || test -f /usr/share/nginx/html/index.html' 2>/dev/null; then
     echo 'Nginx 看不到前端文件（挂着已删除的旧目录），重启 Nginx'
@@ -369,6 +378,10 @@ install_eg() {
   [ -n "$LAN1" ] && args+=(--lan1 "$LAN1")
   [ "$FORCE" = 1 ] && args+=(--force)
   [ -n "$SPKEY" ] && args+=(--sp-key "$SPKEY")
+  if [ "$NO_TB_BACKUP" = 1 ]; then
+    if grep -q 'no-tb-backup' "$DEST/install.sh" 2>/dev/null; then args+=(--no-tb-backup)
+    else echo '（这个 EG 版本的 install.sh 不认 --no-tb-backup，没传）'; fi
+  fi
   bash "$DEST/install.sh" "${args[@]}"
 }
 

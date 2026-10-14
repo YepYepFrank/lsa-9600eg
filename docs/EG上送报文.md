@@ -132,7 +132,7 @@
 | EG | eg.yaml `eg.attrs` 原样：`cab` `ip` `ipUp` `fw` `pt` `sn` … | A12 起加 `stationId`；`cfgWant` 不报（那是子站自己的量） |
 | EG | `cfg` | 实际生效的配置版本 |
 | EG | `agent`、`egAgentVersion` | eg-agent 版本，如 `0.3.0-<提交号>`（0.2.0 起带提交号） |
-| EG | `tbVersion` | EG 本地 TB 版本，如 `4.2.2.5` |
+| EG | `tbVersion` | EG 本地 TB 版本，如 `4.2.2.6` |
 | EG | `hostBootId`、`agentBootId` | 重启识别：每次连上子站发一次 |
 | EG | `caps.actual` | 串（JSON 对象 `{"<能力>":"ok"|"nodata"|"absent"}`）。阶段 A，只在下发过能力后才有；变化时 / 连上时 / 每小时发 |
 

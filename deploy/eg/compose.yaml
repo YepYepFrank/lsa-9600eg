@@ -59,7 +59,7 @@ services:
 
   # 一次性建库：install.sh 检测到库是空的就先跑它（docker compose --profile install run --rm tb-install）
   tb-install:
-    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.5}
+    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.6}
     profiles: ['install']
     depends_on:
       postgres:
@@ -74,7 +74,7 @@ services:
     networks: [eg]
 
   tb:
-    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.5}
+    image: thingsboard/tb-node:${TB_VERSION:-4.2.2.6}
     container_name: lsa-eg-tb
     restart: unless-stopped
     depends_on:

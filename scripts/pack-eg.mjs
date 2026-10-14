@@ -33,7 +33,7 @@ const DIST = resolve(ROOT, 'dist', `eg-${VERSION}`)
 const STAGE = resolve(ROOT, 'dist', '.stage-app')
 
 /** 第三方镜像：与 deploy/eg/compose.yaml 的缺省版本一致 */
-const THIRD = ['postgres:16', 'thingsboard/tb-node:4.2.2.5', 'eclipse-mosquitto:2.1.2', 'thingsboard/tb-gateway:3.8.5', 'bluenviron/mediamtx:1.21.1']
+const THIRD = ['postgres:16', 'thingsboard/tb-node:4.2.2.6', 'eclipse-mosquitto:2.1.2', 'thingsboard/tb-gateway:3.8.5', 'bluenviron/mediamtx:1.21.1']
 
 console.log(`EG 发布件 ${VERSION}\n`)
 // 0.13 验收后：安装脚本里 set -e 下会悄悄退出的写法，有一条就不出包
