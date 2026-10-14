@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto'
 import { Logger } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
 import { BUS_TOPIC, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { MqttKeeper, mqttKeepOptions, refusedOf } from '@lsa-eg/config/mqtt-keep'
 import { fetchAuth } from './digest.js'
 import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
 import { numberRegions, type DriverError } from './driver-base.js'
@@ -66,6 +67,7 @@ export class VideoService {
   private publishedAt = 0
   private alarm: { state: string; sentAt: number } | null = null
   private bus: MqttClient | null = null
+  private keeper: MqttKeeper<MqttClient> | null = null
   private timers: NodeJS.Timeout[] = []
   private measuring = false
   /** 循环录像（G5）：覆盖、裁片段、水位 */
@@ -80,10 +82,21 @@ export class VideoService {
   }
 
   async start(): Promise<void> {
-    this.bus = mqtt.connect(this.cfg.conn.bus, { clientId: `eg-video-${this.cfg.cabinet.code}`, protocolVersion: 5, reconnectPeriod: 3000 })
-    this.bus.on('error', e => this.log.warn(`本机总线：${e.message}`))
-    // 连上（含重连）后把区域配置再报一次
-    this.bus.on('connect', () => (this.publishedVer = ''))
+    // 0.17：被拒的 CONNACK 之后照样重连、兜底换客户端（MqttKeeper）
+    this.keeper = new MqttKeeper<MqttClient>({
+      create: () => mqtt.connect(this.cfg.conn.bus, mqttKeepOptions({ clientId: `eg-video-${this.cfg.cabinet.code}`, protocolVersion: 5 as const, reconnectPeriod: 3000 })),
+      wire: c => {
+        this.bus = c
+        c.on('error', e => {
+          if (!refusedOf(e)) this.log.warn(`本机总线：${e.message}`)
+        })
+        // 连上（含重连）后把区域配置再报一次
+        c.on('connect', () => (this.publishedVer = ''))
+      },
+      minMs: 3000,
+      log: (level, msg) => this.log[level](`本机总线 ${msg}`),
+    })
+    this.keeper.start()
     await this.refresh()
     this.timers.push(setInterval(() => void this.refresh(), STREAMS_MS))
     this.timers.push(setInterval(() => void this.probe(), PROBE_MS))
@@ -95,7 +108,8 @@ export class VideoService {
 
   stop(): void {
     for (const t of this.timers) clearInterval(t)
-    this.bus?.end(true)
+    this.keeper?.stop()
+    this.bus = null
   }
 
   private pub(values: Record<string, unknown>, ts: number): void {

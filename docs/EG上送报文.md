@@ -113,6 +113,7 @@
 | `eg.clk_offset` | 数 ms | 与对时源的差；测不出不发 |
 | `eg.time_sync` | 串 synced / unsynced / unknown | synced = 5 min 内测成功且偏差 < 500 ms（阶段 A） |
 | `eg.uplink` | 串 ok / backfill / down | backfill = 连着、正在补传 |
+| `eg.uplink_err` | 串 | 0.17：子站拒绝上送连接的原因，如 `CONNACK 5 Not authorized`（令牌错 / 子站上没有这台 EG）；连着时为空串。被拒期间子站收不到，本地 TB 立刻有，连回去后随补传到子站 |
 | `eg.buf_depth` | 数 | outbox 待送条数 |
 | `eg.oldest_unsent` | 数 ms | 最旧未送的源时间；没有积压时不发 |
 | `eg.backfill_pct` | 数 % | 补传进度 |

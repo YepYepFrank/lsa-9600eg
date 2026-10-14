@@ -25,8 +25,9 @@
  *   POST /emu/cam/alarm?state=…                    原生报警状态
  * 摄像机的 cam.* 由 eg-video 报，这里不再替摄像机发（它不是同事程序管的传感器）。 */
 import { createServer } from 'node:http'
-import mqtt from 'mqtt'
+import mqtt, { type MqttClient } from 'mqtt'
 import { camRegionLimit, BUS_TOPIC, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { MqttKeeper, mqttKeepOptions } from '@lsa-eg/config/mqtt-keep'
 import { attributesOf, PERIOD, planCabinets, telemetryOf, type CabPlan, type Ctx, type Period, type Scenario } from '@lsa/points'
 import { capDefaults, type CabinetSpec, type SubDeviceSpec } from '@lsa/model'
 import { CameraSim, type RegionDef } from './camera.js'
@@ -91,11 +92,30 @@ async function main() {
   const drop = new Map<string, Set<string>>()
   let sent = 0
 
-  const client = await mqtt.connectAsync(cfg.conn.bus, {
-    clientId: `emu-${cab.code}-${Math.random().toString(16).slice(2, 6)}`,
-    reconnectPeriod: 3000,
-    keepalive: 30,
+  // 0.17：被拒的 CONNACK 之后照样重连、兜底换客户端（MqttKeeper）；client 可能被换掉，用的时候一律取 keeper.client
+  let sendAttrs = () => {}
+  let first = () => {}
+  const ready = new Promise<void>(ok => (first = ok))
+  const keeper = new MqttKeeper<MqttClient>({
+    create: () => mqtt.connect(cfg.conn.bus, mqttKeepOptions({ clientId: `emu-${cab.code}-${Math.random().toString(16).slice(2, 6)}`, reconnectPeriod: 3000, keepalive: 30 })),
+    wire: c => {
+      c.on('error', () => undefined)
+      c.on('connect', () => {
+        first()
+        sendAttrs()
+      })
+    },
+    minMs: 3000,
+    log: (_l, msg) => log(`本机总线 ${msg}`),
   })
+  keeper.start()
+  await ready
+  const client = {
+    publish: (topic: string, body: string, o: { qos: 0 | 1 }) => keeper.client?.publish(topic, body, o),
+    get connected() {
+      return keeper.connected
+    },
+  }
   log(`已连本机总线 ${cfg.conn.bus}，仿真 ${cab.code} 的 ${cab.subs.length} 台传感器（场景 ${SCENARIO}）`)
 
   const pub = (dev: string, values: Record<string, unknown>, ts: number) => {
@@ -106,7 +126,7 @@ async function main() {
   // 静态属性：上电发一次（同事的程序每次连上总线也要发）。只发同事那边知道的（固件版本、SAM 的分框）；
   // 隔室、端口、额定电流这些子站下发的由 eg-agent 按 eg.yaml 发
   const FROM_SENSORS = ['fw', 'ir.boxes']
-  const sendAttrs = () => {
+  sendAttrs = () => {
     for (const s of cab.subs) {
       const all = attributesOf(s, ctxOf.get(s.name)!)
       const mine = Object.fromEntries(FROM_SENSORS.filter(k => k in all).map(k => [k, all[k]]))
@@ -114,7 +134,6 @@ async function main() {
     }
   }
   sendAttrs()
-  client.on('connect', sendAttrs)
 
   const tick = (period: Period) => {
     const ts = Date.now()

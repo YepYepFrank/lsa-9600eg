@@ -9,11 +9,12 @@
  * 子站主题（§8.1）：子设备 v1/gateway/telemetry | attributes，EG 自身 v1/devices/me/telemetry | attributes；一次发布 ≤ 500 个样本且 ≤ 48 KB（chunk.ts）。
  * 上报给子站的上送状态（随 EG 自身指标每 5 s）：eg.buf_depth、eg.oldest_unsent、eg.backfill_pct、eg.uplink、eg.outbox_full、eg.lost。 */
 import { randomBytes } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
 import { stationToken, type EgConfig } from '@lsa-eg/config'
+import { MqttKeeper, mqttKeepOptions, refusedOf, type Refused } from '@lsa-eg/config/mqtt-keep'
 import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { OutboxStore, type OutRow, type RowKind } from './outbox.store.js'
@@ -40,6 +41,8 @@ export interface UplinkStatus {
   backfillPct?: number | null
   outboxMb?: number
   lost?: number
+  /** 0.17：子站连续拒绝连接的码与原因 */
+  refused?: Refused | null
 }
 
 const BATCH = 500
@@ -55,6 +58,10 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('上送')
   private store: OutboxStore | null = null
   private client: MqttClient | null = null
+  /** 0.17：子站连接保活（被拒的 CONNACK 之后照样重连、退避、兜底换客户端） */
+  private keeper: MqttKeeper<MqttClient> | null = null
+  /** 子站连续拒绝连接（CONNACK 码与原因）；连上清空 */
+  private refused: Refused | null = null
   private pending: { dev: string; kind: RowKind; ts: number; body: string }[] = []
   private timers: NodeJS.Timeout[] = []
   /** 本次启动的标识（§2.2；遥测靠 ts 幂等用不到，事件 I3 用） */
@@ -159,7 +166,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   onModuleDestroy(): void {
     for (const t of this.timers) clearInterval(t)
     this.flush()
-    this.client?.end(true)
+    this.keeper?.stop()
+    this.client = null
     this.store?.close()
   }
 
@@ -167,9 +175,9 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
   setForcedDown(down: boolean): void {
     this.forcedDown = down
     if (down) {
-      const c = this.client
+      this.keeper?.stop()
+      this.keeper = null
       this.client = null
-      c?.end(true)
       this.onDown()
     } else if (!this.client) this.connect()
   }
@@ -194,7 +202,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     }
     if (!up) {
       const mins = this.downSince ? Math.round((Date.now() - this.downSince) / 60_000) : 0
-      return { ...base, state: 'offline', text: `连不上子站 ${target}${mins ? `（已 ${mins} 分钟）` : ''}，待发 ${s.depth} 条，恢复后按原时间补传` }
+      const why = this.refused ? `：子站拒绝连接（CONNACK ${this.refused.code} ${this.refused.reason}，连续 ${this.refused.count} 次${this.refused.code === 4 || this.refused.code === 5 || this.refused.code === 134 || this.refused.code === 135 ? '，查 eg.yaml 的令牌与子站上这台 EG 的设备' : ''}）` : ''
+      return { ...base, state: 'offline', text: `连不上子站 ${target}${mins ? `（已 ${mins} 分钟）` : ''}${why}，待发 ${s.depth} 条，恢复后按原时间补传`, refused: this.refused }
     }
     if (pct !== null) return { ...base, state: 'backfill', text: `补传中 ${pct} %，待发 ${s.depth} 条` }
     return { ...base, state: 'ok', text: s.depth > 100 ? `正常，待发 ${s.depth} 条` : '正常，无积压' }
@@ -212,6 +221,8 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
       'eg.oldest_unsent': s.oldestTs,
       'eg.backfill_pct': pct,
       'eg.uplink': !this.client?.connected ? 'down' : pct !== null ? 'backfill' : 'ok',
+      // 0.17：子站拒绝连接的原因（CONNACK 码 + 文字），连着时为空 —— 本地 TB 立刻有，子站在连回去后从补传里看到
+      'eg.uplink_err': this.refused ? `CONNACK ${this.refused.code} ${this.refused.reason}` : '',
       'eg.outbox_full': full,
       'eg.lost': JSON.stringify(this.store.lost()),
     }
@@ -238,18 +249,45 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
 
   private connect(): void {
     if (this.forcedDown || !this.cfg.station.mqtt) return
-    const c = mqtt.connect(this.cfg.station.mqtt, {
-      username: stationToken(this.cfg),
-      clientId: `eg-uplink-${this.cfg.cabinet.code}-${this.bootId}`,
-      clean: true,
-      reconnectPeriod: 5000,
-      connectTimeout: 10_000,
-      keepalive: 30,
+    // 0.17：mqtt.js 收到被拒的 CONNACK 会从此不再重连（子站 TB 重启时时机不巧就永远不上送）—— 交给 MqttKeeper 保活
+    this.keeper?.stop()
+    this.keeper = new MqttKeeper<MqttClient>({
+      create: () =>
+        mqtt.connect(
+          this.cfg.station.mqtt!,
+          mqttKeepOptions({
+            username: stationToken(this.cfg),
+            clientId: `eg-uplink-${this.cfg.cabinet.code}-${this.bootId}`,
+            clean: true,
+            reconnectPeriod: 5000,
+            connectTimeout: 10_000,
+            keepalive: 30,
+          }),
+        ),
+      wire: c => {
+        this.client = c
+        c.on('connect', () => this.client === c && this.onUp())
+        c.on('close', () => this.client === c && this.onDown())
+        c.on('error', e => {
+          if (!refusedOf(e)) this.log.warn(`子站 MQTT：${e.message}`)
+        })
+      },
+      log: (level, msg) => this.log[level](`子站 MQTT ${msg}`),
+      onRefused: r => this.setRefused(r),
     })
-    this.client = c
-    c.on('connect', () => this.onUp())
-    c.on('close', () => this.onDown())
-    c.on('error', e => this.log.warn(`子站 MQTT：${e.message}`))
+    this.keeper.start()
+  }
+
+  /** 被拒原因写状态文件（install.sh --status 读，agent 停着也能看到最后一次） */
+  private setRefused(r: Refused | null): void {
+    this.refused = r
+    const file = resolve(this.cfg.dir, 'uplink-state.json')
+    try {
+      writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), target: this.cfg.station.mqtt ?? null, refused: r }), 'utf8')
+      renameSync(`${file}.tmp`, file)
+    } catch {
+      // 写不了只影响 --status，日志与状态照常
+    }
   }
 
   /** 声明子设备在线（TB 网关接口）；EG 自己是网关本身，不用声明；能力全都不启用的不声明（免得子站 TB 自动建出设备） */
@@ -273,6 +311,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     this.tokens = 0
     const was = this.downSince
     this.downSince = null
+    if (this.refused) this.setRefused(null)
     this.log.log(`已连子站 ${this.cfg.station.mqtt}${this.histTotal ? `，补传 ${this.histTotal} 条` : ''}${was ? `（断了 ${Math.round((Date.now() - was) / 1000)} s）` : ''}`)
     this.announced = new Set()
     this.announce()

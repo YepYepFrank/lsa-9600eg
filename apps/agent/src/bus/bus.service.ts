@@ -9,6 +9,7 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
 import { BUS_TOPIC, deviceOfTopic, type EgConfig } from '@lsa-eg/config'
+import { MqttKeeper, mqttKeepOptions, refusedOf } from '@lsa-eg/config/mqtt-keep'
 import { resolve } from 'node:path'
 import { EG_CONFIG } from '../config.js'
 import { EventDedup } from './event-dedup.js'
@@ -55,6 +56,8 @@ export type TelemetryListener = (device: string, entries: Entry[], own: boolean)
 export class BusService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('总线')
   private client: MqttClient | null = null
+  /** 0.17：被拒的 CONNACK 之后照样重连、兜底换客户端（MqttKeeper） */
+  private keeper: MqttKeeper<MqttClient> | null = null
   private readonly listeners: TelemetryListener[] = []
   private readonly connectListeners: (() => void)[] = []
   private readonly attrListeners: ((device: string, attrs: Record<string, unknown>, own: boolean) => void)[] = []
@@ -99,22 +102,37 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
     if (this.passive) this.log.warn('旁观模式（EG_PASSIVE=1）：只收本机总线、不发任何数据')
     // 持久会话（固定 clientId、不清会话、会话保留 1 天）：agent 或 Mosquitto 重启那一会儿同事发的数据由 Mosquitto 排着，
     // 重连后补给 agent —— 上送 outbox 的数据就是从这里来的，不能丢（I2，EG独立TB调整方案 §2.2）
-    this.client = mqtt.connect(this.cfg.conn.bus, {
-      clientId: this.passive ? `eg-agent-${this.cfg.cabinet.code}-passive-${process.pid}` : `eg-agent-${this.cfg.cabinet.code}`,
-      protocolVersion: 5,
-      clean: this.passive,
-      properties: this.passive ? {} : { sessionExpiryInterval: 86_400 },
-      reconnectPeriod: 3000,
-      connectTimeout: 5000,
-      keepalive: 30,
+    this.keeper = new MqttKeeper<MqttClient>({
+      create: () =>
+        mqtt.connect(
+          this.cfg.conn.bus,
+          mqttKeepOptions({
+            clientId: this.passive ? `eg-agent-${this.cfg.cabinet.code}-passive-${process.pid}` : `eg-agent-${this.cfg.cabinet.code}`,
+            protocolVersion: 5 as const,
+            clean: this.passive,
+            properties: this.passive ? {} : { sessionExpiryInterval: 86_400 },
+            reconnectPeriod: 3000,
+            connectTimeout: 5000,
+            keepalive: 30,
+          }),
+        ),
+      wire: c => {
+        this.client = c
+        c.on('connect', () => {
+          if (this.client !== c) return
+          this.log.log(`已连本机总线 ${this.cfg.conn.bus}`)
+          c.subscribe([BUS_TOPIC.telemetryAll, BUS_TOPIC.attributesAll], { qos: 1 })
+          for (const fn of this.connectListeners) fn()
+        })
+        c.on('error', e => {
+          if (!refusedOf(e)) this.log.warn(`本机总线：${e.message}`)
+        })
+        c.on('message', (topic, buf, packet) => this.ingest(topic, buf, packet.properties?.userProperties?.['src'] === SELF_SRC))
+      },
+      minMs: 3000,
+      log: (level, msg) => this.log[level](`本机总线 ${msg}`),
     })
-    this.client.on('connect', () => {
-      this.log.log(`已连本机总线 ${this.cfg.conn.bus}`)
-      this.client!.subscribe([BUS_TOPIC.telemetryAll, BUS_TOPIC.attributesAll], { qos: 1 })
-      for (const fn of this.connectListeners) fn()
-    })
-    this.client.on('error', e => this.log.warn(`本机总线：${e.message}`))
-    this.client.on('message', (topic, buf, packet) => this.ingest(topic, buf, packet.properties?.userProperties?.['src'] === SELF_SRC))
+    this.keeper.start()
   }
 
   /** 处理总线上的一条消息（自检直接调） */
@@ -167,7 +185,8 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy(): void {
-    this.client?.end(true)
+    this.keeper?.stop()
+    this.client = null
   }
 
   /** 发到本机总线（派生量、质量码、EG 自身指标）；与传感器数据同一格式，带 src=eg-agent */
