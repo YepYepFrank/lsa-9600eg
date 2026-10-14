@@ -3,11 +3,15 @@
  * agent 自己算的量也发回总线，与传感器数据走同一条路经 IoT Gateway 上送（开发计划 §6.1）。
  *
  * agent 自己发的消息带 MQTT 5 用户属性 src=eg-agent：总线上会原样回到 agent 自己，
- * 统计「传感器来了多少条」、判断「同事是否自己发了 q / dev.*」时要把它们排除。 */
+ * 统计「传感器来了多少条」、判断「同事是否自己发了 q / dev.*」时要把它们排除。
+ *
+ * 0.17：事件类的量（uv.pulse）同一设备同一 ts 只往下分发一次（EventDedup）—— 下游的上送、派生、录波都只见到一次。 */
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
 import { BUS_TOPIC, deviceOfTopic, type EgConfig } from '@lsa-eg/config'
+import { resolve } from 'node:path'
 import { EG_CONFIG } from '../config.js'
+import { EventDedup } from './event-dedup.js'
 
 export const SELF_SRC = 'eg-agent'
 
@@ -59,8 +63,14 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
   msgs = 0
   /** 不在 eg.yaml 设备清单里的设备名（同事发错名字时本地页要能看出来） */
   readonly unknown = new Map<string, number>()
+  /** 事件类的量去重（0.17）：记录保留 outbox 保留期那么久 */
+  readonly events: EventDedup
+  private readonly known: Set<string>
 
-  constructor(@Inject(EG_CONFIG) private readonly cfg: EgConfig) {}
+  constructor(@Inject(EG_CONFIG) private readonly cfg: EgConfig) {
+    this.known = new Set([cfg.eg.name, ...cfg.devices.map(d => d.name)])
+    this.events = new EventDedup(resolve(cfg.dir, 'pulse-seen.json'), (cfg.local?.outbox?.maxAgeDays ?? 7) * 86_400_000)
+  }
 
   get connected(): boolean {
     return !!this.client?.connected
@@ -86,7 +96,6 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
   readonly passive = process.env['EG_PASSIVE'] === '1'
 
   onModuleInit(): void {
-    const known = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
     if (this.passive) this.log.warn('旁观模式（EG_PASSIVE=1）：只收本机总线、不发任何数据')
     // 持久会话（固定 clientId、不清会话、会话保留 1 天）：agent 或 Mosquitto 重启那一会儿同事发的数据由 Mosquitto 排着，
     // 重连后补给 agent —— 上送 outbox 的数据就是从这里来的，不能丢（I2，EG独立TB调整方案 §2.2）
@@ -105,48 +114,56 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
       for (const fn of this.connectListeners) fn()
     })
     this.client.on('error', e => this.log.warn(`本机总线：${e.message}`))
-    this.client.on('message', (topic, buf, packet) => {
-      const t = deviceOfTopic(topic)
-      if (!t) return
-      const own = packet.properties?.userProperties?.['src'] === SELF_SRC
-      if (!own) this.msgs++
-      const ring = this.raw.get(t.device) ?? []
-      ring.push({ at: Date.now(), topic, own, payload: buf.toString('utf8').slice(0, RAW_MAX_CHARS) })
-      if (ring.length > RAW_KEEP) ring.shift()
-      this.raw.set(t.device, ring)
-      if (!known.has(t.device)) {
-        this.unknown.set(t.device, Date.now())
-        return
+    this.client.on('message', (topic, buf, packet) => this.ingest(topic, buf, packet.properties?.userProperties?.['src'] === SELF_SRC))
+  }
+
+  /** 处理总线上的一条消息（自检直接调） */
+  ingest(topic: string, buf: Buffer, own: boolean): void {
+    const t = deviceOfTopic(topic)
+    if (!t) return
+    if (!own) this.msgs++
+    const ring = this.raw.get(t.device) ?? []
+    ring.push({ at: Date.now(), topic, own, payload: buf.toString('utf8').slice(0, RAW_MAX_CHARS) })
+    if (ring.length > RAW_KEEP) ring.shift()
+    this.raw.set(t.device, ring)
+    if (!this.known.has(t.device)) {
+      this.unknown.set(t.device, Date.now())
+      return
+    }
+    let body: unknown
+    try {
+      body = JSON.parse(buf.toString('utf8'))
+    } catch {
+      this.log.warn(`${topic} 不是 JSON，丢弃`)
+      return
+    }
+    const d = this.device(t.device)
+    if (!own) {
+      d.msgs++
+      d.lastAt = Date.now()
+    }
+    if (t.kind === 'attributes') {
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        Object.assign(d.attributes, body)
+        for (const fn of this.attrListeners) fn(t.device, body as Record<string, unknown>, own)
       }
-      let body: unknown
+      return
+    }
+    let entries = (Array.isArray(body) ? body : [body]).map(normalize).filter((e): e is Entry => !!e)
+    if (!own) {
+      const r = this.events.filter(t.device, entries)
+      for (const x of r.dups) this.log.log(`${t.device} 的 ${x.key}（ts ${x.ts}）已处理过，重复的这条不再处理、不再上送`)
+      entries = r.entries
+      if (!entries.length) return
+    }
+    for (const e of entries) this.take(d, e, own)
+    for (const fn of this.listeners) {
       try {
-        body = JSON.parse(buf.toString('utf8'))
-      } catch {
-        this.log.warn(`${topic} 不是 JSON，丢弃`)
-        return
+        fn(t.device, entries, own)
+      } catch (e) {
+        this.log.warn(`处理 ${t.device} 的数据出错：${(e as Error).message}`)
       }
-      const d = this.device(t.device)
-      if (!own) {
-        d.msgs++
-        d.lastAt = Date.now()
-      }
-      if (t.kind === 'attributes') {
-        if (body && typeof body === 'object' && !Array.isArray(body)) {
-          Object.assign(d.attributes, body)
-          for (const fn of this.attrListeners) fn(t.device, body as Record<string, unknown>, own)
-        }
-        return
-      }
-      const entries = (Array.isArray(body) ? body : [body]).map(normalize).filter((e): e is Entry => !!e)
-      for (const e of entries) this.take(d, e, own)
-      for (const fn of this.listeners) {
-        try {
-          fn(t.device, entries, own)
-        } catch (e) {
-          this.log.warn(`处理 ${t.device} 的数据出错：${(e as Error).message}`)
-        }
-      }
-    })
+    }
   }
 
   onModuleDestroy(): void {
