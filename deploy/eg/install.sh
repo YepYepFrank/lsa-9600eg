@@ -143,15 +143,26 @@ fw_remove() {
 # X26A 没有硬件看门狗：系统卡死（内核或 systemd 不响应）时没人重启它。systemd 每 RuntimeWatchdogSec / 2 喂一次 /dev/watchdog，
 # 卡死超过 RuntimeWatchdogSec 没喂，softdog 就重启整机；关机 / 重启卡住超过 RebootWatchdogSec 也强制重启。来电自启与 RTC 已有。
 # 有硬件看门狗（/sys/class/watchdog/*/identity 不是 Software Watchdog）就直接用它，不加载 softdog。
+# 开机加载 softdog 用 systemd 单元 lsa-eg-softdog.service 显式 modprobe（0.17.1）：Ubuntu 的 /lib/modprobe.d/blacklist_linux_*.conf
+# 有「blacklist softdog」，/etc/modules-load.d 里写它开机会被拒（systemd-modules-load：Module 'softdog' is deny-listed），
+# 以前装时 modprobe 能用、一重启就没了（10-15 宿主机意外重启后在 AH12、AH09 上发现）。显式按名字 modprobe 不受 blacklist 限制；
+# systemd 每次喂狗前设备没打开就会再去打开，所以模块比 PID 1 晚加载也照样接上。
 WD_MOD=/etc/modules-load.d/lsa-eg-softdog.conf
+WD_UNIT=/etc/systemd/system/lsa-eg-softdog.service
 WD_SD=/etc/systemd/system.conf.d/lsa-eg-watchdog.conf
 wd_status() {
   if [ "$(id -u)" != 0 ]; then echo "看门狗：要 sudo 才看得到"; return 0; fi
-  local dev='' rt
+  local dev='' rt held=0
   for d in /sys/class/watchdog/watchdog*; do [ -e "$d/identity" ] && { dev="$(cat "$d/identity")"; break; }; done
   rt="$(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null || true)"
-  if [ -f "$WD_SD" ] && [ -n "$dev" ] && [ -n "$rt" ] && [ "$rt" != 0 ] && [ "$rt" != infinity ]; then
+  # systemd（PID 1）真的打开着看门狗设备才算在喂
+  ls -l /proc/1/fd 2>/dev/null | grep '/dev/watchdog' >/dev/null && held=1  # 不用 -q：pipefail 下 grep 提前退出会让 ls 吃 SIGPIPE、整句判假
+  if [ -f "$WD_SD" ] && [ -n "$dev" ] && [ "$held" = 1 ] && [ -n "$rt" ] && [ "$rt" != 0 ] && [ "$rt" != infinity ]; then
     echo "看门狗：开（$dev；systemd 每 $rt 内没喂就重启）"
+  elif [ -f "$WD_SD" ] && ! grep -q '^EG_WATCHDOG=off' .env 2>/dev/null; then
+    local why='没有看门狗设备（softdog 没加载）'
+    [ -n "$dev" ] && why="$dev 没被 systemd 打开"
+    echo "!! 看门狗：配置在，但$why —— 系统卡死不会自动重启；重跑 sudo bash install.sh" >&2
   elif grep -q '^EG_WATCHDOG=off' .env 2>/dev/null; then
     echo "看门狗：已关（--watchdog-off；系统卡死不会自动重启。打开：sudo bash install.sh --watchdog-on）"
   else
@@ -163,11 +174,31 @@ wd_apply() {
   for d in /sys/class/watchdog/watchdog*; do
     [ -e "$d/identity" ] && [ "$(cat "$d/identity")" != 'Software Watchdog' ] && hw="$(cat "$d/identity")"
   done
+  # 老版本写的 modules-load.d 不起作用（blacklist），删掉
+  rm -f "$WD_MOD"
   if [ -z "$hw" ]; then
     if ! modprobe softdog 2>/dev/null; then echo '!! 加载不了 softdog 内核模块：系统卡死时不会自动重启' >&2; return 0; fi
-    echo softdog > "$WD_MOD"
+    cat > "$WD_UNIT" <<'EOF'
+# LSA-9600EG（install.sh 写）：开机加载软件看门狗 softdog。Ubuntu 默认 blacklist 它，modules-load.d 加载不了，这里显式 modprobe。
+# 不要手改，重跑 install.sh 会重写；关掉用 sudo bash install.sh --watchdog-off
+[Unit]
+Description=LSA-9600EG 软件看门狗（加载 softdog）
+DefaultDependencies=no
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe softdog
+
+[Install]
+WantedBy=sysinit.target
+EOF
+    systemctl daemon-reload
+    systemctl enable lsa-eg-softdog.service >/dev/null 2>&1 || echo '!! lsa-eg-softdog.service 没能设成开机自启：重启后看门狗不生效' >&2
   else
-    rm -f "$WD_MOD"
+    systemctl disable lsa-eg-softdog.service >/dev/null 2>&1 || true
+    rm -f "$WD_UNIT"
   fi
   mkdir -p "$(dirname "$WD_SD")"
   cat > "$WD_SD" <<'EOF'
@@ -184,6 +215,11 @@ wd_remove() {
   local had=0
   [ -f "$WD_SD" ] && { rm -f "$WD_SD"; had=1; }
   rm -f "$WD_MOD"
+  if [ -f "$WD_UNIT" ]; then
+    systemctl disable lsa-eg-softdog.service >/dev/null 2>&1 || true
+    rm -f "$WD_UNIT"
+    systemctl daemon-reload
+  fi
   # systemd 关掉看门狗时会正常关闭设备（写 magic close），之后才能卸 softdog
   [ "$had" = 1 ] && systemctl daemon-reexec
   modprobe -r softdog 2>/dev/null || true
