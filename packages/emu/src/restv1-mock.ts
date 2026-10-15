@@ -75,7 +75,7 @@ function regionTemp(r: MockRegion, id: number, now: number) {
   const wob = Math.sin(now / 10_000 + id) * 0.5
   const max = r1(40 + id * 2 + wob)
   // 温度点坐标照真机（2026-10-14）：传感器 160×120，不是区域框所在的 640×480
-  const base = { enable: r.regionEnable, max: { value: max, x: 15 + id * 2, y: 25 + id }, min: { value: r1(max - 12) , x: 17, y: 27 }, avg: { value: r1(max - 5) }, center: { value: r1(max - 3) } }
+  const base = { enable: r.regionEnable, max: { value: max, x: 15 + id * 2, y: 25 + id }, min: { value: r1(max - 12) , x: 17, y: 27 }, avg: { value: r1(max - 5) + 0.000004 }, center: { value: r1(max - 3) - 0.000006 } } // 带 float32 的尾巴，照真机
   if (r.regionType === 'point') {
     const x = Number(r.region['x'] ?? 0)
     const y = Number(r.region['y'] ?? 0)
@@ -181,7 +181,7 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
       if (p === '/measurement/region') return ok(state.regions.map(r => ({ ...r, localMeasureParam: false, localParam: { distance: 2, emissivity: 0.95 } })))
       if (p === '/measurement/globTemp') {
         const max = r1(48.3 + Math.sin(now / 10_000) * 0.5)
-        return ok({ max: { value: max, x: 80, y: 50 }, min: { value: 22.1, x: 2, y: 117 }, avg: { value: 30.5 }, center: { value: 31.2 } }) // 160×120
+        return ok({ max: { value: max, x: 80, y: 50 }, min: { value: 22.100000381469727, x: 2, y: 117 }, avg: { value: 30.5 }, center: { value: 31.2 } }) // 160×120
       }
       if (p === '/measurement/regionTemp') return ok(state.regions.map((r, i) => regionTemp(r, i, now)))
       if (p === '/alarm/status') return ok(alarmStatus(state))
