@@ -10,7 +10,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { Restv1Driver, RESTV1_FRAME, alarmText, coordsOf } from '../../../apps/video/src/restv1.js'
 import { numberRegions, type DriverError, type RegionDef } from '../../../apps/video/src/driver-base.js'
-import { camRegionLimit } from '@lsa-eg/config'
+import { camRegionLimit, LOCAL_DEFAULTS } from '@lsa-eg/config'
+import { restv1Opts } from '../../../apps/video/src/drivers.js'
 import { defaultRegions } from './camera.js'
 import { startRestv1Mock, type MockRegion } from './restv1-mock.js'
 
@@ -57,6 +58,11 @@ async function main() {
   check(JSON.stringify(coordsOf('region', { x: 1, y: 2, width: 3, height: 4 })) === '{"x":1,"y":2,"width":3,"height":4}', 'region 坐标原样')
   check(alarmText({ globTemp: { alarm: true }, regionTemp: [{ alarm: false }, { alarm: true }], firePoint: { alarm: true }, diffTemp: [{ alarm: true, difference: { regionA: 1, regionB: 3 } }] }) === '全局温度、R2 区域温度、温差 R1–R3、火点', '报警只取 alarm = true 的、区号按 ID + 1')
   check(alarmText({ globTemp: { alarm: false, value: 99 } }) === '' && alarmText(undefined) === '', '没有报警 → 空串（不带数值，数值变了不算变化）')
+  const cam = { ...LOCAL_DEFAULTS.camera, restv1: 'http://cam', user: 'admin', password: 'p-rtsp' }
+  const same = restv1Opts(cam)
+  const split = restv1Opts({ ...cam, restUser: 'rest', restPassword: 'p-rest' })
+  check(same.user === 'admin' && same.password === 'p-rtsp' && split.user === 'rest' && split.password === 'p-rest' && split.base === 'http://cam',
+    '接口账号：restUser 没填 → 用取流账号；填了 → 用它（真机接口与 RTSP 两套账号）')
 
   console.log('\n2. 登录、流地址')
   const d = drv()
