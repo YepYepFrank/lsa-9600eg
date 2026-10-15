@@ -28,6 +28,9 @@ class CameraDto {
   @IsOptional() @IsString() @MaxLength(64) user?: string
   /** 不传 = 不改（页面上不回显口令） */
   @IsOptional() @IsString() @MaxLength(128) password?: string
+  /** restv1 接口账号（真机与 RTSP 是两套）；空串 = 与取流账号相同 */
+  @IsOptional() @IsString() @MaxLength(64) restUser?: string
+  @IsOptional() @IsString() @MaxLength(128) restPassword?: string
   @IsOptional() @ValidateNested() @Type(() => RtspDto) rtsp?: RtspDto
 }
 class LocalPatchDto {
@@ -63,7 +66,7 @@ export class ConfigController {
       },
       local: {
         ...c.local,
-        camera: { ...c.local.camera, password: c.local.camera.password ? '已设置' : '' },
+        camera: { ...c.local.camera, password: c.local.camera.password ? '已设置' : '', restPassword: c.local.camera.restPassword ? '已设置' : '' },
       },
       /** 子站下发、实际生效的配置版本（I4） */
       applied: this.apply.summary(),
@@ -90,6 +93,8 @@ export class ConfigController {
       set('摄像机 ONVIF 地址', l.camera.onvif, cam.onvif?.trim(), v => (l.camera.onvif = v))
       set('摄像机账号', l.camera.user, cam.user?.trim(), v => (l.camera.user = v))
       if (cam.password !== undefined && cam.password !== '') set('摄像机口令', l.camera.password, cam.password, v => (l.camera.password = v))
+      set('摄像机接口账号', l.camera.restUser, cam.restUser?.trim(), v => (l.camera.restUser = v))
+      if (cam.restPassword !== undefined && cam.restPassword !== '') set('摄像机接口口令', l.camera.restPassword, cam.restPassword, v => (l.camera.restPassword = v))
       for (const k of ['visible', 'thermal', 'visibleSub', 'thermalSub'] as const) set(`RTSP ${k}`, l.camera.rtsp[k], cam.rtsp?.[k]?.trim(), v => (l.camera.rtsp[k] = v))
     }
     if (changed.length) {

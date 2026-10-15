@@ -124,12 +124,17 @@ export interface LocalFile {
     driver: 'sim' | 'onvif' | 'rtsp' | 'restv1'
     /** sim 驱动的仿真器地址，如 http://127.0.0.1:3190/emu/cam */
     api: string
-    /** restv1 驱动的摄像机地址，如 http://192.168.10.64（只到主机[:端口]，/restv1/… 由驱动拼）；账号口令用下面的 user / password */
+    /** restv1 驱动的摄像机地址，如 http://192.168.10.64（只到主机[:端口]，/restv1/… 由驱动拼）；账号口令见 restUser / restPassword */
     restv1: string
+    /** restv1 接口的账号口令。真机（2026-10-14 实测）接口与 RTSP 是两套账号：接口用普通账号、RTSP 只认 admin。
+     *  留空 = 与下面的 user / password（取流账号）相同 */
+    restUser: string
+    restPassword: string
     /** 区域温升 ir.R<n>.rise = ir.R<n>.max − env.t：两个输入的源时间差超过这么多秒就不出值（缺省 15 = 1.5 × env.t 周期，约定 §3） */
     riseToleranceS: number
     /** ONVIF 设备服务地址，如 http://192.168.10.64/onvif/device_service */
     onvif: string
+    /** 取流账号口令：拼进 RTSP 地址给 mediamtx，ONVIF 也用它 */
     user: string
     password: string
     /** 各路 RTSP；空 = 由 ONVIF 查得 */
@@ -173,7 +178,7 @@ export const LOCAL_DEFAULTS: LocalFile = {
     fullWater: 95,
     autoUpload: { severities: ['CRITICAL'], types: ['弧光异常', '过温'] },
   },
-  camera: { driver: 'rtsp', api: '', restv1: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
+  camera: { driver: 'rtsp', api: '', restv1: '', restUser: '', restPassword: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 
 /** 仓库根（有 pnpm-workspace.yaml 的那层）；装到 EG 上后没有就返回 null */

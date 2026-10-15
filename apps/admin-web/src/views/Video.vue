@@ -102,7 +102,7 @@ async function grab(ch: 'visible' | 'ir') {
 }
 
 // 接入配置
-const form = reactive({ driver: 'rtsp', restv1: '', onvif: '', user: '', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } })
+const form = reactive({ driver: 'rtsp', restv1: '', restUser: '', restPassword: '', onvif: '', user: '', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } })
 const DRIVERS = [
   ['restv1', 'restv1（真机：测温、报警、抓拍、流地址）'],
   ['onvif', 'onvif（只有视频，ONVIF 查流地址）'],
@@ -112,22 +112,30 @@ const DRIVERS = [
 const REST_TEXT: Record<string, string> = { OK: '正常', DEGRADED: '部分出错（温度照常）', FAIL: '失败' }
 const saving = ref(false)
 const hasPw = computed(() => store.config?.local.camera.password === '已设置')
+const hasRestPw = computed(() => store.config?.local.camera.restPassword === '已设置')
 watch(
   () => store.config,
   c => {
     if (!c) return
     const k = c.local.camera
-    Object.assign(form, { driver: k.driver, restv1: k.restv1 ?? '', onvif: k.onvif, user: k.user, password: '', rtsp: { ...k.rtsp } })
+    Object.assign(form, { driver: k.driver, restv1: k.restv1 ?? '', restUser: k.restUser ?? '', restPassword: '', onvif: k.onvif, user: k.user, password: '', rtsp: { ...k.rtsp } })
   },
   { immediate: true },
 )
 async function save() {
   saving.value = true
   try {
-    const body = { camera: { driver: form.driver, restv1: form.restv1, onvif: form.onvif, user: form.user, rtsp: form.rtsp, ...(form.password ? { password: form.password } : {}) } }
+    const body = {
+      camera: {
+        driver: form.driver, restv1: form.restv1, restUser: form.restUser, onvif: form.onvif, user: form.user, rtsp: form.rtsp,
+        ...(form.password ? { password: form.password } : {}),
+        ...(form.restPassword ? { restPassword: form.restPassword } : {}),
+      },
+    }
     const r = await api<{ changed: string[] }>('config/local', { method: 'PUT', body })
     ElMessage.success(r.changed.length ? `已保存：${r.changed.join('、')}（eg-video 已按新地址刷新）` : '没有改动')
     form.password = ''
+    form.restPassword = ''
     await refreshConfig()
     setTimeout(() => void load(), 1500)
   } catch (e) {
@@ -262,8 +270,12 @@ const STREAMS = [
           </el-form-item>
           <el-form-item v-if="form.driver === 'restv1'" label="摄像机地址"><el-input v-model="form.restv1" placeholder="http://192.168.10.64（只到主机[:端口]）" style="width: 330px" /></el-form-item>
           <el-form-item v-if="form.driver === 'onvif' || form.onvif" label="ONVIF 地址"><el-input v-model="form.onvif" placeholder="http://192.168.10.64/onvif/device_service" /></el-form-item>
-          <el-form-item label="账号"><el-input v-model="form.user" style="width: 200px" /></el-form-item>
-          <el-form-item label="口令"><el-input v-model="form.password" type="password" show-password :placeholder="hasPw ? '已设置（不回显），留空 = 不改' : '未设置'" style="width: 260px" /></el-form-item>
+          <el-form-item label="取流账号"><el-input v-model="form.user" style="width: 200px" /><span class="note" style="margin-left: 8px">RTSP / ONVIF 用；真机只认 admin</span></el-form-item>
+          <el-form-item label="取流口令"><el-input v-model="form.password" type="password" show-password :placeholder="hasPw ? '已设置（不回显），留空 = 不改' : '未设置'" style="width: 260px" /></el-form-item>
+          <template v-if="form.driver === 'restv1'">
+            <el-form-item label="接口账号"><el-input v-model="form.restUser" placeholder="留空 = 同取流账号" style="width: 200px" /><span class="note" style="margin-left: 8px">restv1 测温 / 抓拍用；真机与取流是两套账号</span></el-form-item>
+            <el-form-item v-if="form.restUser" label="接口口令"><el-input v-model="form.restPassword" type="password" show-password :placeholder="hasRestPw ? '已设置（不回显），留空 = 不改' : '未设置'" style="width: 260px" /></el-form-item>
+          </template>
           <el-form-item v-for="[k, label] in STREAMS" :key="k" :label="label">
             <el-input v-model="form.rtsp[k]" placeholder="留空 = 由驱动给（restv1 / ONVIF / 仿真）；手填的优先" />
           </el-form-item>

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --import @swc-node/register/esm-register src/main.ts",
     "typecheck": "tsc --noEmit",
-    "video:render": "node --import @swc-node/register/esm-register src/render.ts"
+    "video:render": "node --import @swc-node/register/esm-register src/render.ts",
+    "probe:restv1": "node --import @swc-node/register/esm-register src/probe-restv1.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",

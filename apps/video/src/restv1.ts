@@ -16,6 +16,13 @@ import type { ChannelKey } from './onvif.js'
 
 /** 热像主码流分辨率（厂家 CAM5：640×480，不是 640×512）—— 区域坐标所在的画面 */
 export const RESTV1_FRAME = { w: 640, h: 480 } as const
+/** 温度点坐标（全画面 / 各区的最高、最低点 x / y）的比例：真机（2026-10-14，固件 0000_B37_1.1.17）这些坐标是
+ *  传感器原生 160×120，而区域框坐标是 640×480（G4 视频接口约定 §10、G4-9）。驱动乘上它，对外一律是 RESTV1_FRAME 的像素 */
+export const RESTV1_POINT_SCALE = 4
+const pt = (v: unknown) => {
+  const n = num(v)
+  return n === undefined ? undefined : n * RESTV1_POINT_SCALE
+}
 /** 区域配置多久重读一次（测温每秒一次，配置很少变） */
 const REGION_REFRESH_MS = 60_000
 /** 令牌提前这么久重取：剩余时间的 10%，最少 5 s、最多 60 s */
@@ -64,7 +71,8 @@ export interface Restv1Opts {
   base: string
   user: string
   password: string
-  /** 普通请求超时（ms），缺省 3000 */
+  /** 普通请求超时（ms），缺省 6000：真机（2026-10-14）HTTP 接口串行处理，可见光抓拍（2560×1600）要 3–3.6 s，
+   *  这期间的测温请求排在后面，3 s 会误判 TIMEOUT（告警抓拍时温度正要紧） */
   timeoutMs?: number
   /** 抓拍超时（ms），缺省 10000 */
   snapTimeoutMs?: number
@@ -72,6 +80,17 @@ export interface Restv1Opts {
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const TYPES = new Set(['point', 'line', 'region', 'polygon'])
+/** 真机（2026-10-14，固件 0000_B37_1.1.17）矩形区回 regionType "rectangle"（文档写的是 region） */
+const TYPE_ALIAS: Record<string, RegionDef['type']> = { rectangle: 'region', rect: 'region' }
+export const regionTypeOf = (t: unknown): RegionDef['type'] => {
+  const s = String(t ?? '').toLowerCase()
+  return TYPES.has(s) ? (s as RegionDef['type']) : (TYPE_ALIAS[s] ?? 'region')
+}
+/** 区域名：真机出厂名是 Area1–Area12（= ID + 1），和没起名一样按 ID 编成 R<n>；起了别的名字照用 */
+export const regionNameOf = (name: unknown, id: number): string => {
+  const s = typeof name === 'string' ? name.trim() : ''
+  return !s || /^area\s*\d+$/i.test(s) ? `R${id + 1}` : s
+}
 
 /** restv1 的区域坐标 → 约定 §4 的 coords（polygon 的 {pointNum, point:[…]} 改成 {points:[…]}，其余原样） */
 export function coordsOf(type: string, region: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -99,6 +118,7 @@ export function alarmText(data: Record<string, unknown> | undefined): string {
   if (on(data['globTempRise'])) out.push('全局温升')
   list(data['tempRise']).forEach((x, i) => on(x) && out.push(`R${i + 1} 温升`))
   if (on(data['firePoint'])) out.push('火点')
+  if (on(data['areaSecurity'])) out.push('区域入侵') // 真机有、文档没写（2026-10-14）
   if (on(data['smartTemp'])) out.push('智能测温')
   list(data['input']).forEach((x, i) => on(x) && out.push(`报警输入 ${i + 1}`))
   return out.join('、')
@@ -121,7 +141,7 @@ export class Restv1Driver implements CameraDriver {
   constructor(private readonly o: Restv1Opts) {
     const b = o.base.trim().replace(/\/+$/, '')
     this.base = /^https?:\/\//i.test(b) ? b : `http://${b}`
-    this.timeoutMs = o.timeoutMs ?? 3000
+    this.timeoutMs = o.timeoutMs ?? 6000
     this.snapTimeoutMs = o.snapTimeoutMs ?? 10_000
   }
 
@@ -220,8 +240,8 @@ export class Restv1Driver implements CameraDriver {
     const rows = await this.call<RegionRow[]>('GET', '/restv1/measurement/region')
     if (!Array.isArray(rows)) throw new DriverError('/restv1/measurement/region：data 不是数组', 'DATA')
     const defs = rows.map((r, id) => {
-      const type = TYPES.has(String(r.regionType)) ? (r.regionType as RegionDef['type']) : 'region'
-      return { id, name: r.regionName?.trim() || `R${id + 1}`, type, coords: coordsOf(type, r.region), enabled: r.regionEnable !== false }
+      const type = regionTypeOf(r.regionType)
+      return { id, name: regionNameOf(r.regionName, id), type, coords: coordsOf(type, r.region), enabled: r.regionEnable !== false }
     })
     this.regionCache = { at: Date.now(), defs }
     return defs
@@ -266,8 +286,8 @@ export class Restv1Driver implements CameraDriver {
         name: d.name,
         max: num(t.max?.value),
         min: num(t.min?.value),
-        maxX: num(t.max?.x),
-        maxY: num(t.max?.y),
+        maxX: pt(t.max?.x),
+        maxY: pt(t.max?.y),
         avg: num(t.avg?.value),
         center: num(t.center?.value),
       })
@@ -287,7 +307,7 @@ export class Restv1Driver implements CameraDriver {
       regions: defs.map(({ id: _id, ...d }) => d),
       temps: {
         ts,
-        glob: { max: gmax, min: gmin, maxX: num(glob.max?.x) ?? 0, maxY: num(glob.max?.y) ?? 0, avg: num(glob.avg?.value), center: num(glob.center?.value) },
+        glob: { max: gmax, min: gmin, maxX: pt(glob.max?.x) ?? 0, maxY: pt(glob.max?.y) ?? 0, avg: num(glob.avg?.value), center: num(glob.center?.value) },
         regions,
       },
       alarm,

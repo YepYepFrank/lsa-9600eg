@@ -66,6 +66,11 @@ class RtspDriver implements CameraDriver {
   }
 }
 
+/** restv1 接口用的账号：restUser 填了用它（真机接口与 RTSP 两套账号），没填与取流账号相同 */
+export function restv1Opts(cam: EgConfig['local']['camera']) {
+  return cam.restUser ? { base: cam.restv1, user: cam.restUser, password: cam.restPassword } : { base: cam.restv1, user: cam.user, password: cam.password }
+}
+
 export function driverOf(cfg: EgConfig): CameraDriver {
   const cam = cfg.local.camera
   switch (cam.driver) {
@@ -76,7 +81,7 @@ export function driverOf(cfg: EgConfig): CameraDriver {
       return new OnvifDriver(cfg)
     case 'restv1':
       if (!cam.restv1) throw new DriverError('restv1 驱动要配 local.yaml camera.restv1（摄像机地址，如 http://192.168.10.64）', 'CONNECT')
-      return new Restv1Driver({ base: cam.restv1, user: cam.user, password: cam.password })
+      return new Restv1Driver(restv1Opts(cam))
     default:
       // 没选驱动但填了 ONVIF 地址：按 onvif
       return cam.onvif ? new OnvifDriver(cfg) : new RtspDriver()
