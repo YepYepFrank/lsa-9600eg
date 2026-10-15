@@ -119,7 +119,7 @@ const items = computed<Item[]>(() => {
       name: `组件 · ${c.label}`,
       level: c.state === 'running' ? 'good' : c.state === '不存在' ? '' : 'crit',
       result: c.state === 'running' ? `运行 ${c.startedAt ? dur((Date.now() - c.startedAt) / 1000) : ''}，内存 ${c.memMb ?? '—'} MB${c.restarts ? `，自动重启过 ${c.restarts} 次` : ''}` : c.state,
-      hint: c.state === '不存在' ? (c.key === 'mediamtx' ? '视频转发在 G4 装上' : '') : c.state !== 'running' ? '看「日志」里这个组件的最后几行' : '',
+      hint: c.state === '不存在' ? (c.key === 'mediamtx' ? '视频转发在 G4 装上' : c.key === 'conv' ? '转换程序没启用（或按同事自己的方式部署）：见「服务状态」的转换程序卡片' : '') : c.state !== 'running' ? '看「日志」里这个组件的最后几行' : '',
     })
   }
   return out

@@ -52,6 +52,20 @@ async function restart(c: Comp) {
   }
 }
 const canMaint = computed(() => session.me?.role === 'maint')
+
+/** 0.17.1 转换程序卡片：运行状态（容器）、自动重启（eg-agent 转换程序保险）、上送被拒（子站拒绝连接的原因） */
+const REASON: Record<string, string> = { 'mosquitto-restart': '本机总线 Mosquitto 重启过', silent: '总线上长时间没有转换程序的读数' }
+const conv = computed(() => store.comps.find(c => c.key === 'conv') ?? null)
+const guard = computed(() => st.value?.convGuard ?? null)
+const convRun = computed((): [string, string, string] => {
+  const c = conv.value
+  if (!c) return ['', '…', '']
+  if (c.state === 'running') return ['good', '运行中', `已运行 ${c.startedAt ? dur((Date.now() - c.startedAt) / 1000) : '—'}${c.memMb != null ? `，内存 ${c.memMb} MB` : ''}`]
+  if (c.state === '不存在') return ['', '没启用', '本机没有转换程序容器（安装时没带它的镜像、没有串口，或 --conv-off；也可能按同事自己的方式部署）']
+  if (c.state === '取不到') return ['minor', '取不到', '读不到 Docker 的状态']
+  return ['crit', c.state, '容器没在跑：看「日志」里转换程序的最后几行']
+})
+const refused = computed(() => d.value?.uplink.refused ?? null)
 </script>
 
 <template>
@@ -103,6 +117,41 @@ const canMaint = computed(() => session.me?.role === 'maint')
         </el-table-column>
       </el-table>
       <div v-if="st.unknownDevices.length" class="panel-b note crit">总线上有不在设备清单里的设备名：{{ st.unknownDevices.join('、') }}（这些数据不会上送，请核对同事程序里的设备名）</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">转换程序<span class="t2">同事的传感器转换程序（{{ guard?.container ?? 'lsa-eg-conv' }}）与上送子站的连接</span></div>
+      <div class="panel-b">
+        <dl class="kv">
+          <dt>运行状态</dt>
+          <dd><span class="dot" :class="convRun[0]" />{{ convRun[1] }}<span class="muted">{{ convRun[2] ? '　' + convRun[2] : '' }}</span></dd>
+          <dt>最近读数</dt>
+          <dd>{{ guard?.lastReadAt ? ago(Date.now() - guard.lastReadAt) : '—' }}<span class="muted">（eg-agent 最近一次在总线上收到它的读数）</span></dd>
+          <dt>自动重启保险</dt>
+          <dd>
+            <template v-if="!guard">—</template>
+            <template v-else-if="guard.enabled">开<span class="muted">（总线重启后、或 {{ guard.silentS }} s 没有读数时由 eg-agent 自动重启它）</span></template>
+            <template v-else><span class="dot minor" />关<span class="muted">（local.yaml convGuard.enabled = false）</span></template>
+          </dd>
+          <dt>自动重启次数</dt>
+          <dd>
+            <b :class="guard && guard.restarts ? 'minor' : ''">{{ guard?.restarts ?? '—' }}</b>
+            <template v-if="guard?.last">
+              <span class="muted">　最近一次 {{ dt(guard.last.at) }}：</span>{{ REASON[guard.last.reason] ?? guard.last.reason }}<span class="muted">（{{ guard.last.detail }}）</span>
+            </template>
+          </dd>
+          <dt>上送被拒</dt>
+          <dd>
+            <template v-if="refused">
+              <span class="dot crit" /><b class="crit">子站拒绝连接：CONNACK {{ refused.code }} {{ refused.reason }}</b>
+              <span class="muted">　连续 {{ refused.count }} 次，从 {{ dt(refused.since) }} 起；eg-agent 在退避重试（最长每 60 s 一次）</span>
+              <div v-if="[4, 5, 134, 135].includes(refused.code)" class="note minor">令牌类：查 config/eg.yaml 的 station.token 与子站上这台 EG 的设备 / 令牌</div>
+            </template>
+            <template v-else-if="d?.uplink.state === 'offline'">连不上子站，但不是被拒（网络或子站没起来）<span class="muted">：{{ d.uplink.text }}</span></template>
+            <template v-else>没有<span class="muted">（{{ d ? UPTXT[d.uplink.state] : '…' }}）</span></template>
+          </dd>
+        </dl>
+      </div>
     </div>
 
     <div class="panel">
