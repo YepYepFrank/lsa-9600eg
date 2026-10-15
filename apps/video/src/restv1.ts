@@ -16,6 +16,13 @@ import type { ChannelKey } from './onvif.js'
 
 /** 热像主码流分辨率（厂家 CAM5：640×480，不是 640×512）—— 区域坐标所在的画面 */
 export const RESTV1_FRAME = { w: 640, h: 480 } as const
+/** 温度点坐标（全画面 / 各区的最高、最低点 x / y）的比例：真机（2026-10-14，固件 0000_B37_1.1.17）这些坐标是
+ *  传感器原生 160×120，而区域框坐标是 640×480（G4 视频接口约定 §10、G4-9）。驱动乘上它，对外一律是 RESTV1_FRAME 的像素 */
+export const RESTV1_POINT_SCALE = 4
+const pt = (v: unknown) => {
+  const n = num(v)
+  return n === undefined ? undefined : n * RESTV1_POINT_SCALE
+}
 /** 区域配置多久重读一次（测温每秒一次，配置很少变） */
 const REGION_REFRESH_MS = 60_000
 /** 令牌提前这么久重取：剩余时间的 10%，最少 5 s、最多 60 s */
@@ -279,8 +286,8 @@ export class Restv1Driver implements CameraDriver {
         name: d.name,
         max: num(t.max?.value),
         min: num(t.min?.value),
-        maxX: num(t.max?.x),
-        maxY: num(t.max?.y),
+        maxX: pt(t.max?.x),
+        maxY: pt(t.max?.y),
         avg: num(t.avg?.value),
         center: num(t.center?.value),
       })
@@ -300,7 +307,7 @@ export class Restv1Driver implements CameraDriver {
       regions: defs.map(({ id: _id, ...d }) => d),
       temps: {
         ts,
-        glob: { max: gmax, min: gmin, maxX: num(glob.max?.x) ?? 0, maxY: num(glob.max?.y) ?? 0, avg: num(glob.avg?.value), center: num(glob.center?.value) },
+        glob: { max: gmax, min: gmin, maxX: pt(glob.max?.x) ?? 0, maxY: pt(glob.max?.y) ?? 0, avg: num(glob.avg?.value), center: num(glob.center?.value) },
         regions,
       },
       alarm,

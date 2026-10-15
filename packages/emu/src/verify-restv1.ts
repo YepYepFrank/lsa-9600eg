@@ -8,7 +8,7 @@
  *     令牌到期前重取、中途失效（10009）重取一次、一直 10009 → TOKEN、口令不对 → AUTH（报错里没有口令和它的 MD5）、
  *     报警 / 区域接口出错 → partial（温度照常）、测温接口出错 → API、超时 → TIMEOUT、连不上 → CONNECT、抓拍 base64 → JPEG、回的不是 JPEG → DATA。 */
 import { createHash, randomBytes } from 'node:crypto'
-import { Restv1Driver, RESTV1_FRAME, alarmText, coordsOf, regionNameOf, regionTypeOf } from '../../../apps/video/src/restv1.js'
+import { Restv1Driver, RESTV1_FRAME, RESTV1_POINT_SCALE, alarmText, coordsOf, regionNameOf, regionTypeOf } from '../../../apps/video/src/restv1.js'
 import { numberRegions, type DriverError, type RegionDef } from '../../../apps/video/src/driver-base.js'
 import { camRegionLimit, LOCAL_DEFAULTS } from '@lsa-eg/config'
 import { restv1Opts } from '../../../apps/video/src/drivers.js'
@@ -90,6 +90,9 @@ async function main() {
   const byName = new Map(t.regions.map(r => [r.name, r]))
   const r1 = byName.get('R1')!
   check(r1 && r1.max !== undefined && r1.min !== undefined && r1.maxX !== undefined && r1.avg !== undefined && r1.center !== undefined && r1.pt === undefined, `矩形区 R1：max ${r1?.max} min ${r1?.min} avg ${r1?.avg} center ${r1?.center} 最高点 (${r1?.maxX},${r1?.maxY})`)
+  const box = m.regions[0]!.coords as { x: number; y: number; width: number; height: number }
+  check(r1?.maxX === 60 && r1?.maxY === 100 && r1.maxX >= box.x && r1.maxX <= box.x + box.width && r1.maxY >= box.y && r1.maxY <= box.y + box.height,
+    `温度点坐标 160×120 × ${RESTV1_POINT_SCALE} → 640×480，落在区域框里（真机 G4-9）：摄像机回 (15,25) → (${r1?.maxX},${r1?.maxY})，框 (${box.x},${box.y},${box.width}×${box.height})`)
   const r4 = byName.get('R4')
   check(!!r4 && r4.pt !== undefined && r4.max === undefined && r4.avg === undefined, `point 区 R4：只有 pt ${r4?.pt}（{value, x, y} 的 value）`)
   check(!byName.has('R5'), '停用的区（R5）不出温度')
