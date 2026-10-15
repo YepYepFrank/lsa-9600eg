@@ -1,0 +1,87 @@
+From 514dee0360ff97e0d39b240ac213bb683711a707 Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Thu, 15 Oct 2026 02:50:14 -0400
+Subject: [PATCH 3/3] =?UTF-8?q?=E6=94=B6=E5=88=B0=20SIGTERM=20/=20SIGINT?=
+ =?UTF-8?q?=20=E6=97=B6=E6=AD=A3=E5=B8=B8=E5=81=9C=E6=AD=A2=EF=BC=8C?=
+ =?UTF-8?q?=E8=AE=BE=E5=A4=87=E7=BC=93=E5=86=B2=E9=87=8C=E6=B2=A1=E5=8F=91?=
+ =?UTF-8?q?=E7=9A=84=E8=BD=AC=E5=85=A5=E7=BC=93=E5=AD=98=E5=86=8D=E9=80=80?=
+ =?UTF-8?q?=E5=87=BA?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+docker stop 发 SIGTERM，以前进程直接被杀，缓冲里的数据丢了；_flush_remaining_buffers 写好了但没被调用，且没连上时不进缓存。现在注册信号处理走 stop()，停止时先发、发不了转入缓存，下次启动补传。第 3 轮联调意见第二部分 C。
+---
+ src/core/app.py | 31 ++++++++++++++++++++++++++-----
+ 1 file changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/app.py b/src/core/app.py
+index 5560c73..36b4455 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -12,6 +12,7 @@
+ """
+ 
+ import asyncio
++import signal
+ import time
+ from typing import Any, Dict, Optional
+ from src.core.config_manager import ConfigManager
+@@ -177,6 +178,13 @@ class Application:
+ 
+     async def _async_run(self) -> None:
+         """异步运行主逻辑"""
++        # SIGTERM（docker stop）/ SIGINT：走正常停止，队列里没发的转入缓存再退出
++        loop = asyncio.get_running_loop()
++        for sig in (signal.SIGTERM, signal.SIGINT):
++            try:
++                loop.add_signal_handler(sig, self.stop)
++            except (NotImplementedError, RuntimeError):
++                pass  # Windows 上没有
+         try:
+             # 连接 Modbus (循环重试, 第2轮联调意见)
+             await self._modbus_connect_retry()
+@@ -442,15 +450,22 @@ class Application:
+     async def _flush_remaining_buffers(self) -> None:
+         """关闭前刷新剩余设备缓冲"""
+         async with self._device_buffer_lock:
++            n = 0
+             for device, buf in list(self._device_buffer.items()):
+-                if buf["values"] and self._mqtt and self._mqtt.is_connected:
++                if not buf["values"]:
++                    continue
++                ok = False
++                if self._mqtt and self._mqtt.is_connected:
+                     ok = await self._mqtt.publish_telemetry_to(
+                         device, buf["ts"], buf["values"])
+-                    # 发布失败时进缓存
+-                    if not ok and self._cache:
+-                        for sensor_name, normalized in buf.get("items", []):
+-                            await self._cache.save(sensor_name, normalized)
++                # 没连上或发布失败都进缓存（下次启动补传）
++                if not ok and self._cache:
++                    for sensor_name, normalized in buf.get("items", []):
++                        await self._cache.save(sensor_name, normalized)
++                        n += 1
+             self._device_buffer.clear()
++            if n:
++                logger.info("停止时队列里 %d 条没发出，已转入缓存", n)
+ 
+     async def _shutdown(self) -> None:
+         """关闭所有组件"""
+@@ -464,6 +479,12 @@ class Application:
+             await asyncio.gather(*self._tasks, return_exceptions=True)
+         self._tasks.clear()
+ 
++        # 设备缓冲里还没发的：能发就发，发不了转入缓存（要在断开 MQTT、关数据库之前）
++        try:
++            await self._flush_remaining_buffers()
++        except Exception as e:
++            logger.error("停止时转缓存失败: %s", e)
++
+         # 断开 MQTT
+         if self._mqtt:
+             await self._mqtt.disconnect()
+-- 
+2.54.0.windows.1
+

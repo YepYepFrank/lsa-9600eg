@@ -1,0 +1,88 @@
+From 1f6bd62f99c305ded752c0a179c7541001be2d33 Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Thu, 15 Oct 2026 02:50:13 -0400
+Subject: [PATCH 2/3] =?UTF-8?q?=E8=BF=9E=E4=B8=8A=E6=80=BB=E7=BA=BF?=
+ =?UTF-8?q?=E5=90=8E=20attributes=20=E7=BB=99=E6=AF=8F=E4=B8=AA=E4=BC=A0?=
+ =?UTF-8?q?=E6=84=9F=E5=99=A8=E9=85=8D=E7=9A=84=E8=AE=BE=E5=A4=87=E5=90=8D?=
+ =?UTF-8?q?=E5=90=84=E5=8F=91=E4=B8=80=E6=AC=A1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+以前只发给 device.name（SAM-AH03-B），A 隔室一次都没收到。重连循环里重复的那次去掉（connect() 里已经发过）。第 3 轮联调意见第二部分 B。
+---
+ src/core/app.py          |  7 ++++---
+ src/north/mqtt_client.py | 21 ++++++++++++++-------
+ 2 files changed, 18 insertions(+), 10 deletions(-)
+
+diff --git a/src/core/app.py b/src/core/app.py
+index 56dd64c..5560c73 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -112,6 +112,9 @@ class Application:
+         mqtt_cfg = self._config.get_mqtt_config()
+         device_name = self._config.get("device", "name", "SAM-AH03-B")
+         self._mqtt = InternalMQTTClient(mqtt_cfg, device_name)
++        # attributes 给每个传感器配的设备名各发一次（不只 device.name）
++        self._mqtt.set_devices([c.get("sensor", {}).get("device")
++                                for c in self._config.get_enabled_sensors().values()])
+ 
+         # 10. 初始化调度器
+         acq_cfg = self._config.get_acquisition_config()
+@@ -426,9 +429,7 @@ class Application:
+                     logger.info("尝试 MQTT 重连...")
+                     connected = await self._mqtt.connect()
+                     if connected:
+-                        logger.info("MQTT 重连成功")
+-                        # 重连后发一次属性
+-                        await self._mqtt.publish_attributes({"status": "online", "fw": "1.1.1"})
++                        logger.info("MQTT 重连成功")  # 属性已在 connect() 里给每个设备名各发一次
+                 await asyncio.sleep(3)
+             except asyncio.CancelledError:
+                 break
+diff --git a/src/north/mqtt_client.py b/src/north/mqtt_client.py
+index 5f477c0..326a8a9 100644
+--- a/src/north/mqtt_client.py
++++ b/src/north/mqtt_client.py
+@@ -55,10 +55,16 @@ class InternalMQTTClient:
+ 
+         self._client: Optional[aiomqtt.Client] = None
+         self._connected = False
++        # 各传感器配的设备名（attributes 每个设备名各发一次）；没设时只有 device_name
++        self._devices = [device_name]
+ 
+         # 主题前缀: lsa/<设备名>/
+         self._topic_prefix = f"lsa/{self._device_name}"
+ 
++    def set_devices(self, devices: list) -> None:
++        """设各传感器配的设备名；连上后 attributes 给每个设备名各发一次"""
++        self._devices = list(dict.fromkeys(d for d in devices if d)) or [self._device_name]
++
+     @property
+     def is_connected(self) -> bool:
+         return self._connected
+@@ -208,13 +214,14 @@ class InternalMQTTClient:
+         if not self._connected or not self._client:
+             return False
+         try:
+-            topic = f"{self._topic_prefix}/attributes"
+-            await self._client.publish(
+-                topic,
+-                payload=json.dumps(attributes, ensure_ascii=False),
+-                qos=self._qos,
+-            )
+-            logger.info("发布属性: topic=%s, keys=%s", topic, list(attributes.keys()))
++            for device in self._devices:
++                topic = f"lsa/{device}/attributes"
++                await self._client.publish(
++                    topic,
++                    payload=json.dumps(attributes, ensure_ascii=False),
++                    qos=self._qos,
++                )
++                logger.info("发布属性: topic=%s, keys=%s", topic, list(attributes.keys()))
+             return True
+         except Exception as e:
+             logger.error("发布属性失败: %s", e)
+-- 
+2.54.0.windows.1
+
