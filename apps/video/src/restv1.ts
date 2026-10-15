@@ -23,6 +23,12 @@ const pt = (v: unknown) => {
   const n = num(v)
   return n === undefined ? undefined : n * RESTV1_POINT_SCALE
 }
+/** 温度取到 0.1 ℃：真机回的是 float32 转出来的数（35.150005、34.250008），原样往下送各级页面就显示「34.250008℃」，
+ *  北向、告警消息里也一样（2026-10-15 联调）。摄像机精度远粗于 0.1 ℃，与仿真器、agent 派生量（温升、温差）同一位数 */
+export const temp1 = (v: unknown): number | undefined => {
+  const n = num(v)
+  return n === undefined ? undefined : Math.round(n * 10) / 10
+}
 /** 区域配置多久重读一次（测温每秒一次，配置很少变） */
 const REGION_REFRESH_MS = 60_000
 /** 令牌提前这么久重取：剩余时间的 10%，最少 5 s、最多 60 s */
@@ -268,8 +274,8 @@ export class Restv1Driver implements CameraDriver {
       throw this.remember(e)
     }
     if (!Array.isArray(rows)) throw this.remember(new DriverError('/restv1/measurement/regionTemp：data 不是数组', 'DATA'))
-    const gmax = num(glob.max?.value)
-    const gmin = num(glob.min?.value)
+    const gmax = temp1(glob.max?.value)
+    const gmin = temp1(glob.min?.value)
     if (gmax === undefined || gmin === undefined) throw this.remember(new DriverError('/restv1/measurement/globTemp：没有最高 / 最低温', 'DATA'))
     // 区域条数变了（摄像机上加减了区域）：下一次强制重读配置
     if (rows.length !== defs.length && this.regionCache) this.regionCache.at = 0
@@ -278,18 +284,18 @@ export class Restv1Driver implements CameraDriver {
       const t = rows[d.id]
       if (!d.enabled || !t || t.enable === false) continue
       if (d.type === 'point') {
-        const pt = num(t.point?.value) ?? num(t.max?.value)
+        const pt = temp1(t.point?.value) ?? temp1(t.max?.value)
         if (pt !== undefined) regions.push({ name: d.name, pt })
         continue
       }
       regions.push({
         name: d.name,
-        max: num(t.max?.value),
-        min: num(t.min?.value),
+        max: temp1(t.max?.value),
+        min: temp1(t.min?.value),
         maxX: pt(t.max?.x),
         maxY: pt(t.max?.y),
-        avg: num(t.avg?.value),
-        center: num(t.center?.value),
+        avg: temp1(t.avg?.value),
+        center: temp1(t.center?.value),
       })
     }
     // 报警：读不到时沿用上次的状态，标 partial（cam.rest DEGRADED、cam.alarm 质量码 invalid）
@@ -307,7 +313,7 @@ export class Restv1Driver implements CameraDriver {
       regions: defs.map(({ id: _id, ...d }) => d),
       temps: {
         ts,
-        glob: { max: gmax, min: gmin, maxX: pt(glob.max?.x) ?? 0, maxY: pt(glob.max?.y) ?? 0, avg: num(glob.avg?.value), center: num(glob.center?.value) },
+        glob: { max: gmax, min: gmin, maxX: pt(glob.max?.x) ?? 0, maxY: pt(glob.max?.y) ?? 0, avg: temp1(glob.avg?.value), center: temp1(glob.center?.value) },
         regions,
       },
       alarm,
