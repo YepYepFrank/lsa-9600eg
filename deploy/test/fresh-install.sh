@@ -118,6 +118,8 @@ for c in $(os docker ps -a --format '{{.Names}}' | grep lsa-eg); do
   [ "$r" = '0 true' ] || bad "$c：重启次数 / 在跑 = $r"
 done
 [ "$fail" = 0 ] && ok '容器都在跑、没有重启过'
+rc=0; st="$(os bash /opt/lsa-eg/install.sh --status 2>&1)" || rc=$?
+[ "$rc" = 0 ] && echo "$st" | grep -q '本地 TB：' && echo "$st" | grep -q '看门狗' && ok "单独跑 install.sh --status：rc 0，$(echo "$st" | grep -m1 '本地 TB：')" || bad "单独跑 install.sh --status：rc $rc；$(echo "$st" | tail -2 | tr '\n' ' ')"
 os docker exec lsa-eg-agent node -e '
 const fs=require("fs");const pw=fs.readFileSync("/config/initial-password.txt","utf8").trim();
 (async()=>{const B="http://127.0.0.1";

@@ -324,41 +324,7 @@ security_notes() {
   local m
   for m in "${msg[@]}"; do echo "  - $m"; done
 }
-[ "$MODE" = 'status' ] && { status; security_notes; exit 0; }
-[ "$(id -u)" = 0 ] || { echo '要用 sudo 跑' >&2; exit 1; }
-if [ "$MODE" = 'drop-sp' ]; then
-  if id lsa-sp >/dev/null 2>&1; then
-    pkill -u lsa-sp 2>/dev/null || true   # 子站隧道正开着的话断掉
-    userdel -r lsa-sp 2>/dev/null || userdel lsa-sp
-    echo '已删除隧道账号 lsa-sp（以后要让子站再建本地实体：sudo bash install.sh --sp-key <子站公钥>）'
-  else
-    echo '没有隧道账号 lsa-sp，不用删'
-  fi
-  exit 0
-fi
-
-# .env 里设一项（有就改、没有就加）
-env_set() {
-  if grep -q "^$1=" .env 2>/dev/null; then sed -i "s#^$1=.*#$1=$2#" .env; else echo "$1=$2" >> .env; fi
-}
-if [ "$MODE" = 'fw-off' ]; then
-  fw_remove; env_set EG_LAN1_FW off
-  echo 'LAN1 防火墙已关并记住（以后重跑 install.sh 也不再加；要重新打开：sudo bash install.sh --fw-on）'
-  exit 0
-fi
-if [ "$MODE" = 'wd-off' ]; then
-  wd_remove; env_set EG_WATCHDOG off
-  echo '看门狗已关并记住（系统卡死不会自动重启；以后重跑 install.sh 也不再开；要重新打开：sudo bash install.sh --watchdog-on）'
-  exit 0
-fi
-if [ "$MODE" = 'wd-on' ]; then
-  env_set EG_WATCHDOG on; wd_apply; exit 0
-fi
-if [ "$MODE" = 'fw-on' ]; then
-  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
-  [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
-  env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
-fi
+# 本地 TB 的辅助函数要在 --status 分支之前定义：status 里要用 tb_db_version（0.17 r1 定义在后面，单独跑 --status 打完「可回退到」就 127 退出）
 # 本地 TB 的版本（compose.yaml 里 tb-node 的缺省标签）
 tb_version() { grep -o 'tb-node:\${TB_VERSION:-[^}]*}' "$1" | head -1 | sed 's/.*:-//; s/}//'; }
 # TB 版本号 ↔ 库里 tb_schema_settings.schema_version 的数字（4.2.2.6 ↔ 4002002006；与子站 scripts/up.sh 同）
@@ -402,6 +368,41 @@ tb_restore() {  # $1 = 备份文件
   $DC exec -T postgres pg_restore -U postgres -d thingsboard --no-owner < "$1"
   echo "✓ 本地库已恢复（库里记的版本 $(tb_num_ver "$(tb_db_version)")）"
 }
+[ "$MODE" = 'status' ] && { status; security_notes; exit 0; }
+[ "$(id -u)" = 0 ] || { echo '要用 sudo 跑' >&2; exit 1; }
+if [ "$MODE" = 'drop-sp' ]; then
+  if id lsa-sp >/dev/null 2>&1; then
+    pkill -u lsa-sp 2>/dev/null || true   # 子站隧道正开着的话断掉
+    userdel -r lsa-sp 2>/dev/null || userdel lsa-sp
+    echo '已删除隧道账号 lsa-sp（以后要让子站再建本地实体：sudo bash install.sh --sp-key <子站公钥>）'
+  else
+    echo '没有隧道账号 lsa-sp，不用删'
+  fi
+  exit 0
+fi
+
+# .env 里设一项（有就改、没有就加）
+env_set() {
+  if grep -q "^$1=" .env 2>/dev/null; then sed -i "s#^$1=.*#$1=$2#" .env; else echo "$1=$2" >> .env; fi
+}
+if [ "$MODE" = 'fw-off' ]; then
+  fw_remove; env_set EG_LAN1_FW off
+  echo 'LAN1 防火墙已关并记住（以后重跑 install.sh 也不再加；要重新打开：sudo bash install.sh --fw-on）'
+  exit 0
+fi
+if [ "$MODE" = 'wd-off' ]; then
+  wd_remove; env_set EG_WATCHDOG off
+  echo '看门狗已关并记住（系统卡死不会自动重启；以后重跑 install.sh 也不再开；要重新打开：sudo bash install.sh --watchdog-on）'
+  exit 0
+fi
+if [ "$MODE" = 'wd-on' ]; then
+  env_set EG_WATCHDOG on; wd_apply; exit 0
+fi
+if [ "$MODE" = 'fw-on' ]; then
+  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
+  [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
+  env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
+fi
 # 部署文件（升级时整个发布件覆盖过来的那些）
 DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt'
 
