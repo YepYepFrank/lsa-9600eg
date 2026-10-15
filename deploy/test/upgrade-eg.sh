@@ -108,7 +108,10 @@ V1="$(dbver)"; I1="$(tbimg)"
 os docker logs lsa-eg-tb 2>&1 | grep -m1 -i 'Version increased' | sed 's/^/    /'
 S1="$(snap)"; same '升级后' "$S0" "$S1"
 health '升级后'
-os bash /opt/lsa-eg/install.sh --status 2>&1 | grep -E '已装版本|可回退|本地 TB|本地库备份' | sed 's/^/    /'
+rc=0; st="$(os bash /opt/lsa-eg/install.sh --status 2>&1)" || rc=$?
+echo "$st" | grep -E '已装版本|可回退|本地 TB|本地库备份|看门狗|防火墙' | sed 's/^/    /'
+# 单独跑 --status 要走完（0.17 r1 在「可回退到」之后 127 退出，没被发现过）
+[ "$rc" = 0 ] && echo "$st" | grep -q '本地 TB：' && echo "$st" | grep -q '看门狗' && ok "单独跑 install.sh --status：rc 0，本地 TB、看门狗等各项都在" || bad "单独跑 install.sh --status：rc $rc；$(echo "$st" | tail -2 | tr '\n' ' ')"
 
 echo; echo "== 4. 回退"
 rc=0; out="$(os bash /opt/lsa-eg/install.sh --rollback 2>&1)" || rc=$?
