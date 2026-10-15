@@ -100,10 +100,16 @@ t0=$(date +%s)
 os bash "/new/$NEWRUN" --role eg --yes > "$BAK/new1.log" 2>&1; rc=$?
 grep -E '本地 TB|备份|升级：' "$BAK/new1.log" | sed 's/^/    /'
 [ "$rc" = 0 ] && grep -q '^装好了' "$BAK/new1.log" && ok "rc 0、装好了（$(( $(date +%s) - t0 )) s）" || { bad "rc $rc"; tail -20 "$BAK/new1.log"; }
-grep -q '同一补丁线，不跑升级脚本' "$BAK/new1.log" && ok '识别为同一补丁线' || bad '没识别成同一补丁线'
-grep -q '✓ 备份好了' "$BAK/new1.log" && ok "升级前备份了本地库：$(os ls /opt/lsa-eg/backups)" || bad '没备份本地库'
 os docker logs lsa-eg-tb 2>&1 | grep -q 'not supported for upgrade' && bad 'TB 报「not supported for upgrade」（跑了升级脚本？）'
 V1="$(dbver)"; I1="$(tbimg)"
+# 本地 TB 版本变没变（0.16 → 0.17 变：4.2.2.5 → 4.2.2.6；0.17 r1 → 0.17.1 不变）：变了要走补丁升级、先备份；没变就不该备份
+TBCH=0; [ "$V0" != "$V1" ] && TBCH=1
+if [ "$TBCH" = 1 ]; then
+  grep -q '同一补丁线，不跑升级脚本' "$BAK/new1.log" && ok '识别为同一补丁线' || bad '没识别成同一补丁线'
+  grep -q '✓ 备份好了' "$BAK/new1.log" && ok "升级前备份了本地库：$(os ls /opt/lsa-eg/backups)" || bad '没备份本地库'
+else
+  if grep -q '同一补丁线' "$BAK/new1.log"; then bad '本地 TB 版本没变，却走了补丁升级'; else ok "本地 TB 版本没变（$V1），没走补丁升级、没有多做备份"; fi
+fi
 [ "$I1" = 'thingsboard/tb-node:4.2.2.6' ] && [ "$V1" = 4002002006 ] && ok "本地 TB：$I1，库里 $V1" || bad "本地 TB：$I1，库里 $V1"
 os docker logs lsa-eg-tb 2>&1 | grep -m1 -i 'Version increased' | sed 's/^/    /'
 S1="$(snap)"; same '升级后' "$S0" "$S1"
@@ -114,6 +120,17 @@ echo "$st" | grep -E '已装版本|可回退|本地 TB|本地库备份|看门狗
 [ "$rc" = 0 ] && echo "$st" | grep -q '本地 TB：' && echo "$st" | grep -q '看门狗' && ok "单独跑 install.sh --status：rc 0，本地 TB、看门狗等各项都在" || bad "单独跑 install.sh --status：rc $rc；$(echo "$st" | tail -2 | tr '\n' ' ')"
 
 echo; echo "== 4. 回退"
+if [ "$TBCH" = 0 ]; then
+  # 本地 TB 版本没变：--rollback 直接回，不用恢复库
+  t0=$(date +%s)
+  os bash /opt/lsa-eg/install.sh --rollback > "$BAK/rb.log" 2>&1; rc=$?
+  grep -E '回退|本地 TB|✗' "$BAK/rb.log" | sed 's/^/    /'
+  [ "$rc" = 0 ] && ok "--rollback（TB 版本没变，直接回）：rc 0（$(( $(date +%s) - t0 )) s），回到 $(os cat /opt/lsa-eg/.installed/VERSION)" || { bad "--rollback：rc $rc"; tail -20 "$BAK/rb.log"; }
+  V2="$(dbver)"; I2="$(tbimg)"
+  [ "$I2" = "$I0" ] && [ "$V2" = "$V0" ] && ok "本地 TB：$I2，库里 $V2（与升级前一致）" || bad "本地 TB：$I2，库里 $V2（升级前 $I0 / $V0）"
+  S2="$(snap)"; same '回退后' "$S0" "$S2"
+  health '回退后'
+else
 rc=0; out="$(os bash /opt/lsa-eg/install.sh --rollback 2>&1)" || rc=$?
 [ "$rc" != 0 ] && echo "$out" | grep -q -- '--rollback --restore-tb' && ok "不带 --restore-tb：拒绝并说明（rc $rc）" || bad "不带 --restore-tb：rc $rc；$(echo "$out" | tail -3)"
 echo "$out" | sed 's/^/      /'
@@ -126,6 +143,7 @@ V2="$(dbver)"; I2="$(tbimg)"
 [ "$I2" = "$I0" ] && [ "$V2" = "$V0" ] && ok "本地 TB：$I2，库里 $V2（与升级前一致）" || bad "本地 TB：$I2，库里 $V2（升级前 $I0 / $V0）"
 S2="$(snap)"; same '回退后' "$S0" "$S2"
 health '回退后'
+fi
 
 echo; echo "== 5. 再升级：$NEWRUN --role eg"
 os bash "/new/$NEWRUN" --role eg --yes > "$BAK/new2.log" 2>&1; rc=$?
