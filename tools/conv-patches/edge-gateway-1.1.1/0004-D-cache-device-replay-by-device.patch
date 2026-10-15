@@ -1,0 +1,250 @@
+From 6859dd17a6ec1296986b23ca67792ca54e620627 Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Thu, 15 Oct 2026 03:30:38 -0400
+Subject: [PATCH] =?UTF-8?q?=E7=BC=93=E5=AD=98=E8=A1=A8=E5=8A=A0=20device?=
+ =?UTF-8?q?=20=E5=88=97=EF=BC=8C=E8=A1=A5=E4=BC=A0=E6=8C=89=E8=AE=BE?=
+ =?UTF-8?q?=E5=A4=87=E5=88=86=E7=BB=84=E5=8F=91=E5=88=B0=E5=90=84=E8=87=AA?=
+ =?UTF-8?q?=E7=9A=84=E4=B8=BB=E9=A2=98?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+以前缓存不记设备名，补传一律发到 device.name，A 隔室的温湿度补传时跑到 B 下面。现在缓存时记下设备名；老库启动时补上 device 列（ALTER TABLE），老记录按配置里「传感器 → 设备」回填；补传按设备分组，各发到 lsa/<设备名>/telemetry，发成功的才删。配置里查不到的老记录仍发到缺省设备名。第 3 轮联调意见第二部分 D（补传归我方）。
+---
+ src/core/app.py          | 11 +++++++----
+ src/north/mqtt_client.py |  4 ++--
+ src/storage/cache.py     |  6 +++---
+ src/storage/db.py        | 33 +++++++++++++++++++++++++++++----
+ src/storage/replay.py    | 30 ++++++++++++++----------------
+ 5 files changed, 55 insertions(+), 29 deletions(-)
+
+diff --git a/src/core/app.py b/src/core/app.py
+index 36b4455..c870917 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -197,9 +197,12 @@ class Application:
+                 else:
+                     logger.warning("MQTT 首次连接失败, 将在后台重连")
+ 
+-            # 初始化数据库
++            # 初始化数据库 (老库补 device 列, 老记录按「传感器 → 设备」回填)
+             if self._db:
+                 await self._db.initialize()
++                await self._db.backfill_device({
++                    name: c.get("sensor", {}).get("device")
++                    for name, c in self._config.get_enabled_sensors().items()})
+ 
+             # 启动后台任务
+             self._running = True
+@@ -282,7 +285,7 @@ class Application:
+             published = await self._mqtt.publish_telemetry_to(device, event_ts, values)
+     
+         if not published and self._cache:
+-            await self._cache.save(sensor_name, {"ts": event_ts, "values": values})
++            await self._cache.save(sensor_name, {"ts": event_ts, "values": values}, device)
+ 
+     # ── 数据回调: 设备级合并 ───────────────────────────────────
+ 
+@@ -387,7 +390,7 @@ class Application:
+                 # 只有发布失败才进缓存 (避免数据发两遍)
+                 if self._cache:
+                     for sensor_name, normalized in items:
+-                        await self._cache.save(sensor_name, normalized)
++                        await self._cache.save(sensor_name, normalized, device)
+ 
+     # ── 后台任务管理 ───────────────────────────────────────────
+ 
+@@ -461,7 +464,7 @@ class Application:
+                 # 没连上或发布失败都进缓存（下次启动补传）
+                 if not ok and self._cache:
+                     for sensor_name, normalized in buf.get("items", []):
+-                        await self._cache.save(sensor_name, normalized)
++                        await self._cache.save(sensor_name, normalized, device)
+                         n += 1
+             self._device_buffer.clear()
+             if n:
+diff --git a/src/north/mqtt_client.py b/src/north/mqtt_client.py
+index 326a8a9..20a4e56 100644
+--- a/src/north/mqtt_client.py
++++ b/src/north/mqtt_client.py
+@@ -183,7 +183,7 @@ class InternalMQTTClient:
+             self._connected = False
+             return False
+ 
+-    async def publish_telemetry_batch(self, data_list: list) -> bool:
++    async def publish_telemetry_batch(self, data_list: list, device: Optional[str] = None) -> bool:
+         """
+         批量发布遥测数据 (用于断点补传)
+ 
+@@ -193,7 +193,7 @@ class InternalMQTTClient:
+         if not self._connected or not self._client:
+             return False
+         try:
+-            topic = f"{self._topic_prefix}/telemetry"
++            topic = f"lsa/{device}/telemetry" if device else f"{self._topic_prefix}/telemetry"
+             await self._client.publish(
+                 topic,
+                 payload=json.dumps(data_list, ensure_ascii=False),
+diff --git a/src/storage/cache.py b/src/storage/cache.py
+index e830843..7956297 100644
+--- a/src/storage/cache.py
++++ b/src/storage/cache.py
+@@ -4,7 +4,7 @@
+ """
+ 
+ import json
+-from typing import Any, Dict
++from typing import Any, Dict, Optional
+ from src.storage.db import DatabaseManager
+ from src.core.logger import setup_logger
+ 
+@@ -24,7 +24,7 @@ class DataCache:
+         self._db = db
+         self._max_records = storage_config.get("max_records", 100000)
+ 
+-    async def save(self, sensor_name: str, data: Dict[str, Any]) -> None:
++    async def save(self, sensor_name: str, data: Dict[str, Any], device: Optional[str] = None) -> None:
+         """
+         缓存一条数据
+ 
+@@ -38,7 +38,7 @@ class DataCache:
+             quality = data.get("quality", "GOOD")
+             values_json = json.dumps(values, ensure_ascii=False)
+ 
+-            await self._db.insert_telemetry(ts, sensor_name, values_json, quality)
++            await self._db.insert_telemetry(ts, sensor_name, values_json, quality, device)
+             logger.debug("数据已缓存: sensor=%s, ts=%d", sensor_name, ts)
+ 
+             # 定期检查并清理
+diff --git a/src/storage/db.py b/src/storage/db.py
+index b20ba43..71a09cd 100644
+--- a/src/storage/db.py
++++ b/src/storage/db.py
+@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS telemetry_cache (
+     sensor_name TEXT NOT NULL,        -- 传感器名称
+     values_json TEXT NOT NULL,        -- JSON 格式的遥测值
+     quality TEXT DEFAULT 'GOOD',      -- 数据质量码
+-    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
++    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
++    device TEXT                       -- 设备名 (补传按它发到 lsa/<设备名>/telemetry)
+ );
+ 
+ CREATE INDEX IF NOT EXISTS idx_ts ON telemetry_cache(ts);
+@@ -47,9 +48,31 @@ class DatabaseManager:
+ 
+         self._db = await aiosqlite.connect(self._db_path)
+         await self._db.executescript(CREATE_TABLE_SQL)
++        # 老库没有 device 列: 补上 (老记录先是空, 由 backfill_device 按「传感器 → 设备」回填)
++        cursor = await self._db.execute("PRAGMA table_info(telemetry_cache)")
++        if "device" not in [row[1] for row in await cursor.fetchall()]:
++            await self._db.execute("ALTER TABLE telemetry_cache ADD COLUMN device TEXT")
++            logger.info("缓存表补上 device 列 (老库迁移)")
+         await self._db.commit()
+         logger.info("数据库初始化完成: %s", self._db_path)
+ 
++    async def backfill_device(self, sensor_devices: Dict[str, str]) -> None:
++        """老记录没有设备名的, 按「传感器 → 设备」回填 (配置里查不到的传感器保持空, 补传时发到缺省设备名)"""
++        if not self._db:
++            return
++        n = 0
++        for sensor_name, device in sensor_devices.items():
++            if not device:
++                continue
++            cursor = await self._db.execute(
++                "UPDATE telemetry_cache SET device = ? WHERE device IS NULL AND sensor_name = ?",
++                (device, sensor_name),
++            )
++            n += cursor.rowcount
++        await self._db.commit()
++        if n:
++            logger.info("缓存老记录回填设备名: %d 条", n)
++
+     async def close(self) -> None:
+         """关闭数据库连接"""
+         if self._db:
+@@ -63,6 +86,7 @@ class DatabaseManager:
+         sensor_name: str,
+         values_json: str,
+         quality: str = "GOOD",
++        device: Optional[str] = None,
+     ) -> int:
+         """
+         插入一条遥测缓存记录
+@@ -74,8 +98,8 @@ class DatabaseManager:
+             await self.initialize()
+ 
+         cursor = await self._db.execute(
+-            "INSERT INTO telemetry_cache (ts, sensor_name, values_json, quality) VALUES (?, ?, ?, ?)",
+-            (ts, sensor_name, values_json, quality),
++            "INSERT INTO telemetry_cache (ts, sensor_name, values_json, quality, device) VALUES (?, ?, ?, ?, ?)",
++            (ts, sensor_name, values_json, quality, device),
+         )
+         await self._db.commit()
+         return cursor.lastrowid
+@@ -91,7 +115,7 @@ class DatabaseManager:
+             return []
+ 
+         cursor = await self._db.execute(
+-            "SELECT id, ts, sensor_name, values_json, quality FROM telemetry_cache ORDER BY ts ASC LIMIT ?",
++            "SELECT id, ts, sensor_name, values_json, quality, device FROM telemetry_cache ORDER BY ts ASC LIMIT ?",
+             (limit,),
+         )
+         rows = await cursor.fetchall()
+@@ -102,6 +126,7 @@ class DatabaseManager:
+                 "sensor_name": row[2],
+                 "values_json": row[3],
+                 "quality": row[4],
++                "device": row[5],
+             }
+             for row in rows
+         ]
+diff --git a/src/storage/replay.py b/src/storage/replay.py
+index 7acbfff..8c132d8 100644
+--- a/src/storage/replay.py
++++ b/src/storage/replay.py
+@@ -67,28 +67,26 @@ class DataReplayer:
+         if not records:
+             return
+ 
+-        # 构造批量发送数据
+-        batch = []
+-        ids_to_delete = []
++        # 按设备名分组 (各发到自己的 lsa/<设备名>/telemetry; 没有设备名的老记录发到缺省设备名)
++        groups: Dict[str, Dict[str, list]] = {}
+         for record in records:
+             try:
+                 values = json.loads(record["values_json"])
+-                batch.append({
++                g = groups.setdefault(record.get("device") or mqtt_client.device_name, {"batch": [], "ids": []})
++                g["batch"].append({
+                     "ts": record["ts"],
+                     "values": values,
+                 })
+-                ids_to_delete.append(record["id"])
++                g["ids"].append(record["id"])
+             except Exception as e:
+                 logger.warning("解析缓存记录失败: id=%d, err=%s", record["id"], e)
+ 
+-        if not batch:
+-            return
+-
+-        # 批量发送
+-        success = await mqtt_client.publish_telemetry_batch(batch)
+-        if success:
+-            # 发送成功后删除记录
+-            await self._db.delete_by_ids(ids_to_delete)
+-            logger.info("补传成功: 发送 %d 条, 删除 %d 条", len(batch), len(ids_to_delete))
+-        else:
+-            logger.warning("补传发送失败, 等待下次重试")
++        # 批量发送: 每个设备一批, 发成功的才删
++        for device, g in groups.items():
++            success = await mqtt_client.publish_telemetry_batch(g["batch"], device)
++            if success:
++                await self._db.delete_by_ids(g["ids"])
++                logger.info("补传成功: device=%s, 发送 %d 条", device, len(g["batch"]))
++            else:
++                logger.warning("补传发送失败, 等待下次重试")
++                break
+-- 
+2.54.0.windows.1
+
