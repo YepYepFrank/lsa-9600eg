@@ -1,5 +1,6 @@
 /* 本机各组件的状态、日志与重启（开发计划 G2）。
- *   tb EG 本地 TB（I 阶段起是独立 TB CE）、gateway TB IoT Gateway、mosquitto 本机总线、mediamtx 视频（G4 起）—— 容器，经 Docker API
+ *   tb EG 本地 TB（I 阶段起是独立 TB CE）、gateway TB IoT Gateway、mosquitto 本机总线、mediamtx 视频（G4 起）、
+ *   conv 同事的转换程序（0.17.1；没启用时 install.sh 会删掉容器，「不存在」= 没启用或按同事自己的方式部署）—— 容器，经 Docker API
  *   agent 本进程
  * 重启只开放本地 TB 与 IoT Gateway（排障最常用、也最安全）；Mosquitto 一停同事的程序与 agent 都断，不给页面上点。 */
 import { Inject, Injectable } from '@nestjs/common'
@@ -13,6 +14,7 @@ export const COMPONENTS = {
   gateway: 'TB IoT Gateway',
   mosquitto: '本机总线 Mosquitto',
   mediamtx: '视频转发 mediamtx',
+  conv: '转换程序（同事的）',
 } as const
 export type ComponentKey = keyof typeof COMPONENTS
 export const RESTARTABLE: ComponentKey[] = ['tb', 'gateway']

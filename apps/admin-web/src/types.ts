@@ -36,10 +36,30 @@ export interface Status {
   bus: { url: string; connected: boolean; msgs: number }
   devices: Dev[]
   unknownDevices: string[]
+  /** 0.17：转换程序保险（eg-agent 自动重启转换程序的次数、最近一次） */
+  convGuard?: ConvGuard
+}
+
+export interface ConvGuard {
+  enabled: boolean
+  silentS: number
+  restarts: number
+  last: { at: number; reason: 'mosquitto-restart' | 'silent'; detail: string } | null
+  /** 最近一次收到转换程序读数（agent 收到的时刻） */
+  lastReadAt: number | null
+  container: string
+}
+
+/** 0.17：子站拒绝上送连接（CONNACK 码与原因）；连上清空 */
+export interface UplinkRefused {
+  code: number
+  reason: string
+  since: number
+  count: number
 }
 
 export interface Comp {
-  key: 'agent' | 'tb' | 'gateway' | 'mosquitto' | 'mediamtx'
+  key: 'agent' | 'tb' | 'gateway' | 'mosquitto' | 'mediamtx' | 'conv'
   label: string
   container: string | null
   state: string
@@ -64,6 +84,7 @@ export interface Diag {
     oldestUnsent: number | null
     lastAckAt: number | null
     target: string | null
+    refused?: UplinkRefused | null
   }
   /** 告警事件送子站（I3：本地 TB 告警 → /ext/eg/<柜号>/events） */
   events: {
