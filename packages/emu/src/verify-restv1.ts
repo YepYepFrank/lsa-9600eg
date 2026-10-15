@@ -8,7 +8,7 @@
  *     令牌到期前重取、中途失效（10009）重取一次、一直 10009 → TOKEN、口令不对 → AUTH（报错里没有口令和它的 MD5）、
  *     报警 / 区域接口出错 → partial（温度照常）、测温接口出错 → API、超时 → TIMEOUT、连不上 → CONNECT、抓拍 base64 → JPEG、回的不是 JPEG → DATA。 */
 import { createHash, randomBytes } from 'node:crypto'
-import { Restv1Driver, RESTV1_FRAME, alarmText, coordsOf } from '../../../apps/video/src/restv1.js'
+import { Restv1Driver, RESTV1_FRAME, alarmText, coordsOf, regionNameOf, regionTypeOf } from '../../../apps/video/src/restv1.js'
 import { numberRegions, type DriverError, type RegionDef } from '../../../apps/video/src/driver-base.js'
 import { camRegionLimit, LOCAL_DEFAULTS } from '@lsa-eg/config'
 import { restv1Opts } from '../../../apps/video/src/drivers.js'
@@ -58,6 +58,11 @@ async function main() {
   check(JSON.stringify(coordsOf('region', { x: 1, y: 2, width: 3, height: 4 })) === '{"x":1,"y":2,"width":3,"height":4}', 'region 坐标原样')
   check(alarmText({ globTemp: { alarm: true }, regionTemp: [{ alarm: false }, { alarm: true }], firePoint: { alarm: true }, diffTemp: [{ alarm: true, difference: { regionA: 1, regionB: 3 } }] }) === '全局温度、R2 区域温度、温差 R1–R3、火点', '报警只取 alarm = true 的、区号按 ID + 1')
   check(alarmText({ globTemp: { alarm: false, value: 99 } }) === '' && alarmText(undefined) === '', '没有报警 → 空串（不带数值，数值变了不算变化）')
+  check(regionTypeOf('rectangle') === 'region' && regionTypeOf('polygon') === 'polygon' && regionTypeOf('Point') === 'point' && regionTypeOf(undefined) === 'region',
+    '区域类型：真机矩形回 rectangle → region；其余按文档')
+  check(regionNameOf('Area1', 0) === 'R1' && regionNameOf('Area 12', 11) === 'R12' && regionNameOf('', 2) === 'R3' && regionNameOf('R2', 5) === 'R2' && regionNameOf('母排', 0) === '母排',
+    '区域名：真机出厂名 Area<n> 和没起名一样按 ID 编 R<n>；起了名字照用')
+  check(alarmText({ areaSecurity: { active: true, alarm: true } }) === '区域入侵', '报警：真机多出的 areaSecurity → 区域入侵')
   const cam = { ...LOCAL_DEFAULTS.camera, restv1: 'http://cam', user: 'admin', password: 'p-rtsp' }
   const same = restv1Opts(cam)
   const split = restv1Opts({ ...cam, restUser: 'rest', restPassword: 'p-rest' })

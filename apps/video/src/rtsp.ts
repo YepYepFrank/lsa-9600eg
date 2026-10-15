@@ -18,37 +18,58 @@ interface RtspReply {
   body: string
 }
 
-function request(host: string, port: number, lines: string[], timeoutMs: number): Promise<RtspReply> {
-  return new Promise((resolve, reject) => {
-    const s = connect({ host, port, timeout: timeoutMs })
-    let buf = ''
-    const done = (e?: Error, r?: RtspReply) => {
-      s.destroy()
-      if (e) reject(e)
-      else resolve(r!)
-    }
-    s.on('connect', () => s.write(lines.join('\r\n') + '\r\n\r\n'))
-    s.on('timeout', () => done(new Error('超时')))
-    s.on('error', e => done(e))
-    s.on('data', d => {
-      buf += d.toString('utf8')
-      const end = buf.indexOf('\r\n\r\n')
-      if (end < 0) return
-      const [first, ...rest] = buf.slice(0, end).split('\r\n')
-      const headers: Record<string, string> = {}
-      for (const l of rest) {
-        const i = l.indexOf(':')
-        if (i > 0) {
-          const k = l.slice(0, i).trim().toLowerCase()
-          headers[k] = headers[k] ? `${headers[k]}, ${l.slice(i + 1).trim()}` : l.slice(i + 1).trim()
-        }
-      }
-      const len = Number(headers['content-length'] ?? 0)
-      const body = buf.slice(end + 4)
-      if (Buffer.byteLength(body) < len) return
-      done(undefined, { status: Number(/RTSP\/1\.0 (\d+)/.exec(first ?? '')?.[1] ?? 0), headers, body })
-    })
+/** 一条 RTSP 连接，可以依次发几个请求。认证重发必须在同一条连接上：真机（2026-10-14）的摘要 nonce 跟连接走，
+ *  换条连接带上一条的 nonce 回 400 Bad Request */
+function session(host: string, port: number, timeoutMs: number) {
+  const s = connect({ host, port, timeout: timeoutMs })
+  let buf = ''
+  let waiting: { resolve: (r: RtspReply) => void; reject: (e: Error) => void } | null = null
+  let failed: Error | null = null
+  const fail = (e: Error) => {
+    failed = e
+    s.destroy()
+    waiting?.reject(e)
+    waiting = null
+  }
+  const opened = new Promise<void>((res, rej) => {
+    s.once('connect', () => res())
+    s.once('error', rej)
   })
+  s.on('timeout', () => fail(new Error('超时')))
+  s.on('error', e => fail(e))
+  s.on('close', () => fail(new Error('摄像机断开了连接')))
+  s.on('data', d => {
+    buf += d.toString('utf8')
+    const end = buf.indexOf('\r\n\r\n')
+    if (end < 0 || !waiting) return
+    const [first, ...rest] = buf.slice(0, end).split('\r\n')
+    const headers: Record<string, string> = {}
+    for (const l of rest) {
+      const i = l.indexOf(':')
+      if (i > 0) {
+        const k = l.slice(0, i).trim().toLowerCase()
+        headers[k] = headers[k] ? `${headers[k]}, ${l.slice(i + 1).trim()}` : l.slice(i + 1).trim()
+      }
+    }
+    const len = Number(headers['content-length'] ?? 0)
+    const bodyBuf = Buffer.from(buf.slice(end + 4), 'utf8')
+    if (bodyBuf.length < len) return
+    buf = bodyBuf.subarray(len).toString('utf8')
+    const w = waiting
+    waiting = null
+    w.resolve({ status: Number(/RTSP\/1\.0 (\d+)/.exec(first ?? '')?.[1] ?? 0), headers, body: bodyBuf.subarray(0, len).toString('utf8') })
+  })
+  return {
+    async send(lines: string[]): Promise<RtspReply> {
+      await opened
+      if (failed) throw failed
+      return new Promise((resolve, reject) => {
+        waiting = { resolve, reject }
+        s.write(lines.join('\r\n') + '\r\n\r\n')
+      })
+    },
+    close: () => s.destroy(),
+  }
 }
 
 /** 对一路 RTSP 地址做 DESCRIBE。地址里的账号口令用于认证、不放进请求行；hostOverride 把「主机:端口」换掉（开发映射） */
@@ -67,11 +88,12 @@ export async function describe(uri: string, hostOverride = '', timeoutMs = 5000)
   const clean = u.toString()
   const [host, port] = hostOverride ? [hostOverride.split(':')[0]!, Number(hostOverride.split(':')[1] ?? 554)] : [u.hostname, Number(u.port || 554)]
   const base = [`DESCRIBE ${clean} RTSP/1.0`, 'Accept: application/sdp', 'User-Agent: lsa-eg-video']
+  const ss = session(host, port, timeoutMs)
   try {
-    let r = await request(host, port, [...base, 'CSeq: 1'], timeoutMs)
+    let r = await ss.send([...base, 'CSeq: 1'])
     if (r.status === 401 && user) {
       const ch = parseChallenge(r.headers['www-authenticate'])
-      if (ch) r = await request(host, port, [...base, 'CSeq: 2', `Authorization: ${authorization(ch, 'DESCRIBE', clean, user, pass)}`], timeoutMs)
+      if (ch) r = await ss.send([...base, 'CSeq: 2', `Authorization: ${authorization(ch, 'DESCRIBE', clean, user, pass)}`])
     }
     if (r.status !== 200) return { ok: false, status: r.status, error: r.status === 401 ? '认证失败' : r.status === 404 ? '路径不存在' : `RTSP ${r.status}`, ms: Date.now() - t0 }
     const fps = Number(/a=framerate:\s*([\d.]+)/.exec(r.body)?.[1] ?? NaN)
@@ -79,5 +101,7 @@ export async function describe(uri: string, hostOverride = '', timeoutMs = 5000)
     return { ok: true, status: 200, fps: Number.isFinite(fps) ? fps : undefined, codec, ms: Date.now() - t0 }
   } catch (e) {
     return { ok: false, error: `连不上：${(e as Error).message}`, ms: Date.now() - t0 }
+  } finally {
+    ss.close()
   }
 }

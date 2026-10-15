@@ -64,7 +64,8 @@ export interface Restv1Opts {
   base: string
   user: string
   password: string
-  /** 普通请求超时（ms），缺省 3000 */
+  /** 普通请求超时（ms），缺省 6000：真机（2026-10-14）HTTP 接口串行处理，可见光抓拍（2560×1600）要 3–3.6 s，
+   *  这期间的测温请求排在后面，3 s 会误判 TIMEOUT（告警抓拍时温度正要紧） */
   timeoutMs?: number
   /** 抓拍超时（ms），缺省 10000 */
   snapTimeoutMs?: number
@@ -72,6 +73,17 @@ export interface Restv1Opts {
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const TYPES = new Set(['point', 'line', 'region', 'polygon'])
+/** 真机（2026-10-14，固件 0000_B37_1.1.17）矩形区回 regionType "rectangle"（文档写的是 region） */
+const TYPE_ALIAS: Record<string, RegionDef['type']> = { rectangle: 'region', rect: 'region' }
+export const regionTypeOf = (t: unknown): RegionDef['type'] => {
+  const s = String(t ?? '').toLowerCase()
+  return TYPES.has(s) ? (s as RegionDef['type']) : (TYPE_ALIAS[s] ?? 'region')
+}
+/** 区域名：真机出厂名是 Area1–Area12（= ID + 1），和没起名一样按 ID 编成 R<n>；起了别的名字照用 */
+export const regionNameOf = (name: unknown, id: number): string => {
+  const s = typeof name === 'string' ? name.trim() : ''
+  return !s || /^area\s*\d+$/i.test(s) ? `R${id + 1}` : s
+}
 
 /** restv1 的区域坐标 → 约定 §4 的 coords（polygon 的 {pointNum, point:[…]} 改成 {points:[…]}，其余原样） */
 export function coordsOf(type: string, region: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -99,6 +111,7 @@ export function alarmText(data: Record<string, unknown> | undefined): string {
   if (on(data['globTempRise'])) out.push('全局温升')
   list(data['tempRise']).forEach((x, i) => on(x) && out.push(`R${i + 1} 温升`))
   if (on(data['firePoint'])) out.push('火点')
+  if (on(data['areaSecurity'])) out.push('区域入侵') // 真机有、文档没写（2026-10-14）
   if (on(data['smartTemp'])) out.push('智能测温')
   list(data['input']).forEach((x, i) => on(x) && out.push(`报警输入 ${i + 1}`))
   return out.join('、')
@@ -121,7 +134,7 @@ export class Restv1Driver implements CameraDriver {
   constructor(private readonly o: Restv1Opts) {
     const b = o.base.trim().replace(/\/+$/, '')
     this.base = /^https?:\/\//i.test(b) ? b : `http://${b}`
-    this.timeoutMs = o.timeoutMs ?? 3000
+    this.timeoutMs = o.timeoutMs ?? 6000
     this.snapTimeoutMs = o.snapTimeoutMs ?? 10_000
   }
 
@@ -220,8 +233,8 @@ export class Restv1Driver implements CameraDriver {
     const rows = await this.call<RegionRow[]>('GET', '/restv1/measurement/region')
     if (!Array.isArray(rows)) throw new DriverError('/restv1/measurement/region：data 不是数组', 'DATA')
     const defs = rows.map((r, id) => {
-      const type = TYPES.has(String(r.regionType)) ? (r.regionType as RegionDef['type']) : 'region'
-      return { id, name: r.regionName?.trim() || `R${id + 1}`, type, coords: coordsOf(type, r.region), enabled: r.regionEnable !== false }
+      const type = regionTypeOf(r.regionType)
+      return { id, name: regionNameOf(r.regionName, id), type, coords: coordsOf(type, r.region), enabled: r.regionEnable !== false }
     })
     this.regionCache = { at: Date.now(), defs }
     return defs
