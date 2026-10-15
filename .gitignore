@@ -18,3 +18,7 @@ run/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Python 字节码
+__pycache__/
+*.pyc

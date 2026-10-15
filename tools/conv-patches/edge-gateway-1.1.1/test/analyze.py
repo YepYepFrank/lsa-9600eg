@@ -104,3 +104,8 @@ print('   A clientId（总线日志里转换程序连上用的）：', dict(ids)
 print('   B 各设备收到 attributes 次数：', {t.split('/')[1]: n for t, n in sorted(attrs.items())})
 print('   C 停止时转缓存：', [l[:120] for l in log.splitlines() if '转入缓存' in l] or '没有这行（停止时缓冲里刚好没有没发的，或没收到 SIGTERM）')
 
+# 补丁 D：缓存记设备名、补传按设备发 —— 温湿度只配在 SAM-AH03-A，B 下面不该有 env.t / env.rh（以前补传时跑到 B）
+env_on = Counter(t.split('/')[1] for ts_, at_, batch_, keys_, t in items if 'env.t' in keys_)
+env_back = Counter(t.split('/')[1] for ts_, at_, batch_, keys_, t in items if 'env.t' in keys_ and batch_)
+print('   D 温湿度（只配在 SAM-AH03-A）落在哪个设备下：', dict(env_on), '；其中经补传：', dict(env_back),
+      '—— ✓ 都在 A 下' if env_on and set(env_on) == {'SAM-AH03-A'} else '—— ✗ 有跑到别的设备下的')
