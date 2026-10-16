@@ -323,9 +323,9 @@ sudo bash /opt/lsa-eg/test/test.sh down
   - 会建一个专用账号 `lsa-upg`：锁口令；key 只认来自子站的连接（`from=`，地址缺省取 `eg.yaml` 的 `station.mqtt`，要改加 `--upgrade-from <地址>`）。
   - 不管子站发什么，都只进升级入口 `/usr/local/sbin/lsa-eg-upgrade`（`authorized_keys` 的 `command=`）。sudoers 只放行这一个入口。
 - **入口只认 6 个动作**，其余一律拒绝，并记进 `/var/log/lsa-upg.log`：
-  - `hello`：版本、可用空间；
+  - `hello`：版本、可用空间、正在做的别的维护（lsa-sp 隧道开着、有安装在跑）：子站据此跳过这台；
   - `put`：从 SSH 收安装文件，收之前查空间，收完核对字节数和 sha256；
-  - `start`：开始升级。只认 LSA 的一键安装文件、里面要有 EG 发布件，版本不低于现装版本，同时只跑一个；
+  - `start`：开始升级。只认 LSA 的一键安装文件、里面要有 EG 发布件，版本不低于现装版本，同时只跑一个，有人在手工跑安装时拒绝；
   - `status` / `log`：查进度和日志；
   - `drop`：删掉拷过来的文件。
   - 沙箱里试过都被拒的：执行任意命令、命令串接 / 替换、空登录、sudo 别的程序、scp / sftp、端口转发、换一台机器用同一把 key、sha256 不对、不是安装文件。
@@ -333,7 +333,8 @@ sudo bash /opt/lsa-eg/test/test.sh down
   - 安装文件失败：自动 `install.sh --rollback`；本地 TB 版本变了时加 `--restore-tb`。
   - 装完但自查不过（版本、7 个容器 60 s 不重启、本地 TB 镜像、连上子站）：**不自动回退**（可能是子站或网络的问题），由子站停下来、给出回退命令。
 - **撤销**：`sudo bash install.sh --drop-upgrade-key`（账号、key、sudoers 条目、入口一并删掉）。`--status` 和「安全提醒」里能看到授权在不在、最近一次任务。
-- **注意**：持子站这把 key 的人能让 EG 装他给的任意安装文件，等于 root —— 入口只防得住「拿 key 乱执行命令」，防不住「恶意安装包」。key 只放在子站主机 root 下，不用时撤销。下一步计划给发布件加签名、EG 校验。
+- **注意**：持子站这把 key 的人能让 EG 装他给的任意安装文件，等于 root —— 入口只防得住「拿 key 乱执行命令」，防不住「恶意安装包」。key 只放在子站主机 root 下，不用时撤销。
+- **验签（0.17.4）**：任务的 verify 阶段已经留了验签步骤。现在发布件没有签名，日志写「未验签」（state 里 `sig=unsigned`），不拦。0.17.4 起出包时签名，EG 用预置的发布公钥校验。
 - 0.17.3 之前的 EG 没有 `--upgrade-key`：先手工升到 0.17.3（§6），以后才能批量升。
 
 ## 6d. 安全
