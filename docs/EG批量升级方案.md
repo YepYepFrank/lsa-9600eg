@@ -45,9 +45,9 @@ upgrade-egs.sh --resume <批次>  # 断开以后续查（EG 上的任务不受�
 
 ## 3b. 补充（协调 10-16，随 0.17.2）
 
-**验签接口（0.17.4 做）**：
+**验签接口（下一版做）**：
 - 任务的 verify 阶段有 `verify_signature`。签名文件将来放 `incoming/<sha256>.run.sig`，入口另加一个 `putsig` 动作。
-- 0.17.4 的做法：出包时用发布私钥 `ssh-keygen -Y sign`；EG 用随发布件预置的发布公钥 `ssh-keygen -Y verify`，校验不过就拒。
+- 下一版的做法：出包时用发布私钥 `ssh-keygen -Y sign`；EG 用随发布件预置的发布公钥 `ssh-keygen -Y verify`，校验不过就拒。
 - 现在没有签名：任务日志写「未验签：这个安装文件没有签名」，state 里 `sig=unsigned`，子站汇总里也写「安装文件未验签」。不拦。
 
 **预检规则**（哪些不升，都只算「跳过」，不算失败）：
@@ -77,9 +77,9 @@ AH09     离线   0.6.1-233658b → 0.6.2-it3          !!   连不上：ssh: con
 ```
 
 **子站侧核对用 eg-list**：
-- 子站上有 `bin/eg-list.mjs`（0.17.3 起）时，版本、在线状态、地址（attr > EXT_EG_URLS > model.yaml）、未接入 / 停用都用它。
+- 子站上有 `bin/eg-list.mjs`（子站 0.17.2 起，lsa-9600sp-backend#95）时，版本、在线状态、地址（attr > EXT_EG_URLS > model.yaml）、未接入 / 停用都用它。
 - 升级后核对三项：`version` = 目标版本、`uplinkOk`、`cfgApplied`。EG 升级后子站会重发一次配置，所以最多等 3 分钟。
-- 老子站（没有 eg-list）：直接查子站 TB，只认 `egUrl` 属性，配置看「升级前后配置版本一样」。
+- 老子站（没有 eg-list），或 eg-list 不可用（退出码 2）：直接查子站 TB，只认 `egUrl` 属性、「停用」只认 `egDisabled`（「未接入」判不出），配置看「升级前后配置版本一样」，并在输出里提示。
 
 ## 4. 验证与文档
 

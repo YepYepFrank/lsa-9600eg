@@ -79,7 +79,13 @@ eg_list() {
   if [ -n "${EG_LIST_JSON_CMD:-}" ] || docker exec lsa-ext test -f bin/eg-list.mjs 2>/dev/null; then
     if [ -n "${EG_LIST_JSON_CMD:-}" ]; then json="$(eval "$EG_LIST_JSON_CMD")" || rc=$?
     else json="$(docker exec lsa-ext node bin/eg-list.mjs --json)" || rc=$?; fi
-    [ "$rc" = 0 ] || [ "$rc" = 3 ] || { echo "eg-list 出错（退出码 $rc）" >&2; return 2; }
+    if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+      # 退出码 2 = 扩展服务不通 / 出错：退回直接查子站 TB，但「未接入」只有扩展服务判得出（后端答复）
+      echo "!! eg-list 不可用（退出码 $rc）：改直接查子站 TB —— 地址只认 egUrl，「未接入」判不出、只认「停用」（egDisabled）" >&2
+      json=''
+    fi
+  fi
+  if [ -n "${json:-}" ]; then
     docker exec -i lsa-ext node -e '
 let s = ""; process.stdin.on("data", d => (s += d)).on("end", () => {
   const o = JSON.parse(s), v = x => (x === undefined || x === null || x === "" ? "-" : String(x).replace(/\s/g, ""))
@@ -106,7 +112,8 @@ const j = async (u, o = {}) => { const r = await fetch(T + u, o); if (!r.ok) thr
     const up = (tel['eg.uplink'] || [])[0]
     let host = ''
     try { host = s.egUrl ? new URL(s.egUrl).hostname : '' } catch {}
-    const skip = s.egDisabled === true || s.disabled === true || s.egState === 'disabled' ? '停用' : s.egState === 'never' ? '未接入' : '-'
+    // 停用 = SERVER 属性 egDisabled（后端答复）；「未接入」由扩展服务按 lastConnectTime / lastActivityTime 判，这里判不出
+    const skip = s.egDisabled === true ? '停用' : '-'
     const age = up ? Math.round((Date.now() - up.ts) / 1000) : null
     const ok = !!up && up.value === 'ok' && age <= 120
     const v = x => (x === undefined || x === null || x === '' ? '-' : String(x).replace(/\s/g, ''))
