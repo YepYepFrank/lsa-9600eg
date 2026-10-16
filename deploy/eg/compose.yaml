@@ -209,22 +209,29 @@ services:
     group_add: ['${EG_DIALOUT_GID:-20}']
     environment:
       TZ: Asia/Shanghai
+      # 同事的程序读 EDGE_GATEWAY_CONFIG（缺省 /app/config）：指到挂进来的 /config（本机 config/conv/，install.sh 首次从镜像模板生成）
+      EDGE_GATEWAY_CONFIG: /config
+      # 下面两项由补丁 0005-E 读，覆盖 gateway.yaml 里的总线地址与串口 —— EG 统一管，现场不用进容器改配置
       LSA_MQTT_URL: mqtt://127.0.0.1:1884
       LSA_SERIAL: /dev/ttyS1
+      # 补丁 0001-A 读：clientId 用 lsa-conv-<柜号>
       LSA_EG_YAML: /eg/eg.yaml
+      # 补丁 0005-E：有数据发出或写入缓存就更新它，健康检查看它
+      LSA_HEARTBEAT: /data/heartbeat
     volumes:
       # 设备名以 eg.yaml 为准（格式文档 §3），只读给它
       - ./config/eg.yaml:/eg/eg.yaml:ro
       - ./config/conv:/config
       - ./config/conv-data:/data
     healthcheck:
-      # 同事给健康检查命令前，先只看主进程在不在
-      test: ['CMD-SHELL', '${EG_CONV_HEALTH:-kill -0 1}']
+      # 进程在、且最近 2 分钟有数据发出或进缓存（心跳文件，补丁 0005-E）；老镜像没有心跳时 EG_CONV_HEALTH 可改回 kill -0 1
+      test: ['CMD-SHELL', '${EG_CONV_HEALTH:-test $$(( $$(date +%s) - $$(stat -c %Y /data/heartbeat 2>/dev/null || echo 0) )) -lt 120}']
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
-    mem_limit: 256m
+      start_period: 90s
+    # 2026-10-16 全链路联调实测 19–23 MiB（5 路传感器、含 10 分钟断子站与多次重启），留 5 倍余量
+    mem_limit: 128m
     logging: *log
 
 volumes:

@@ -93,8 +93,19 @@
 - 两种方式下，ALS10 的规定不变：**每条总线只接一只 ALS10，放在末端**；隔离模块 / 中继器那一端的终端电阻按总线长度决定开不开（上面第 2 条）。
 - 样机（没有 COM2 的 485）一直用 USB 转 485 测，方式 A 的设备名与配置和样机一样。
 
-**转换程序**（同事，2026-10-09 答复 B1）：Docker 镜像，Python 3.11 + pymodbus（异步 RTU）+ aiomqtt + aiosqlite + PyYAML，自带守护进程。0.4 起纳入 EG 的编排与离线安装包（I11 框架已搭好，**等同事给镜像与启动参数后接上**，Q5）：
-- compose 里有个可选服务 `conv`（容器 `lsa-eg-conv`）：宿主机网络、连本机总线 `127.0.0.1:1884`（与格式文档 §2 一致）、`restart: unless-stopped`、健康检查（先只看主进程，同事给了命令再换）、日志 10 MB × 3 轮转、内存上限 256 MB；`config/eg.yaml` 只读给它（设备名以它为准），自己的配置与数据放 `config/conv/`、`config/conv-data/`。
+**转换程序**（同事的 edge-gateway，Python + aiomqtt + aiosqlite + PyYAML，串口自己读 Modbus RTU）。EG 0.6.2 起按同事 1.1.1 的实际程序落地（2026-10-16 全链路联调，见 `docs/全链路联调记录-0.17.1.md`）：
+- **镜像**：同事仓库 + 我方补丁（`tools/conv-patches/edge-gateway-1.1.1/`，0001–0005）由 `tools/conv-image/build.sh <同事仓库> lsa-eg-conv:<版本>` 离线打（本机 `python:3.12-slim` + 同事 `wheels/`，构建时断网）。镜像里带同事的配置模板（`/app/config.default`）。
+- compose 里的可选服务 `conv`（容器 `lsa-eg-conv`）：宿主机网络、`restart: unless-stopped`、日志 10 MB × 3 轮转、内存上限 128 MB（联调实测 19–23 MiB，5 路传感器、含 10 分钟断子站）。
+  - **配置**：`EDGE_GATEWAY_CONFIG=/config`，就是本机的 `config/conv/`。数据（缓存库、心跳）在 `config/conv-data/`。`config/eg.yaml` 只读挂进去（补丁 0001 读柜号，clientId 用 `lsa-conv-<柜号>`）。
+  - **总线地址与串口由 EG 统一管**：compose 给 `LSA_MQTT_URL=mqtt://127.0.0.1:1884`、`LSA_SERIAL=/dev/ttyS1`，补丁 0005 用它们覆盖 `gateway.yaml` 里写的值。现场换串口只用 `--conv-serial`，不用进容器改配置。
+  - **健康检查**：进程在，并且最近 2 分钟有数据发出或写进缓存（补丁 0005 的心跳文件 `/data/heartbeat`）。`--status` 显示 healthy / unhealthy。
+- **启用步骤**：
+  1. 发布件带了转换程序镜像（`CONV_IMAGE.txt`、`images-conv.tar.gz`），串口在 —— 跑 `install.sh` 就会启用。
+  2. `config/conv/` 还是空的时，install.sh 从镜像模板生成：设备名里的柜号换成本柜的（`SAM-AH03-B` → `SAM-<柜号>-B`），串口写 `/dev/ttyS1`。
+  3. **按这面柜实际接的传感器改** `config/conv/sensors/*.yaml`：要用的 `enabled: true`，`device` 填这路传感器所在隔室的设备名（以 `eg.yaml` 的设备清单为准，如温湿度在断路器室就填 `SAM-<柜号>-A`）。改完 `docker restart lsa-eg-conv`。重跑 install.sh 不会覆盖。
+  4. 核对：`sudo bash install.sh --status`。
+     - 设备名和 `eg.yaml` 对不上时会醒目提示「!! 转换程序配置的设备名和 eg.yaml 对不上」，这些数据进不了本地 TB、也不上送。
+     - 本地管理页「设备与通信 → 服务状态」的转换程序卡片看运行状态、最近读数、自动重启次数。
 - 串口：宿主机的 `/dev/ttyS1`（X26A 的 COM2）映射成容器里的 `/dev/ttyS1`，加宿主机 `dialout` 组。用 USB 转 485（样机，或批量机按上面方式 A 加隔离）时：`sudo bash install.sh --conv-serial /dev/ttyUSB0`（记住；容器里仍是 `/dev/ttyS1`，程序不用改）。EG 0.5.1 起：
   - 给 `/dev/ttyUSB*` / `/dev/ttyACM*` 时自动换成 `/dev/serial/by-id/…` 的稳定名字记住，并打一行说明（ttyUSB 号在重启、多插 USB 设备后可能变；Docker 每次起容器时把它解析成当时的实际设备）；找不到 by-id 时提醒「芯片没有序列号，重启后设备号可能变，建议换带序列号的模块」。
   - 路径里有「:」「#」或空格的直接拒绝（compose 的设备映射会把「:」拆错，AH11 实测）。
