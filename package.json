@@ -23,6 +23,7 @@
     "dev:video": "node scripts/dev.mjs video",
     "conv-guard:verify": "pnpm -F @lsa-eg/agent verify:conv-guard",
     "devcomm:verify": "pnpm -F @lsa-eg/agent verify:devcomm",
+    "conv-expect:verify": "pnpm -F @lsa-eg/agent verify:conv-expect",
     "mqtt-keep:verify": "pnpm -F @lsa-eg/agent verify:mqtt-keep",
     "pulse:verify": "pnpm -F @lsa-eg/agent verify:pulse",
     "warmup:verify": "pnpm -F @lsa-eg/agent verify:warmup",

@@ -10,6 +10,7 @@
     "verify:g0": "node --import @swc-node/register/esm-register src/verify-g0.ts",
     "verify:conv-guard": "node --import @swc-node/register/esm-register src/verify-conv-guard.ts",
     "verify:devcomm": "node --import @swc-node/register/esm-register src/verify-devcomm.ts",
+    "verify:conv-expect": "node --import @swc-node/register/esm-register src/verify-conv-expect.ts",
     "verify:mqtt-keep": "node --import @swc-node/register/esm-register src/verify-mqtt-keep.ts",
     "verify:pulse": "node --import @swc-node/register/esm-register src/verify-pulse-dedup.ts",
     "verify:warmup": "node --import @swc-node/register/esm-register src/verify-warmup.ts",

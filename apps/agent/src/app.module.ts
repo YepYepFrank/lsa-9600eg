@@ -19,6 +19,7 @@ import { DeriveService } from './derive/derive.service.js'
 import { QualityService } from './quality/quality.service.js'
 import { WarmupService } from './warmup/warmup.service.js'
 import { ConvGuardService } from './conv/conv-guard.service.js'
+import { ConvExpectService } from './conv/conv-expect.service.js'
 import { SelfService } from './self/self.service.js'
 import { SouthService } from './south/south.service.js'
 import { StatusController } from './status/status.controller.js'
@@ -47,6 +48,7 @@ import { GatewayConfigService } from './gateway/gateway-config.service.js'
     AttrsService,
     WarmupService,
     ConvGuardService,
+    ConvExpectService,
     QualityService,
     DeriveService,
     SouthService,

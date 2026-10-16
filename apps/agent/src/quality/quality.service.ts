@@ -30,14 +30,20 @@
  *   - 转换程序标了 warmup（T1，型号自报）时 dev.warmup_s 至少报 1
  *   - 每收到这台设备的一条读数，马上补发一条同一时刻的 dev.warmup_s（读数是转换程序发的，agent 改不了那条消息；
  *     上送子站那边 UplinkService 直接并进同一行）；本地 TB 从没收到过的另由 ApplyService 预置 0（seedWarmupKey）
- *   - 转换程序发的 q 加新鲜度窗口（同 dev.*：max(minMs, periods × 周期) × 2）：转换程序挂了以后不会永远停在它最后报的状态 */
-import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
+ *   - 转换程序发的 q 加新鲜度窗口（同 dev.*：max(minMs, periods × 周期) × 2）：转换程序挂了以后不会永远停在它最后报的状态
+ *
+ * 0.6.2 预期测点（全链路联调 W1 / W2，ConvExpectService）：
+ *   - 转换程序配置里有传感器挂这台设备时，必有量 = 它们的 key（不再按物模型全量）；判离线的周期取这些量里最快的
+ *   - 不在预期里的量：没来过不看护；来过的（传感器改挂别处以后旧设备上留下的）照常过期成 stale / invalid 写进 q，
+ *     子站据此给最后值打标记（W2），但不算进 dev.comm（DEGRADED 只看预期测点和转换程序自己报的） */
+import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import { CAM_MAX_REGIONS, camRegionLimit, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { CapsService } from '../caps/caps.service.js'
 import { WarmupService } from '../warmup/warmup.service.js'
+import { ConvExpectService } from '../conv/conv-expect.service.js'
 
 export type Quality = 'stale' | 'invalid'
 export type Comm = 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'UNKNOWN'
@@ -51,6 +57,8 @@ const UNKNOWN_MS = 30_000
 interface Watch {
   period: number
   optional: boolean
+  /** 没来过也算缺：有预期测点时 = 在预期里，否则 = 物模型里不是可选量 */
+  required: boolean
   /** agent 最近一次收到的时刻；从没收到过则为 agent 启动时刻（启动后留出等第一批数据的时间） */
   lastAt: number
   seen: boolean
@@ -76,6 +84,8 @@ interface DeviceWatch {
   warmAt: number
   /** 判离线用的周期：必有量里最快的（没有必有量取全部里最快的） */
   period: number
+  /** 转换程序配置推出的预期测点（null = 按物模型全量） */
+  expect: ReadonlySet<string> | null
 }
 
 /** 派生量 → 它的输入（摄像机测温区按上限 R1–R12 全列，没配的区不看护、自然不影响结果；I18） */
@@ -109,6 +119,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     private readonly bus: BusService,
     private readonly caps: CapsService,
     private readonly warmup: WarmupService,
+    @Optional() private readonly expect?: ConvExpectService,
   ) {
     for (const d of cfg.devices) {
       if (d.kind === 'eg') continue
@@ -118,15 +129,29 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         const ms = expectedPeriodMs(p)
         // 事件型（弧光脉冲）不按周期看护；派生量跟随输入，不单独看护
         if (ms === null || p.key in DERIVED) continue
-        keys.set(p.key, { period: ms, optional: !!p.optional, lastAt: this.startedAt, seen: false })
+        keys.set(p.key, { period: ms, optional: !!p.optional, required: !p.optional, lastAt: this.startedAt, seen: false })
       }
-      const must = [...keys.values()].filter(w => !w.optional).map(w => w.period)
-      const period = Math.min(...(must.length ? must : [...keys.values()].map(w => w.period)), 60_000)
-      this.devices.set(d.name, { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, period })
+      const dw: DeviceWatch = { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, period: 60_000, expect: null }
+      this.applyExpect(d.name, dw)
+      this.devices.set(d.name, dw)
     }
   }
 
+  /** 按预期测点定每个量是不是必有、判离线的周期 */
+  private applyExpect(name: string, d: DeviceWatch): void {
+    const e = this.expect?.expected(name) ?? null
+    // 预期里一个能看护的量都没有（比如只配了物模型外的 key）：还是按全量
+    d.expect = e && [...d.keys.keys()].some(k => e.has(k)) ? e : null
+    for (const [k, w] of d.keys) w.required = d.expect ? d.expect.has(k) : !w.optional
+    const must = [...d.keys.values()].filter(w => w.required).map(w => w.period)
+    d.period = Math.min(...(must.length ? must : [...d.keys.values()].map(w => w.period)), 60_000)
+  }
+
   onModuleInit(): void {
+    this.expect?.onChange(() => {
+      for (const [name, d] of this.devices) this.applyExpect(name, d)
+      this.evaluate()
+    })
     this.bus.onTelemetry((dev, entries, own) => this.take(dev, entries, own))
     this.timer = setInterval(() => this.evaluate(), EVAL_MS)
   }
@@ -155,7 +180,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     if (this.sourceFresh(d, now)) for (const [k, q] of Object.entries(d.fromSource)) put(k, q)
     for (const [k, q] of Object.entries(d.derived)) put(k, q)
     // 0.17：预热中，这台设备的量都标 warmup（可选量来过才标）
-    if (this.warmup.remaining(device, now) > 0) for (const [k, w] of d.keys) if (w.seen || !w.optional) put(k, 'warmup')
+    if (this.warmup.remaining(device, now) > 0) for (const [k, w] of d.keys) if (w.seen || w.required) put(k, 'warmup')
     for (const [key, w] of d.keys) {
       const q = judge(w, now)
       if (q) put(key, q)
@@ -217,7 +242,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     let comm: Comm
     if (lastOk === null && now - this.startedAt < UNKNOWN_MS) comm = 'UNKNOWN'
     else if (failing && !alive) comm = 'OFFLINE'
-    else comm = failing || Object.keys(this.qualityOf(device, now)).length ? 'DEGRADED' : 'ONLINE'
+    // 有预期测点时只看预期里的量（旧设备上留下的量照常进 q，但不让这台一直 DEGRADED，W1 / W2）
+    else comm = failing || Object.keys(this.qualityOf(device, now)).some(k => !d.expect || d.expect.has(k)) ? 'DEGRADED' : 'ONLINE'
     return { comm, lastOk, fails, err, fromSource: { lastOk: sLastOk !== undefined, fails: sFails !== undefined, err: sErr !== undefined } }
   }
 
@@ -304,8 +330,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
 }
 
 function judge(w: Watch, now: number): Quality | null {
-  // 可选量没来过不算缺
-  if (w.optional && !w.seen) return null
+  // 不是必有的量（可选量、不在预期测点里的量）没来过不算缺
+  if (!w.required && !w.seen) return null
   const age = now - w.lastAt
   if (age > Math.max(30_000, 5 * w.period)) return 'invalid'
   if (age > 3 * w.period) return 'stale'
