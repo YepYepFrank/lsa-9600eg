@@ -17,7 +17,8 @@ const BACKEND = process.env.LSA_BACKEND ?? resolve(ROOT, '../lsa-9600sp-backend'
 const IMAGES = process.argv.includes('--images')
 const DEBS = process.argv.includes('--debs')
 const TEST = process.argv.includes('--test')
-/** 转换程序镜像（I11）：--conv <本机已有的镜像 tag>，随发布件走（images-conv.tar.gz、CONV_IMAGE.txt） */
+/** 转换程序镜像（I11）：--conv <本机已有的镜像 tag>，随发布件走（images-conv.tar.gz、CONV_IMAGE.txt）；
+ *  0.6.2 起正式发布件都带（tools/conv-image/build.sh 先打好，如 lsa-eg-conv:1.1.1-p5），缺省不启用，现场 install-conv.sh 启用 */
 const CONV = (() => {
   const i = process.argv.indexOf('--conv')
   return i >= 0 ? process.argv[i + 1] : null
@@ -77,8 +78,12 @@ rmSync(DIST, { recursive: true, force: true })
 mkdirSync(resolve(DIST, 'config'), { recursive: true })
 for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh']) cpSync(resolve(ROOT, 'deploy/eg', f), resolve(DIST, f))
 cpSync(resolve(ROOT, 'deploy/tb-gateway/extensions/lsa'), resolve(DIST, 'extensions/lsa'), { recursive: true, filter: s => !/__pycache__/.test(s) })
+// 0.6.2 转换程序接入：install-conv.sh（只这一套）+ conv-kit（lsa_check、sim.py：--check / --sim 用）+ 硬件联调步骤
+cpSync(resolve(ROOT, 'tools/conv-addon/install-conv.sh'), resolve(DIST, 'install-conv.sh'))
+cpSync(resolve(ROOT, 'tools/conv-addon/硬件联调步骤.md'), resolve(DIST, '转换程序硬件联调步骤.md'))
+cpSync(resolve(ROOT, 'tools/conv-kit'), resolve(DIST, 'conv-kit'), { recursive: true, filter: s => !/__pycache__|[\\/]images([\\/]|$)/.test(s) })
 // 装到 Linux 上：脚本与配置一律 LF（Windows 上打包时防 CRLF，子站 Linux 复测踩过）
-for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh', 'extensions/lsa/lsa_self_connector.py']) {
+for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh', 'extensions/lsa/lsa_self_connector.py', 'install-conv.sh', 'conv-kit/lsa_check.py', 'conv-kit/sim.py', 'conv-kit/install.sh']) {
   const p = resolve(DIST, f)
   writeFileSync(p, readFileSync(p, 'utf8').replace(/\r\n/g, '\n'))
 }
@@ -91,7 +96,8 @@ writeFileSync(
     '  2. sudo bash install.sh --lan1 <摄像机网口>   （没有 Docker 先装 debs/ 里的离线包、导入镜像、起本地 TB）\n' +
     '  3. 子站经 SSH 隧道跑 provision:eg，把生成的 eg.yaml（及 sp-ca.pem）拷到 config/\n' +
     '  4. sudo bash install.sh              （起全部）\n' +
-    '升级：新发布件整个拷过来覆盖后再跑 sudo bash install.sh；回退：sudo bash install.sh --rollback\n',
+    '升级：新发布件整个拷过来覆盖后再跑 sudo bash install.sh；回退：sudo bash install.sh --rollback\n' +
+    '转换程序（同事的传感器程序）：发布件带镜像、缺省不启用；现场接好 485 后 sudo bash install-conv.sh（见 转换程序硬件联调步骤.md）\n',
 )
 console.log(`  → ${DIST}`)
 

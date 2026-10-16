@@ -280,7 +280,9 @@ case "$MODE" in
 esac
 
 # ---------- 导入镜像 ----------
+# EG 0.6.2 起发布件带这个镜像，install.sh 已导入；单独的接入包（conv-addon）在这里导入
 if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+  [ -f "$HERE/images-conv.tar.gz" ] || { echo "!! 本机没有镜像 $IMG，$HERE 下也没有 images-conv.tar.gz：用带转换程序镜像的 EG 发布件重跑 install.sh，或用接入包" >&2; exit 1; }
   echo "导入转换程序镜像 $IMG …"
   docker load -i "$HERE/images-conv.tar.gz" | tail -1
 fi

@@ -85,7 +85,7 @@
 |---|---|---|
 | 选型要求 | USB 转串口芯片 **FTDI**（FT232R / FT231X 等）或同级、Linux 内核自带驱动（**免驱**，Ubuntu 24.04 插上即出 `/dev/ttyUSB0`）；**芯片带唯一序列号**（FTDI 出厂写好；CH340 一类没有序列号，`/dev/serial/by-id` 下的名字不唯一、不能当稳定路径用）；**自动收发方向**（硬件控制，不靠 RTS）；**隔离 ≥ 2.5 kV**（电源与信号都隔离）；**带浪涌保护**（TVS，A / B 线对地）；**终端电阻可选、可断开**（拨码或跳线）；工业级温度（−40–85 ℃）、导轨或螺丝固定；USB 线够短、能固定，不会松 | 隔离 ≥ 2.5 kV、带浪涌保护、两侧终端电阻可选可断开；输入侧接 COM2、输出侧接现场总线；如果标称「自动收发」，指的是中继器两侧之间的方向切换，**COM2 本身仍然没有自动收发** |
 | 设备名 | `/dev/ttyUSB0`（多插一个 USB 串口、或重启后枚举顺序变了，号可能变；稳定路径是 `/dev/serial/by-id/usb-…-if00-port0`，见评估「转换程序串口用稳定路径」） | 仍是 `/dev/ttyS1`（COM2），转换程序配置不用改 |
-| install.sh | `sudo bash install.sh --conv-serial /dev/ttyUSB0`（记住；容器里仍是 `/dev/ttyS1`，程序不用改） | 不用给（缺省就是 `/dev/ttyS1`） |
+| 启用 | `sudo bash install-conv.sh`（只插一个 USB 模块时自动用它；或 `--serial /dev/ttyUSB0`，记成 by-id；容器里仍是 `/dev/ttyS1`，程序不用改） | 不用给（没插 USB 模块时缺省就是 `/dev/ttyS1`） |
 | 接线 | X26A 的 USB 口 → 模块；模块 A / B / GND（隔离地）→ 现场总线，总线末端是 ALS10 | X26A 的 COM2（A / B / GND）→ 中继器输入侧；中继器输出侧 A / B / 隔离地 → 现场总线，总线末端是 ALS10 |
 | 收发方向 | 模块自己切，转换程序不用控制 | **还要转换程序控制**（RTS / 内核 RS485 模式，上面第 4 条）；BIOS 里 COM2 设成 485 模式 |
 | 优缺点 | 隔离、浪涌、自动收发一次解决；多一个 USB 设备要固定好 | 不占 USB、设备名不变；COM2 不能自动收发的问题没解决，同事程序要按 RTS 方向控制写 |
@@ -97,22 +97,17 @@
 - **镜像**：同事仓库 + 我方补丁（`tools/conv-patches/edge-gateway-1.1.1/`，0001–0005）由 `tools/conv-image/build.sh <同事仓库> lsa-eg-conv:<版本>` 离线打（本机 `python:3.12-slim` + 同事 `wheels/`，构建时断网）。镜像里带同事的配置模板（`/app/config.default`）。
 - compose 里的可选服务 `conv`（容器 `lsa-eg-conv`）：宿主机网络、`restart: unless-stopped`、日志 10 MB × 3 轮转、内存上限 128 MB（联调实测 19–23 MiB，5 路传感器、含 10 分钟断子站）。
   - **配置**：`EDGE_GATEWAY_CONFIG=/config`，就是本机的 `config/conv/`。数据（缓存库、心跳）在 `config/conv-data/`。`config/eg.yaml` 只读挂进去（补丁 0001 读柜号，clientId 用 `lsa-conv-<柜号>`）。
-  - **总线地址与串口由 EG 统一管**：compose 给 `LSA_MQTT_URL=mqtt://127.0.0.1:1884`、`LSA_SERIAL=/dev/ttyS1`，补丁 0005 用它们覆盖 `gateway.yaml` 里写的值。现场换串口只用 `--conv-serial`，不用进容器改配置。
+  - **总线地址与串口由 EG 统一管**：compose 给 `LSA_MQTT_URL=mqtt://127.0.0.1:1884`、`LSA_SERIAL=/dev/ttyS1`，补丁 0005 用它们覆盖 `gateway.yaml` 里写的值。现场换串口只用 `install-conv.sh --serial`，不用进容器改配置。
   - **健康检查**：进程在，并且最近 2 分钟有数据发出或写进缓存（补丁 0005 的心跳文件 `/data/heartbeat`）。`--status` 显示 healthy / unhealthy。
-- **启用步骤**：
-  1. 发布件带了转换程序镜像（`CONV_IMAGE.txt`、`images-conv.tar.gz`），串口在 —— 跑 `install.sh` 就会启用。
-  2. `config/conv/` 还是空的时，install.sh 从镜像模板生成：设备名里的柜号换成本柜的（`SAM-AH03-B` → `SAM-<柜号>-B`），串口写 `/dev/ttyS1`。
-  3. **按这面柜实际接的传感器改** `config/conv/sensors/*.yaml`：要用的 `enabled: true`，`device` 填这路传感器所在隔室的设备名（以 `eg.yaml` 的设备清单为准，如温湿度在断路器室就填 `SAM-<柜号>-A`）。改完 `docker restart lsa-eg-conv`。重跑 install.sh 不会覆盖。
-  4. 核对：`sudo bash install.sh --status`。
-     - 设备名和 `eg.yaml` 对不上时会醒目提示「!! 转换程序配置的设备名和 eg.yaml 对不上」，这些数据进不了本地 TB、也不上送。
-     - 本地管理页「设备与通信 → 服务状态」的转换程序卡片看运行状态、最近读数、自动重启次数。
-- 串口：宿主机的 `/dev/ttyS1`（X26A 的 COM2）映射成容器里的 `/dev/ttyS1`，加宿主机 `dialout` 组。用 USB 转 485（样机，或批量机按上面方式 A 加隔离）时：`sudo bash install.sh --conv-serial /dev/ttyUSB0`（记住；容器里仍是 `/dev/ttyS1`，程序不用改）。EG 0.5.1 起：
-  - 给 `/dev/ttyUSB*` / `/dev/ttyACM*` 时自动换成 `/dev/serial/by-id/…` 的稳定名字记住，并打一行说明（ttyUSB 号在重启、多插 USB 设备后可能变；Docker 每次起容器时把它解析成当时的实际设备）；找不到 by-id 时提醒「芯片没有序列号，重启后设备号可能变，建议换带序列号的模块」。
-  - 路径里有「:」「#」或空格的直接拒绝（compose 的设备映射会把「:」拆错，AH11 实测）。
-  - `--status` 与「串口不存在」的提示里列出可选串口：真串口 ttyS*（`/sys/class/tty` 下有 device、且 UART 类型不是 0 —— 没有硬件的 ttyS 也有 device 链接）、`/dev/serial/by-id` 下的名字与它现在指向的设备、没有 by-id 的 ttyUSB / ttyACM。
-  - 运行中拔插、变号后要 `sudo bash install.sh --conv-on`（或重启 EG）让转换程序重新起来；自动处理（udev）等定了模块、拿到样机再做。
-- 镜像随发布件：出包时 `pnpm pack:eg -- --images --debs --conv <镜像:确切 tag>`，发布件里多 `images-conv.tar.gz` 与 `CONV_IMAGE.txt`；install.sh 导入后**镜像在、串口在才启用**（`.env` 的 `COMPOSE_PROFILES=conv`），否则不起、说明原因。升级随 EG 发布件走；`--rollback` 回到不带它的版本时，转换程序容器一并停掉。
-- 开关：`--conv-off` 关掉并记住、`--conv-on` 重新打开；`--status` 的容器列表里能看到 `lsa-eg-conv`。
+- **启用只走 `install-conv.sh`**（EG 0.6.2 起，在 EG 安装目录里；同一套脚本也在单独的「转换程序接入包」里）。发布件带转换程序镜像（`CONV_IMAGE.txt`、`images-conv.tar.gz`，install.sh 导入），**缺省不启用**，现场接好 485 以后：
+  1. `sudo bash install-conv.sh`：按 `eg.yaml` 从镜像模板生成 `config/conv/`（局放、气体、温湿度、弧光打开，红外关；温湿度挂第一台 SAM、其余挂第二台；从站地址用同事的缺省 1–5）→ 选串口（`/dev/serial/by-id` 下只有一个 USB 转 485 就用它，多个让选，没有就 `/dev/ttyS1` COM2）→ 写 `.env`（`EG_CONV=on`、镜像、串口、dialout 组、`COMPOSE_PROFILES=conv`）→ 起 conv，20 s 后给一句结论（通了 / 部分通 / 没应答 / 串口打不开）。
+  2. 现场调整：`--sensors pd,arc`、`--addr pd=7`、`--dev temperature=SAM-<柜号>-B`、`--baud`，只改给了的项、改完自动重启；也可以直接改 `config/conv/sensors/*.yaml` 后 `docker restart lsa-eg-conv`。**挂在哪台设备**决定了看护口径：EG 按这里打开的传感器推出每台的预期测点（W1，见开发计划 §6.1）。
+  3. 核对：`sudo bash install-conv.sh --status`（各路配置、设备名有没有对上、最近采集）、`--check`（lsa_check 跑 2 分钟）；本地管理页「设备与通信 → 服务状态」的转换程序卡片。
+  4. 读不到：`--diag [rs485|modbus]` 先停 conv、在镜像里跑同事的诊断脚本直接问从站；没有传感器时 `--sim` 在容器里跑模拟器自测。停用 `--off`。
+  - 详细步骤与常见问题见 `tools/conv-addon/硬件联调步骤.md`（发布件里是 `转换程序硬件联调步骤.md`）。
+- install.sh 对转换程序只做两件事：导入镜像；升级 / 回退时，启用过的（`.env` 的 `EG_CONV=on`，或 0.6.1 以前的 `COMPOSE_PROFILES=conv` 没关过）换成本发布件的镜像接着跑，串口不在了就不起并说明原因。老参数 `--conv-on` / `--conv-off` / `--conv-serial <设备>` 转给 install-conv.sh。`--status` 显示启用与否、串口、自动重启次数。
+- 串口：宿主机的设备映射成容器里的 `/dev/ttyS1`，加宿主机 `dialout` 组；`/dev/ttyUSB*` / `/dev/ttyACM*` 自动换成 `/dev/serial/by-id/…` 的稳定名字（EG 0.5.1 起），找不到 by-id 时提醒「芯片没有序列号」；路径里有「:」「#」或空格的拒绝（compose 的设备映射会拆错，AH11 实测）。运行中拔掉 USB 模块，conv 起不来（eg-agent 的重启也会报 Docker 找不到设备），插回后 `sudo bash install-conv.sh`。
+- 出包：`tools/conv-image/build.sh` 先打镜像，`pnpm pack:eg -- --images --debs --conv lsa-eg-conv:1.1.1-p5`；发布件里多 `images-conv.tar.gz`、`CONV_IMAGE.txt`，并总是带 `install-conv.sh`、`conv-kit/`。**这一版是试用**：同事 1.1.1 + 我方补丁 A–E，等他把补丁合进自己仓库、改完 C1 / C3 后换正式版。
 - **转换程序保险**（0.17，eg-agent 自动做，不管用的是哪个转换程序）：本机总线 `lsa-eg-mosquitto` 重启过、而 `lsa-eg-conv` 是在它之前起的 → 重启 conv；conv 在跑、但 60 s 总线上没有它的任何读数（SAM / 电表 / 颗粒物的遥测）→ 重启 conv，连续重启按 60 s × 2^n 退避（最多 30 min），读数回来清零。每次重启记本地审计「自动重启转换程序」、上送 EG 遥测 `eg.conv_restarts` / `eg.conv_restart`（子站 check.sh 据此提示），`--status` 也会显示次数与最近一次原因。参数在 `config/local.yaml` 的 `convGuard: { enabled, silentS, maxBackoffS }`（缺省 true / 60 / 1800）；conv 没启用时什么也不做。
 - **MQTT 连接保活**（0.17）：上送子站（8883）、本机总线（1884）的连接被对端拒绝（CONNACK 非 0，如子站 TB 重启中途回「Server unavailable」、令牌错回「Not authorized」）时照样重连 —— mqtt.js 默认被拒一次就再也不连；连续被拒按 5 s → 60 s 翻倍退避，连上恢复；断了而库没在重连时换个客户端重连。上送被拒时日志写 CONNACK 码与原因，EG 遥测 `eg.uplink_err`、本地管理页上送状态、`--status`（读 `config/uplink-state.json`）都显示原因；4 / 5 / 134 / 135（令牌类）提示查 `eg.yaml` 的 `station.token` 与子站上这台 EG 的设备。
 - 在那之前（发布件里没有它的镜像）按同事自己的方式部署，只要连 `127.0.0.1:1884` 按《EG 内部 MQTT 格式》发就行。
