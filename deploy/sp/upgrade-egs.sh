@@ -3,10 +3,12 @@
 #
 #   sudo bash upgrade-egs.sh --keygen                       生成子站的升级 key（只一次），打印每台 EG 上要执行的授权命令
 #   sudo bash upgrade-egs.sh --run <新 .run> --plan [--all | --only AH03,AH05]
-#                                                           只看要做什么：每台 EG 当前版本 → 目标版本、连得上没有、空间够不够（不改任何东西）
+#                                                           只看要做什么：每台 EG 在不在线、当前版本 → 目标版本、会不会升、不升的原因（不改任何东西）
 #   sudo bash upgrade-egs.sh --run <新 .run> --all | --only AH03,AH05 [--canary AH05] [--parallel 2] [--force]
 #                                                           升级：先升 canary（缺省清单里第一台），核对通过后其余按并发上限依次升；
 #                                                           任何一台失败就不再开新的，打印那台的回退命令。--force：已经是目标版本的也重装
+#                                                           --skip-offline：连不上的 EG 跳过（缺省有一台连不上就整批不开始）
+#   跳过（不算失败）：子站上标了未接入 / 停用、没有地址、已是该版本、比目标版本新（不降级）、这台正在做别的维护（lsa-sp 隧道开着、有安装在跑）
 #   sudo bash upgrade-egs.sh --resume <批次>                 断开以后续查 / 接着做（EG 上的升级任务不受子站断开影响）
 #   sudo bash upgrade-egs.sh --list                         列出做过的批次与结果
 #
@@ -28,7 +30,7 @@ JOB_TIMEOUT_S=3600
 SP_CHECK_S=180
 TERMINAL=' done rolled-back rollback-failed check-failed failed '
 
-RUN='' SEL='' CANARY='' PAR=2 PLAN=0 FORCE=0 MODE=''
+RUN='' SEL='' CANARY='' PAR=2 PLAN=0 FORCE=0 MODE='' SKIP_OFFLINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --keygen) MODE=keygen ;;
@@ -39,14 +41,15 @@ while [ $# -gt 0 ]; do
     --parallel) PAR="${2:?--parallel 2}"; shift ;;
     --plan) PLAN=1 ;;
     --force) FORCE=1 ;;
+    --skip-offline) SKIP_OFFLINE=1 ;;
     --resume) MODE=resume; BATCH="${2:?--resume <批次>（--list 看有哪些）}"; shift ;;
     --list) MODE=list ;;
-    -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
 done
-[ -n "$MODE" ] || { sed -n '2,23p' "$0"; exit 2; }
+[ -n "$MODE" ] || { sed -n '2,25p' "$0"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo '要 root：sudo bash upgrade-egs.sh …' >&2; exit 1; }
 [[ "$PAR" =~ ^[1-9][0-9]?$ ]] || { echo "--parallel 要 1–99：$PAR" >&2; exit 2; }
 
@@ -65,10 +68,28 @@ run_eg_version() {  # 安装文件里 EG 发布件的版本（只读负载里的
   tail -n +"$((skip + 1))" "$1" | tar -xO --occurrence=1 lsa9600sp-bundle/eg/VERSION 2>/dev/null | head -1 | tr -d '[:space:]'
 }
 
-# ---------- EG 清单：子站后端的 eg-list（有就用）；没有就直接查子站 TB ----------
-# 每行（TSV）：柜号 EG设备名 地址 EG报的版本 本地TB版本 配置版本 上送 上送多少秒前 停用
+# ---------- EG 清单 ----------
+# 每行（TSV）：柜号 EG设备名 地址 EG报的版本 本地TB版本 配置版本 上送 上送多少秒前 跳过原因(-) 状态 上送正常(true/false) 配置已生效(true/false/-)
+# 0.17.3 起用子站后端的 eg-list（lsa-ext 里的 bin/eg-list.mjs，只认容器里本机发的请求）：地址按 egUrl > EXT_EG_URLS > model.yaml 推好，
+#   状态 online / offline / backfill / degraded / never / disabled，skip（未接入 / 停用），uplinkOk，cfgApplied（期望 = 生效且 APPLIED）。
+#   退出码 3 = 扩展服务刚起、还没读全：照样输出，但调用方当成预检不过。老子站没有 eg-list 时直接查子站 TB（只认 egUrl 属性）。
 eg_list() {
   if [ -n "${EG_LIST_CMD:-}" ]; then eval "$EG_LIST_CMD"; return; fi
+  local json rc=0
+  if [ -n "${EG_LIST_JSON_CMD:-}" ] || docker exec lsa-ext test -f bin/eg-list.mjs 2>/dev/null; then
+    if [ -n "${EG_LIST_JSON_CMD:-}" ]; then json="$(eval "$EG_LIST_JSON_CMD")" || rc=$?
+    else json="$(docker exec lsa-ext node bin/eg-list.mjs --json)" || rc=$?; fi
+    [ "$rc" = 0 ] || [ "$rc" = 3 ] || { echo "eg-list 出错（退出码 $rc）" >&2; return 2; }
+    docker exec -i lsa-ext node -e '
+let s = ""; process.stdin.on("data", d => (s += d)).on("end", () => {
+  const o = JSON.parse(s), v = x => (x === undefined || x === null || x === "" ? "-" : String(x).replace(/\s/g, ""))
+  for (const e of o.egs || []) {
+    let host = ""; try { host = e.egUrl ? new URL(e.egUrl).hostname : "" } catch {}
+    console.log([e.code, e.eg, v(host), v(e.version), v(e.tbVersion), v(e.cfgActual), v(e.uplink), v(e.uplinkAgeS), v(e.skip), v(e.state), String(!!e.uplinkOk), e.cfgApplied === undefined ? "-" : String(!!e.cfgApplied)].join("\t"))
+  }
+})' <<< "$json" || return 2
+    return "$rc"
+  fi
   docker exec -i -e TBU="$(envget TB_TENANT_USER)" -e TBP="$(envget TB_TENANT_PASSWORD)" lsa-ext node - <<'JS'
 const T = 'http://tb:8080'
 const j = async (u, o = {}) => { const r = await fetch(T + u, o); if (!r.ok) throw new Error(`${u} ${r.status}`); return r.json() }
@@ -85,12 +106,24 @@ const j = async (u, o = {}) => { const r = await fetch(T + u, o); if (!r.ok) thr
     const up = (tel['eg.uplink'] || [])[0]
     let host = ''
     try { host = s.egUrl ? new URL(s.egUrl).hostname : '' } catch {}
-    const off = s.egDisabled === true || s.disabled === true || s.egState === 'disabled' || s.egState === 'never' ? 1 : 0
+    const skip = s.egDisabled === true || s.disabled === true || s.egState === 'disabled' ? '停用' : s.egState === 'never' ? '未接入' : '-'
+    const age = up ? Math.round((Date.now() - up.ts) / 1000) : null
+    const ok = !!up && up.value === 'ok' && age <= 120
     const v = x => (x === undefined || x === null || x === '' ? '-' : String(x).replace(/\s/g, ''))
-    console.log([d.name.replace(/^EG-/, ''), d.name, v(host), v(c.agent), v(c.tbVersion), v(c.cfg), v(up && up.value), up ? Math.round((Date.now() - up.ts) / 1000) : '-', off].join('\t'))
+    console.log([d.name.replace(/^EG-/, ''), d.name, v(host), v(c.agent), v(c.tbVersion), v(c.cfg), v(up && up.value), v(age), skip, up ? (ok ? 'online' : 'offline') : 'never', String(ok), '-'].join('\t'))
   }
 })().catch(e => { console.error('取 EG 清单失败：' + e.message); process.exit(1) })
 JS
+}
+# 版本关系：same（完全一样）/ eq（同版本号、不同构建，重打）/ lt（当前比目标旧）/ gt（当前比目标新）
+vrel() {
+  [ "$1" = "$2" ] && { echo same; return 0; }
+  local a="${1%%-*}" b="${2%%-*}"
+  [ "$a" = "$b" ] && { echo eq; return 0; }
+  if [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" = "$a" ]; then echo lt; else echo gt; fi
+}
+zh_state() {
+  case "$1" in online) echo 在线 ;; offline) echo 离线 ;; degraded) echo 降级 ;; backfill) echo 补传中 ;; never) echo 从没连过 ;; disabled) echo 停用 ;; *) echo '?' ;; esac
 }
 
 # ---------- --keygen ----------
@@ -137,12 +170,14 @@ else
 fi
 
 # ---------- 清单 + 预检 ----------
-LIST="$(eg_list)" || { echo '取不到 EG 清单（子站的 lsa-ext 在跑吗？）' >&2; exit 1; }
-declare -A HOST=() CUR=() CFG=() ROW=()
+lrc=0
+LIST="$(eg_list)" || lrc=$?
+[ "$lrc" = 0 ] || [ "$lrc" = 3 ] || { echo '取不到 EG 清单（子站的 lsa-ext 在跑吗？）' >&2; exit 1; }
+declare -A HOST=() CUR=() CFG=() SKIP=() STATE=()
 ORDER=()
-while IFS=$'\t' read -r cab name host ver tbv cfg up age off; do
+while IFS=$'\t' read -r cab name host ver tbv cfg up age skip state upok cfgok; do
   [ -n "$cab" ] || continue
-  HOST[$cab]="$host"; CUR[$cab]="$ver"; CFG[$cab]="$cfg"; ROW[$cab]="$off"
+  HOST[$cab]="$host"; CUR[$cab]="$ver"; CFG[$cab]="$cfg"; SKIP[$cab]="${skip:--}"; STATE[$cab]="${state:-?}"
   ORDER+=("$cab")
 done <<< "$LIST"
 
@@ -162,31 +197,47 @@ else
 fi
 
 printf '\n目标 EG %s（安装文件 %s，sha256 %s…）\n' "$TO" "$(basename "$RUN")" "${SHA:0:12}"
-printf '%-8s %-16s %-18s %-8s %s\n' 柜号 地址 当前版本 空间MB 计划
-GO=() BAD=0
+[ "$lrc" = 3 ] && echo '!! 子站扩展服务刚启动、EG 状态还没读全（eg-list 退出码 3）：等一两分钟再跑'
+printf '\n%-8s %-8s %-36s %-6s %s\n' 柜号 在线 '版本（当前 → 目标）' 动作 原因
+GO=() BAD=0 NOADDR=() n_skip=0
+[ "$lrc" = 3 ] && BAD=1
 need_mb=$(( (SIZE * 2) / 1024 / 1024 + 1536 ))
+row() { printf '%-8s %-8s %-36s %-6s %s\n' "$1" "$2" "$3 → $TO" "$4" "$5"; }
 for c in "${TARGETS[@]}"; do
-  h="${HOST[$c]:--}"; cur="${CUR[$c]:--}"; plan='' free='-'
-  if [ "${ROW[$c]:-0}" = 1 ]; then plan='跳过：子站上标了未接入 / 停用'
-  elif [ "$h" = - ]; then plan='跳过：子站上没有这台的地址（egUrl）'
-  elif [ "$MODE" != resume ] && [ "$cur" = "$TO" ] && [ "$FORCE" != 1 ]; then plan='跳过：已经是目标版本（--force 重装）'
-  else
-    out="$(sshx "$h" hello 2>&1)"; rc=$?
-    if [ $rc != 0 ] || ! grep -q '^entry=' <<< "$out"; then
-      if grep -q 'Permission denied' <<< "$out"; then hint='EG 上授权过吗？sudo bash install.sh --upgrade-key …；授权只认这台子站的地址'
-      else hint='网络 / SSH 不通：EG 开着吗、22 口通吗'; fi
-      plan="!! 连不上升级入口：$(tr '\n' ' ' <<< "$out" | cut -c1-80)（$hint）"; BAD=1
-    else
-      free="$(kv free_mb "$out")"; cur="$(kv eg_version "$out")"
-      if [ "$(kv running "$out")" = 1 ] && [ "$MODE" != resume ]; then plan='!! EG 上有升级任务正在跑'; BAD=1
-      elif [ "$MODE" != resume ] && [ "${free:-0}" -lt "$need_mb" ]; then plan="!! 空间不够（要约 $need_mb MB）"; BAD=1
-      elif [ "$MODE" != resume ] && [ "$cur" = "$TO" ] && [ "$FORCE" != 1 ]; then plan='跳过：已经是目标版本（--force 重装）'
-      else plan="升级 → $TO"; GO+=("$c"); fi
-    fi
+  h="${HOST[$c]:--}"; cur="${CUR[$c]:--}"; on="$(zh_state "${STATE[$c]:-?}")"
+  if [ "${SKIP[$c]:--}" != - ]; then row "$c" "$on" "$cur" 跳过 "子站上标了「${SKIP[$c]}」"; n_skip=$((n_skip + 1)); continue; fi
+  if [ "$h" = - ]; then NOADDR+=("$c"); continue; fi
+  if [ "$MODE" != resume ] && [ "$FORCE" != 1 ]; then
+    case "$(vrel "$cur" "$TO")" in
+      same) row "$c" "$on" "$cur" 跳过 '已是该版本（要重装加 --force）'; n_skip=$((n_skip + 1)); continue ;;
+      gt) row "$c" "$on" "$cur" 跳过 '比目标版本新：不降级（回退用 install.sh --rollback）'; n_skip=$((n_skip + 1)); continue ;;
+    esac
   fi
-  printf '%-8s %-16s %-18s %-8s %s\n' "$c" "$h" "$cur" "$free" "$plan"
+  out="$(sshx "$h" hello 2>&1)"; rc=$?
+  if [ $rc != 0 ] || ! grep -q '^entry=' <<< "$out"; then
+    if grep -q 'Permission denied' <<< "$out"; then why="连不上升级入口：没授权（EG 上 sudo bash install.sh --upgrade-key …；授权只认这台子站的地址）"
+    else why="连不上：$(tr '\n' ' ' <<< "$out" | cut -c1-60)（EG 开着吗、22 口通吗）"; fi
+    if [ "$SKIP_OFFLINE" = 1 ]; then row "$c" "$on" "$cur" 跳过 "$why"; n_skip=$((n_skip + 1))
+    else row "$c" "$on" "$cur" '!!' "$why（--skip-offline 可跳过它）"; BAD=1; fi
+    continue
+  fi
+  free="$(kv free_mb "$out")"; cur="$(kv eg_version "$out")"; maint="$(kv maint "$out")"
+  if [ "$MODE" != resume ] && [ "$FORCE" != 1 ]; then
+    case "$(vrel "$cur" "$TO")" in
+      same) row "$c" "$on" "$cur" 跳过 '已是该版本（要重装加 --force）'; n_skip=$((n_skip + 1)); continue ;;
+      gt) row "$c" "$on" "$cur" 跳过 '比目标版本新：不降级'; n_skip=$((n_skip + 1)); continue ;;
+    esac
+  fi
+  if [ "$MODE" != resume ] && [ "$(kv running "$out")" = 1 ]; then row "$c" "$on" "$cur" 跳过 '在维护：EG 上有升级任务正在跑'; n_skip=$((n_skip + 1)); continue; fi
+  if [ "$MODE" != resume ] && [ -n "$maint" ]; then row "$c" "$on" "$cur" 跳过 "在维护：$maint"; n_skip=$((n_skip + 1)); continue; fi
+  if [ "$MODE" != resume ] && [ "${free:-0}" -lt "$need_mb" ]; then row "$c" "$on" "$cur" '!!' "空间不够：剩 ${free} MB，要约 $need_mb MB"; BAD=1; continue; fi
+  note=''; [ "$(vrel "$cur" "$TO")" = eq ] && note='同版本号、不同构建（重打；构建号分不出新旧，确认是要装的那个）'
+  [ "$MODE" = resume ] && note='续查 / 接着做'
+  row "$c" "$on" "$cur" 升级 "$note"; GO+=("$c")
 done
-[ "$PLAN" = 1 ] && { echo; echo '（--plan：只看，没做任何改动）'; exit "$BAD"; }
+[ ${#NOADDR[@]} -eq 0 ] || printf '\n没有地址、跳过 %s 台（子站上没有这台 EG 的地址：provision-eg.sh --eg-url，或网关页「子站连它」改）：%s\n' "${#NOADDR[@]}" "${NOADDR[*]}"
+printf '\n合计：升级 %s 台，跳过 %s 台%s\n' "${#GO[@]}" "$(( n_skip + ${#NOADDR[@]} ))" "$([ "$BAD" = 1 ] && echo '，有 !! 项')"
+[ "$PLAN" = 1 ] && { echo '（--plan：只看，没做任何改动）'; exit "$BAD"; }
 [ "$BAD" = 0 ] || { echo; echo '预检有问题（上面 !! 那几行），整批不开始。' >&2; exit 1; }
 [ ${#GO[@]} -gt 0 ] || { echo; echo '没有要升的。'; exit 0; }
 
@@ -250,18 +301,23 @@ up_one() {
     failed) result "$c" 失败 "$(kv reason "$st")"; sshx "$h" "drop $SHA" >/dev/null 2>&1; return ;;
     *) result "$c" 失败 "${JOB_TIMEOUT_S} s 还没做完（最后状态 ${ph:-查不到}）：之后 --resume $BATCH 续查"; return ;;
   esac
-  # 子站核对：子站 TB 上 EG 报的版本 = 目标、上送 ok 且 2 分钟内、配置版本没丢（和升级前一样）
-  ok=''; t_end=$(( $(date +%s) + SP_CHECK_S ))
+  # 子站核对：子站上这台报的版本 = 目标、上送正常（uplinkOk）、配置生效（eg-list 的 cfgApplied；没有 eg-list 时看配置版本和升级前一样）。
+  # EG 升级后子站会自动重发一次配置（0.14 起），所以要等一会儿（最多 SP_CHECK_S）
+  ok=''; t_end=$(( $(date +%s) + SP_CHECK_S )); sig="$(kv sig "$st")"
   while [ "$(date +%s)" -lt "$t_end" ]; do
-    row="$(eg_list 2>/dev/null | awk -F'\t' -v c="$c" '$1==c')"
-    IFS=$'\t' read -r _ _ _ ver tbv cfg up age _ <<< "$row"
-    echo "$(ts) 子站看到：版本 ${ver:-?}，本地 TB ${tbv:-?}，配置 ${cfg:-?}，上送 ${up:-?}（${age:-?} s 前）"
-    if [ "$ver" = "$TO" ] && [ "$up" = ok ] && [[ "$age" =~ ^[0-9]+$ ]] && [ "$age" -le 120 ] && { [ "$(plan_cfg "$c")" = - ] || [ "$cfg" = "$(plan_cfg "$c")" ]; }; then ok=1; break; fi
+    line="$(eg_list 2>/dev/null | awk -F'\t' -v c="$c" '$1==c')"
+    IFS=$'\t' read -r _ _ _ ver tbv cfg up age _ state upok cfgok <<< "$line" || true
+    echo "$(ts) 子站看到：版本 ${ver:-?}，本地 TB ${tbv:-?}，配置 ${cfg:-?}（生效 ${cfgok:-?}），上送 ${up:-?}（${age:-?} s 前，正常 ${upok:-?}）"
+    if [ "$ver" = "$TO" ] && [ "$upok" = true ]; then
+      if [ "$cfgok" = true ]; then ok=1; break; fi
+      if [ "$cfgok" = - ] && { [ "$(plan_cfg "$c")" = - ] || [ "$cfg" = "$(plan_cfg "$c")" ]; }; then ok=1; break; fi
+    fi
     sleep 15
   done
   sshx "$h" "drop $SHA" >/dev/null 2>&1 || true
-  if [ -n "$ok" ]; then result "$c" 成功 "本地 TB ${tbv}，配置 ${cfg} 照旧，上送正常"
-  else result "$c" 失败 "EG 自查通过，但子站核对不过（版本 ${ver:-?} / 上送 ${up:-?} ${age:-?} s 前 / 配置 ${cfg:-?}，升级前 $(plan_cfg "$c")）"; fi
+  signote=''; [ "$sig" = unsigned ] && signote='；安装文件未验签（0.17.4 起要求签名）'
+  if [ -n "$ok" ]; then result "$c" 成功 "本地 TB ${tbv}，配置 ${cfg} 生效，上送正常${signote}"
+  else result "$c" 失败 "EG 自查通过，但子站核对不过（版本 ${ver:-?} / 上送正常 ${upok:-?}、${age:-?} s 前 / 配置 ${cfg:-?} 生效 ${cfgok:-?}，升级前 $(plan_cfg "$c")）"; fi
 }
 todo=()
 for c in "${GO[@]}"; do [ -f "$BD/$c.result" ] || todo+=("$c"); done
