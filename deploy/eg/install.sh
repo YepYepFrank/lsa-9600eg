@@ -17,9 +17,9 @@
 #   --fw-off 关掉并记住，--fw-on 重新打开；--status 显示它；回退到不管它的老版本时自动清掉。
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
 #   --watchdog-off 关掉并记住，--watchdog-on 重新打开；--status 显示它。本机有硬件看门狗时直接用它、不加载 softdog。
-# 转换程序（I11）：发布件带了它的镜像（CONV_IMAGE.txt）、串口也在时启用 compose 里的 conv 服务；
-#   --conv-serial <设备>（缺省 /dev/ttyS1；USB 转 485 给 /dev/ttyUSB0 会自动换成 /dev/serial/by-id 的稳定名字记住；路径里不能有「:」「#」空格）、
-#   --conv-off 关掉并记住、--conv-on 重新打开；--status 列出可选串口。
+# 转换程序（EG 0.6.2 起只走 install-conv.sh 这一套）：发布件带它的镜像（CONV_IMAGE.txt、images-conv.tar.gz），install.sh 只负责导入，缺省不启用；
+#   现场用 sudo bash install-conv.sh 启用（生成配置、选串口、起、停、诊断，见硬件联调步骤）。启用过的，升级 / 回退时换成新镜像接着跑。
+#   老参数 --conv-on / --conv-off / --conv-serial <设备> 转给 install-conv.sh（同 install-conv.sh / --off / --serial）。
 # 本地 TB 升级（0.17）：只做同一补丁线（只差第 4 位，如 4.2.2.5 → 4.2.2.6）—— 不跑 TB 的升级脚本（TB 官方：同补丁线 DO NOT run the upgrade script，
 #   跑了报「database version … is not supported for upgrade」停在半路），先把本地库（含遥测）备份到 backups/，换镜像起，TB 启动时自己补数据，
 #   起来后核对库里 tb_schema_settings.schema_version 变成新版本（最多约 2 分钟）。降级、跨小版本直接拒绝。
@@ -36,7 +36,6 @@ LAN1=''
 SPKEY=''
 MODE='install'
 FORCE=0
-CONV_SERIAL=''
 RESTORE_TB=0
 TB_BACKUP=1
 while [ $# -gt 0 ]; do
@@ -51,22 +50,16 @@ while [ $# -gt 0 ]; do
     --fw-on) MODE='fw-on' ;;
     --watchdog-off) MODE='wd-off' ;;
     --watchdog-on) MODE='wd-on' ;;
-    --conv-serial) CONV_SERIAL="${2:?--conv-serial 后面给串口设备，如 /dev/ttyS1}"; shift ;;
-    --conv-off) MODE='conv-off' ;;
-    --conv-on) MODE='conv-on' ;;
+    # 0.6.2：转换程序只走 install-conv.sh
+    --conv-serial) exec bash "$(dirname "$0")/install-conv.sh" --serial "${2:?--conv-serial 后面给串口设备，如 /dev/ttyUSB0}" ;;
+    --conv-off) exec bash "$(dirname "$0")/install-conv.sh" --off ;;
+    --conv-on) exec bash "$(dirname "$0")/install-conv.sh" ;;
     --restore-tb) RESTORE_TB=1 ;;
     --no-tb-backup) TB_BACKUP=0 ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
   shift
 done
-# 串口路径进 .env、再进 compose 的 devices 短写法「宿主机:容器」：带「:」会被拆错，带「#」「空格」会弄坏 .env 的写入 —— 安装时直接拒绝（EG 0.5.1）
-case "$CONV_SERIAL" in
-  *:* | *'#'* | *' '* | *'	'*)
-    echo "--conv-serial 的路径里有「:」「#」或空格：$CONV_SERIAL" >&2
-    echo "  compose 的设备映射会把它拆错。改用 /dev/serial/by-id/ 下不带这些字符的名字，或者直接给 /dev/ttyUSB0（会自动换成 by-id）" >&2
-    exit 2 ;;
-esac
 
 # ---------- LAN1（摄像机网）防火墙：只出不进 ----------
 # --lan1 时装：LAN1 进来的只放已建立 / 相关连接的回包（EG 主动拉摄像机的 RTSP / HTTP 回包），其余一律丢 —— 22、80、8554 都连不上。
@@ -279,12 +272,17 @@ conv_check_devices() {
   true
 }
 
+# 启用过 = .env 里 EG_CONV=on（install-conv.sh 写的）；兼容 0.6.1 以前由 install.sh 自己起的（COMPOSE_PROFILES=conv、没关过）
+conv_wanted() {
+  grep -q '^EG_CONV=on' .env 2>/dev/null && return 0
+  grep -q '^COMPOSE_PROFILES=conv' .env 2>/dev/null && ! grep -q '^EG_CONV=off' .env 2>/dev/null
+}
 conv_status() {
   local ser state
   ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
-  state='没启用'
-  grep -q '^COMPOSE_PROFILES=conv' .env 2>/dev/null && state='启用'
-  grep -q '^EG_CONV=off' .env 2>/dev/null && state='已关（--conv-off）'
+  state='没启用（启用：sudo bash install-conv.sh）'
+  conv_wanted && state='启用'
+  grep -q '^EG_CONV=off' .env 2>/dev/null && state='已关（install-conv.sh --off）'
   echo "转换程序：$state；串口 $ser$([ -e "$ser" ] && [ -L "$ser" ] && echo "（→ $(readlink -f "$ser")）")$([ -e "$ser" ] || echo '（不存在）')"
   # 0.17 转换程序保险（eg-agent）：自动重启过的话说出来
   if [ -f config/conv-guard.json ]; then
@@ -299,8 +297,9 @@ conv_status() {
     [ -n "$h" ] && echo "  健康检查：$h（最近 2 分钟有没有数据发出或进缓存）"
     conv_check_devices
   fi
-  echo "可选串口（--conv-serial <设备>）："
+  echo "可选串口（sudo bash install-conv.sh --serial <设备>）："
   serial_list
+  echo "  详细（各路传感器、最近采集）：sudo bash install-conv.sh --status"
 }
 
 # 0.17 上送子站被拒（eg-agent 写 config/uplink-state.json：CONNACK 码与原因；连上后清空）
@@ -429,79 +428,34 @@ if [ "$MODE" = 'fw-on' ]; then
   env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
 fi
 # 部署文件（升级时整个发布件覆盖过来的那些）
-DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt'
+DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt install-conv.sh conv-kit'
 
-# ---------- 转换程序（I11）：镜像在、串口在才启用 conv 服务 ----------
+# ---------- 转换程序（0.6.2）：发布件带镜像、缺省不启用；install-conv.sh 启用过的接着跑（换成本发布件的镜像） ----------
 conv_setup() {
-  local img='' ser
-  # grep 没匹配时返回 1：set -e + pipefail 下赋值语句会让整个 install.sh 悄悄退出（0.4.0 在 0.13 验收里踩到：.env 里还没有 EG_CONV_SERIAL）—— 都加 || true
+  local img='' ser off=''
+  # grep 没匹配时返回 1：set -e + pipefail 下赋值语句会让整个 install.sh 悄悄退出（0.4.0 在 0.13 验收里踩到）—— 都加 || true
   [ -f CONV_IMAGE.txt ] && img="$(grep -v '^#' CONV_IMAGE.txt | head -1 | tr -d '[:space:]' || true)"
-  [ -n "$CONV_SERIAL" ] && env_set EG_CONV_SERIAL "$CONV_SERIAL"
+  [ -n "$img" ] || img="$(grep -E '^EG_CONV_IMAGE=' .env 2>/dev/null | cut -d= -f2- || true)"
   ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
-  # USB 转 485（ttyUSB / ttyACM）换成 /dev/serial/by-id 的稳定名字记住：ttyUSB 号在重启、多插 USB 设备后可能变（EG 0.5.1）；
-  # Docker 每次起容器时把它解析成当时的实际设备
-  case "$ser" in
-    /dev/ttyUSB* | /dev/ttyACM*)
-      local byid
-      byid="$(serial_byid "$ser")"
-      if [ "$byid" != "$ser" ]; then
-        echo "串口 $ser 改记成稳定路径 $byid（ttyUSB 号在重启、多插 USB 设备后可能变）"
-        ser="$byid"
-        env_set EG_CONV_SERIAL "$ser"
-      elif [ -e "$ser" ]; then
-        echo "!! 提醒：$ser 在 /dev/serial/by-id 下没有对应的名字 —— 芯片没有序列号，重启后设备号可能变，建议换带序列号的模块（部署手册 §2a）" >&2
-      fi ;;
-  esac
-  local off=''
-  if [ -z "$img" ]; then off='发布件里没有转换程序镜像（按同事自己的方式部署，连 127.0.0.1:1884 就行）'
-  elif grep -q '^EG_CONV=off' .env 2>/dev/null; then off='已关（--conv-off；打开：sudo bash install.sh --conv-on）'
-  elif ! docker image inspect "$img" >/dev/null 2>&1; then off="!! 发布件说有镜像 $img，但本机没有（导入失败？）"
-  elif [ ! -e "$ser" ]; then off="!! 串口 $ser 不存在：样机没有 485 时用 USB 转 485 —— sudo bash install.sh --conv-serial /dev/ttyUSB0（可选的见下）"
+  if ! conv_wanted; then off="没启用$([ -n "$img" ] && echo "（发布件带了 $img；现场要用时 sudo bash install-conv.sh）")"
+  elif [ -z "$img" ]; then off='!! 启用过，但发布件和本机都没有转换程序镜像'
+  elif ! docker image inspect "$img" >/dev/null 2>&1; then off="!! 启用过，但本机没有镜像 $img（导入失败？）"
+  elif [ ! -e "$ser" ]; then off="!! 启用过，但串口 $ser 不存在（USB 转 485 拔了？）—— 插好后 sudo bash install-conv.sh"
   fi
   if [ -n "$off" ]; then
     env_set COMPOSE_PROFILES ''
     docker rm -f lsa-eg-conv >/dev/null 2>&1 || true
     echo "转换程序：不起 —— $off"
-    case "$off" in *串口*) echo '可选串口：'; serial_list ;; esac
     return 0
   fi
+  env_set EG_CONV on
   env_set EG_CONV_IMAGE "$img"
-  env_set EG_CONV_SERIAL "$ser"
   env_set EG_DIALOUT_GID "$(getent group dialout | cut -d: -f3)"
   env_set COMPOSE_PROFILES conv
   mkdir -p config/conv config/conv-data
-  conv_config "$img"
-  echo "转换程序：$img，串口 $ser（容器里 /dev/ttyS1），连本机总线 127.0.0.1:1884"
+  echo "转换程序：$img，串口 $ser（install-conv.sh 启用的，接着跑；看状态 sudo bash install-conv.sh --status）"
   conv_check_devices
 }
-
-# 转换程序的配置（EG 0.6.2）：同事的程序读 EDGE_GATEWAY_CONFIG（compose 给 /config = 本机 config/conv/）。
-# config/conv/ 还没有 gateway.yaml 时，从镜像里的同事配置模板（/app/config.default）生成：
-#   模板里设备名的柜号换成本柜的（SAM-AH03-B → SAM-<柜号>-B），串口写 /dev/ttyS1（容器里的；宿主机设备由 --conv-serial 映射），
-#   总线地址与串口另由 compose 的 LSA_MQTT_URL / LSA_SERIAL 覆盖（补丁 0005-E），配置里写的是什么都不要紧。
-# 之后按这面柜实际接的传感器改 config/conv/sensors/*.yaml 的 enabled 与 device（重跑 install.sh 不会覆盖）。
-conv_config() {
-  local img="$1" code
-  [ -f config/conv/gateway.yaml ] && return 0
-  if ! docker run --rm --network none --entrypoint tar "$img" -C /app/config.default -cf - . | tar -x -C config/conv; then
-    echo "!! 从镜像 $img 取配置模板失败：config/conv/ 是空的，转换程序会用镜像里的缺省配置" >&2
-    return 0
-  fi
-  code="$(awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true)"
-  if [ -n "$code" ]; then
-    sed -i -E "s/((device|name): *\"?)(SAM|PM6|PM|CAM)-[A-Z]{2}[0-9]{2}/\1\3-$code/" config/conv/gateway.yaml config/conv/sensors/*.yaml
-  fi
-  sed -i '/^serial:/,/^[a-z]/s#^\(  port: *\)"[^"]*"#\1"/dev/ttyS1"#' config/conv/gateway.yaml
-  echo "转换程序配置：从镜像模板生成 config/conv/（设备名柜号换成 ${code:-?}，串口 /dev/ttyS1）—— 按这面柜实际接的传感器改 config/conv/sensors/*.yaml 的 enabled 与 device"
-}
-if [ "$MODE" = 'conv-off' ]; then
-  env_set EG_CONV off; conv_setup; exit 0
-fi
-if [ "$MODE" = 'conv-on' ]; then
-  env_set EG_CONV on; conv_setup
-  grep -q '^COMPOSE_PROFILES=conv' .env && $DC up -d conv
-  exit 0
-fi
 
 # ---------- 回退 ----------
 if [ "$MODE" = 'rollback' ]; then

@@ -14,6 +14,8 @@ base="$(git -C "$CTX/repo" rev-parse --short HEAD)"
 git -C "$CTX/repo" -c user.name=lsa-build -c user.email=lsa-build@localhost am -q "$PATCHES"/*.patch
 n="$(git -C "$CTX/repo" rev-list --count "$base"..HEAD)"
 cp -r "$CTX/repo/src" "$CTX/repo/config" "$CTX/"
+# 同事的串口诊断脚本（现场先停 conv、直接问从站用：install-conv.sh --diag）
+mkdir -p "$CTX/tools" && cp "$CTX/repo/rs485_test.py" "$CTX/repo/pymodbus_diag.py" "$CTX/tools/"
 find "$CTX/src" -name '__pycache__' -prune -exec rm -rf {} +
 sed -i '/^serial:/,/^[a-z]/s#^\(  port: *\)"[^"]*"#\1"/dev/ttyS1"#' "$CTX/config/gateway.yaml"
 grep -q '"/dev/ttyS1"' "$CTX/config/gateway.yaml" || { echo 'serial.port 没改成 /dev/ttyS1' >&2; exit 1; }
@@ -22,10 +24,10 @@ cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$CTX/"
 mkdir -p "$CTX/wheels" && cp "$SRC"/wheels/*.whl "$CTX/wheels/"
 CW="$(cd "$CTX" && (pwd -W 2>/dev/null || pwd))"
 docker run --rm --pull never --network none -v "$CW:/ct" python:3.12-slim sh -c '
-  pip install -q --root-user-action=ignore --no-index --find-links /ct/wheels --target /ct/deps aiomqtt aiosqlite pyserial
+  pip install -q --root-user-action=ignore --no-index --find-links /ct/wheels --target /ct/deps aiomqtt aiosqlite pyserial pymodbus
   python3 -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob(\"/ct/wheels/pyyaml-*.whl\")[0]); [z.extract(f,\"/ct/deps\") for f in z.namelist() if f.startswith(\"yaml/\") and f.endswith(\".py\")]"'
 rm -rf "$CTX/repo" "$CTX/wheels"
 docker build --pull=false --network none -q -t "$TAG" "$CW"
-docker run --rm --network none --entrypoint python3 "$TAG" -c "import aiomqtt, aiosqlite, serial, yaml; print('依赖就绪')"
+docker run --rm --network none --entrypoint python3 "$TAG" -c "import aiomqtt, aiosqlite, serial, yaml, pymodbus; print('依赖就绪')"
 echo "镜像 $TAG：$(docker image inspect -f '{{.Id}}' "$TAG")；$(cat "$CTX/VERSION")"
 rm -rf "$CTX"
