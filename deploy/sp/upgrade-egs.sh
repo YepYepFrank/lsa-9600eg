@@ -1,5 +1,5 @@
 #!/bin/bash
-# LSA-9600SP 子站主机上一条命令批量升级 EG（0.17.3）。在子站主机上用 root 跑：
+# LSA-9600SP 子站主机上一条命令批量升级 EG（0.17.2）。在子站主机上用 root 跑：
 #
 #   sudo bash upgrade-egs.sh --keygen                       生成子站的升级 key（只一次），打印每台 EG 上要执行的授权命令
 #   sudo bash upgrade-egs.sh --run <新 .run> --plan [--all | --only AH03,AH05]
