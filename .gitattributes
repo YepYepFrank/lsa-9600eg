@@ -10,3 +10,6 @@
 Dockerfile text eol=lf
 *.ps1 text eol=crlf
 *.patch text eol=lf
+# 没有扩展名、但要在 EG 上执行的脚本（0.17.3 批量升级入口）
+deploy/eg/lsa-eg-upgrade text eol=lf
+deploy/eg/lsa-eg-upgrade-job text eol=lf

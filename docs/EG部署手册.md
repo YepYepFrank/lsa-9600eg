@@ -318,7 +318,23 @@ sudo bash /opt/lsa-eg/test/test.sh down
 
 **逐台升级**（现在的做法）：每台 EG 跑新的一键安装文件 `--role eg`（或把新发布件拷进 `/opt/lsa-eg` 再 `install.sh`，§6）。每台约 30 s、agent 中断 1–2 s，不丢数据。建议顺序：先 1 台跑一天 → 再按母线段分批；每台装完看 `install.sh --status` 与子站网关页（在线、积压 0、版本对）。出问题 `install.sh --rollback`（约 11 s）。
 
-**批量升级（建议，未做工具）**：30 面柜逐台登录太慢时，可在子站主机上用一个只做「拷文件 + 跑 install.sh」的脚本，经维护账号的 SSH（不是 lsa-sp，lsa-sp 只能开隧道）逐台执行、串行、遇错即停；要先定维护账号的密钥怎么管（每台独立还是共用）。等实机和规模定了再决定做不做（协调会话 2026-10-08）。
+**批量升级（0.17.3 起）**：在子站主机上一条命令把多台 EG 升到新的一键安装文件（子站侧用法见子站部署手册「批量升级 EG」，脚本 `/opt/lsa9600sp/upgrade-egs.sh`）。EG 这边要做的只有授权：
+- **授权**（每台一次，用维护账号）：子站上 `sudo bash /opt/lsa9600sp/upgrade-egs.sh --keygen` 会打印公钥和要在每台 EG 上执行的命令：`sudo bash /opt/lsa-eg/install.sh --upgrade-key '<公钥>'`。
+  - 会建一个专用账号 `lsa-upg`：锁口令；key 只认来自子站的连接（`from=`，地址缺省取 `eg.yaml` 的 `station.mqtt`，要改加 `--upgrade-from <地址>`）。
+  - 不管子站发什么，都只进升级入口 `/usr/local/sbin/lsa-eg-upgrade`（`authorized_keys` 的 `command=`）。sudoers 只放行这一个入口。
+- **入口只认 6 个动作**，其余一律拒绝，并记进 `/var/log/lsa-upg.log`：
+  - `hello`：版本、可用空间；
+  - `put`：从 SSH 收安装文件，收之前查空间，收完核对字节数和 sha256；
+  - `start`：开始升级。只认 LSA 的一键安装文件、里面要有 EG 发布件，版本不低于现装版本，同时只跑一个；
+  - `status` / `log`：查进度和日志；
+  - `drop`：删掉拷过来的文件。
+  - 沙箱里试过都被拒的：执行任意命令、命令串接 / 替换、空登录、sudo 别的程序、scp / sftp、端口转发、换一台机器用同一把 key、sha256 不对、不是安装文件。
+- **升级在 EG 上自己做完**：`start` 用 systemd-run（没有就 setsid nohup）起后台任务，子站断开、网络断了照样做完。状态在 `/var/lib/lsa-upg/state`，日志在 `/var/lib/lsa-upg/jobs/`。
+  - 安装文件失败：自动 `install.sh --rollback`；本地 TB 版本变了时加 `--restore-tb`。
+  - 装完但自查不过（版本、7 个容器 60 s 不重启、本地 TB 镜像、连上子站）：**不自动回退**（可能是子站或网络的问题），由子站停下来、给出回退命令。
+- **撤销**：`sudo bash install.sh --drop-upgrade-key`（账号、key、sudoers 条目、入口一并删掉）。`--status` 和「安全提醒」里能看到授权在不在、最近一次任务。
+- **注意**：持子站这把 key 的人能让 EG 装他给的任意安装文件，等于 root —— 入口只防得住「拿 key 乱执行命令」，防不住「恶意安装包」。key 只放在子站主机 root 下，不用时撤销。下一步计划给发布件加签名、EG 校验。
+- 0.17.3 之前的 EG 没有 `--upgrade-key`：先手工升到 0.17.3（§6），以后才能批量升。
 
 ## 6d. 安全
 
@@ -326,6 +342,7 @@ sudo bash /opt/lsa-eg/test/test.sh down
 |---|---|
 | 本地维护账号 maint | 初始口令随机，在 `config/initial-password.txt`；登录后到「系统」改口令，再删这个文件。文件还在时管理页每页顶上有提醒条，install.sh 的「安全提醒」也会列 |
 | 隧道账号 lsa-sp | 只在部署 / 改设备清单时需要；用完 `install.sh --drop-sp-key` |
+| 批量升级账号 lsa-upg（0.17.3） | `install.sh --upgrade-key` 授权，只认子站、只能进升级入口（§6c）；持子站那把 key 等于能装任意安装文件，不用时 `--drop-upgrade-key` |
 | SSH | 维护账号改用密钥登录后，建议关掉口令登录（`/etc/ssh/sshd_config.d/` 下写 `PasswordAuthentication no`，`systemctl reload ssh`）。install.sh 只提醒、不替你改（免得把自己锁在外面）；防火墙可只放子站主机与维护笔记本访问 22 |
 | LAN1 防火墙 | `--lan1` 时自动加（见 §1）：摄像机网上 22 / 80 / 8554 都连不上。实测（无 AVX 样机）：从摄像机网全部超时；EG 主动连摄像机网、经 LAN1 拉 RTSP（TCP）照常；重启后 28 s 内规则在；回退到老版本清掉、再升回来又加上 |
 | 对外端口 | 只有 22、80（管理页）、8554（RTSP，mediamtx 只许子站主机与本机读）、8189/UDP（WebRTC）听所有网口；本地 TB 18080、本机总线 1884、mediamtx API / 回放、eg-video 都只绑 127.0.0.1（虚拟样机 `ss -tulnp` 核对过）。LAN1 进来的管理页请求一律 403（`--lan1`） |

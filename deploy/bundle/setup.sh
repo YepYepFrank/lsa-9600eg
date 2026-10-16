@@ -286,6 +286,8 @@ install_sp() {
   tar -C sp/lsa9600sp-backend --exclude=./docker/.env --exclude=./docker/tls --exclude=./docker/tls-ca -cf - . | tar -C "$SP_B" -xf -
   find "$SP_B/scripts" -name '*.sh' -exec chmod +x {} +
   cp -a docs "$SP_DEST/" 2>/dev/null || true
+  # 0.17.3 子站一条命令批量升级 EG（EG 库 deploy/sp/upgrade-egs.sh）
+  [ -f upgrade-egs.sh ] && install -m 755 upgrade-egs.sh "$SP_DEST/upgrade-egs.sh"
 
   ver="$(envget "$SP_B/docker/.env.prod.example" APP_VERSION)"
   if [ -f "$SP_ENV" ]; then

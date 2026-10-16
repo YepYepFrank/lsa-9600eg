@@ -1,0 +1,129 @@
+#!/bin/bash
+# LSA-9600EG 升级入口（0.17.3）：子站主机的 upgrade-egs.sh 经 SSH 用专用账号 lsa-upg 调这里，只能做下面几件事 ——
+# 子站拿到的不是能在 EG 上执行任意命令的账号，而是「交一个指定的安装文件给 EG 自己升级、查进度」的钥匙。
+#
+# install.sh --upgrade-key <子站公钥> 装它（root 所有、755，在 /usr/local/sbin/），并写：
+#   authorized_keys：restrict,from="<子站地址>",command="sudo -n /usr/local/sbin/lsa-eg-upgrade \"$SSH_ORIGINAL_COMMAND\"" <公钥>
+#   sudoers：lsa-upg ALL=(root) NOPASSWD: /usr/local/sbin/lsa-eg-upgrade
+# 不管子站发什么，sshd 都只运行上面的 command=；子站发的命令行整句作为第 1 个参数传进来，这里自己解析，只认：
+#   hello                       入口版本、EG 版本、可用空间、当前任务（预检用）
+#   put <sha256> <字节数>        从 stdin 收安装文件到 /var/lib/lsa-upg/incoming/<sha256>.run：先查空间，收完核对字节数与 sha256，不对就删
+#   start <sha256>              核对后开始升级（后台任务，SSH 断了照跑）：文件在、sha256 对、是 LSA 的一键安装文件（带 EG 发布件）、版本不比现在的低；
+#                               同时只跑一个
+#   status                      当前 / 最近一次任务的状态（key=value）
+#   log [行数]                  任务日志最后几行（缺省 50，最多 500）
+#   drop <sha256>               删掉收到的安装文件
+# 其它一律拒绝，记进 /var/log/lsa-upg.log。
+set -euo pipefail
+umask 077
+ENTRY_VERSION=1
+EG=/opt/lsa-eg
+ST=/var/lib/lsa-upg
+IN="$ST/incoming"
+JOBS="$ST/jobs"
+LOG=/var/log/lsa-upg.log
+MAX_BYTES=$((8 * 1024 * 1024 * 1024))
+
+say() { echo "$*"; }
+audit() { echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null || true; }
+deny() { audit "拒绝：${CMD:-（空）} —— $1"; echo "ERR $1"; exit 2; }
+
+[ "$(id -u)" = 0 ] || { echo 'ERR 要经 sudo 调'; exit 1; }
+[ $# -le 1 ] || deny '参数只能是一整句命令'
+CMD="${1:-}"
+[ ${#CMD} -le 200 ] || deny '命令太长'
+[[ "$CMD" =~ ^[a-z]+(\ [0-9a-f]{64})?(\ [0-9]{1,12})?$ ]] || deny '命令格式不对'
+read -r VERB A1 A2 <<< "$CMD" || true
+mkdir -p "$IN" "$JOBS"
+chmod 700 "$ST"
+
+free_bytes() { df -PB1 "$1" | awk 'NR==2 { print $4 }'; }
+state_get() { [ -f "$ST/state" ] && sed -n "s/^$1=//p" "$ST/state" | tail -1; }
+running() {  # 任务在跑（锁被占着）
+  [ -f "$ST/lock" ] || return 1
+  ! flock -n "$ST/lock" true
+}
+is_sha() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
+# 一键安装文件里 EG 发布件的版本（不执行它：只读负载里的 tar）
+run_eg_version() {
+  local f="$1" skip
+  head -c 200 "$f" | head -1 | grep -q '^#!/usr/bin/env bash' || return 1
+  skip="$(grep -a -n -m1 '^__LSA_PAYLOAD_BELOW__$' "$f" | cut -d: -f1)" || return 1
+  [ -n "$skip" ] || return 1
+  tail -n +"$((skip + 1))" "$f" | tar -xO --occurrence=1 lsa9600sp-bundle/eg/VERSION 2>/dev/null | head -1 | tr -d '[:space:]'
+}
+
+case "$VERB" in
+  hello)
+    [ -z "${A1:-}" ] || deny 'hello 不带参数'
+    say "entry=$ENTRY_VERSION"
+    say "eg_version=$(cat "$EG/VERSION" 2>/dev/null || echo '?')"
+    say "free_mb=$(( $(free_bytes "$ST") / 1024 / 1024 ))"
+    say "phase=$(state_get phase || true)"
+    say "running=$(running && echo 1 || echo 0)"
+    ;;
+  put)
+    is_sha "${A1:-}" && [ -n "${A2:-}" ] || deny 'put <sha256> <字节数>'
+    [ "$A2" -gt 0 ] && [ "$A2" -le "$MAX_BYTES" ] || deny '字节数不对'
+    running && deny '有升级任务正在跑'
+    # 空间：收下的文件 + 解包（同 .run 自己的估算：文件大小 + 512 MB）+ 留 1 GB
+    need=$(( A2 * 2 + 1536 * 1024 * 1024 ))
+    free="$(free_bytes "$ST")"
+    [ "$free" -ge "$need" ] || deny "空间不够：$ST 剩 $((free / 1024 / 1024)) MB，要约 $((need / 1024 / 1024)) MB"
+    find "$IN" -maxdepth 1 -type f -delete   # 只留这一份
+    part="$IN/.part"
+    head -c "$A2" > "$part"
+    got="$(stat -c %s "$part")"
+    [ "$got" = "$A2" ] || { rm -f "$part"; deny "只收到 $got 字节（应为 $A2）"; }
+    sum="$(sha256sum "$part" | cut -d' ' -f1)"
+    [ "$sum" = "$A1" ] || { rm -f "$part"; deny "sha256 对不上：收到的是 $sum"; }
+    mv "$part" "$IN/$A1.run"
+    audit "收到安装文件 $A1（$A2 字节）"
+    say "OK put $A1"
+    ;;
+  start)
+    is_sha "${A1:-}" && [ -z "${A2:-}" ] || deny 'start <sha256>'
+    f="$IN/$A1.run"
+    [ -f "$f" ] || deny "没有收到 $A1 这个安装文件（先 put）"
+    running && deny '有升级任务正在跑'
+    [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$A1" ] || { rm -f "$f"; deny 'sha256 对不上（文件被改过？已删）'; }
+    to="$(run_eg_version "$f" || true)"
+    [ -n "$to" ] || deny '不是 LSA-9600 的一键安装文件，或者里面没有 EG 发布件'
+    from="$(cat "$EG/VERSION" 2>/dev/null || echo 0)"
+    # 只升不降（同版本可以重装）；回退走 install.sh --rollback，不经这里
+    [ "$(printf '%s\n%s\n' "${from%%-*}" "${to%%-*}" | sort -V | head -1)" = "${from%%-*}" ] || deny "安装文件里的 EG 是 $to，比现在的 $from 旧：不降级（回退用 install.sh --rollback）"
+    job="$(date +%Y%m%d-%H%M%S)"
+    printf 'job=%s\nsha=%s\nfrom=%s\nto=%s\nphase=queued\nstarted=%s\nreason=\n' "$job" "$A1" "$from" "$to" "$(date +%s)" > "$ST/state.tmp"
+    mv "$ST/state.tmp" "$ST/state"
+    : > "$JOBS/$job.log"
+    # 脱离 SSH 会话：有 systemd 用 systemd-run（独立的 unit，SSH 断了不受影响），没有就 setsid nohup
+    if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null; then
+      systemd-run --unit "lsa-eg-upgrade-$job" --collect --quiet /usr/local/sbin/lsa-eg-upgrade-job "$job"
+    else
+      setsid nohup /usr/local/sbin/lsa-eg-upgrade-job "$job" > /dev/null 2>&1 < /dev/null &
+    fi
+    audit "开始升级任务 $job：$from → $to（$A1）"
+    say "OK start $job $from $to"
+    ;;
+  status)
+    [ -z "${A1:-}" ] || deny 'status 不带参数'
+    if [ -f "$ST/state" ]; then cat "$ST/state"; else say 'phase=idle'; fi
+    say "running=$(running && echo 1 || echo 0)"
+    ;;
+  log)
+    [ -z "${A2:-}" ] && ! is_sha "${A1:-}" || deny 'log [行数]'
+    n="${A1:-50}"
+    [[ "$n" =~ ^[0-9]+$ ]] || deny 'log [行数]'
+    [ "$n" -le 500 ] || n=500
+    job="$(state_get job || true)"
+    [ -n "$job" ] && [ -f "$JOBS/$job.log" ] && tail -n "$n" "$JOBS/$job.log" || say '（没有任务日志）'
+    ;;
+  drop)
+    is_sha "${A1:-}" && [ -z "${A2:-}" ] || deny 'drop <sha256>'
+    running && [ "$(state_get sha)" = "$A1" ] && deny '这个文件的升级任务正在跑'
+    rm -f "$IN/$A1.run"
+    audit "删掉安装文件 $A1"
+    say "OK drop $A1"
+    ;;
+  *) deny "不认识的命令「$VERB」（只认 hello / put / start / status / log / drop）" ;;
+esac

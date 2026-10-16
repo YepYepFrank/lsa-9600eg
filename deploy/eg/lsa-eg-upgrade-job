@@ -1,0 +1,100 @@
+#!/bin/bash
+# LSA-9600EG 升级任务（0.17.3）：由 lsa-eg-upgrade start 在后台起（systemd-run 或 setsid nohup），脱离 SSH 会话 ——
+# 子站断开、网络断了，这里照样做完；安装失败就自己回退，不会停在半路。不经 sudoers，子站调不到它。
+#   阶段（/var/lib/lsa-upg/state 的 phase）：
+#     verify → install → check → done
+#     install 失败（安装文件非 0 退出 / 超时）→ rollback → rolled-back（回退也失败：rollback-failed）
+#     check 不过（装完了，但版本 / 容器 / 本地 TB / 上送有一项不对）→ check-failed：不自动回退（可能是子站或网络的问题），子站停下、给回退命令
+#   核对：EG VERSION = 安装文件里的版本；7 个容器 running、60 s 内没有重启；本地 TB 镜像 = 发布件 IMAGES.txt 里的；装完后 agent 连上子站。
+set -uo pipefail
+umask 077
+JOB="${1:?任务号}"
+EG=/opt/lsa-eg
+ST=/var/lib/lsa-upg
+LOGF="$ST/jobs/$JOB.log"
+CONTAINERS='lsa-eg-postgres lsa-eg-tb lsa-eg-mosquitto lsa-eg-gateway lsa-eg-agent lsa-eg-video lsa-eg-mediamtx'
+INSTALL_TIMEOUT=2400
+CHECK_TIMEOUT=240
+
+exec 9> "$ST/lock"
+flock -n 9 || { echo "$(date '+%F %T') 另一个任务在跑，$JOB 不做" >> "$LOGF"; exit 1; }
+exec >> "$LOGF" 2>&1
+
+sget() { sed -n "s/^$1=//p" "$ST/state" | tail -1; }
+sset() {  # 改 state 里的一项（原子写）
+  local k="$1" v="$2"
+  { grep -v "^$k=" "$ST/state"; echo "$k=$v"; } > "$ST/state.tmp" && mv "$ST/state.tmp" "$ST/state"
+}
+phase() { sset phase "$1"; sset at "$(date +%s)"; echo; echo "== $(date '+%F %T') $1${2:+：$2}"; }
+fail() { sset reason "$2"; phase "$1" "$2"; exit 1; }
+envget() { grep -E "^$1=" "$EG/.env" 2>/dev/null | tail -1 | cut -d= -f2-; }
+
+SHA="$(sget sha)"; TO="$(sget to)"; FROM="$(sget from)"
+F="$ST/incoming/$SHA.run"
+echo "== $(date '+%F %T') 升级任务 $JOB：$FROM → $TO（$SHA）"
+
+phase verify
+[ -f "$F" ] || fail failed '安装文件不见了'
+[ "$(sha256sum "$F" | cut -d' ' -f1)" = "$SHA" ] || fail failed 'sha256 对不上'
+
+phase install
+tb_before="$(envget TB_VERSION)"
+t0=$(date +%s)
+mkdir -p "$ST/tmp"
+LSA_TMP="$ST/tmp" timeout "$INSTALL_TIMEOUT" bash "$F" --role eg --yes < /dev/null
+rc=$?
+sset install_rc "$rc"
+sset install_s "$(( $(date +%s) - t0 ))"
+rm -f "$F"
+if [ "$rc" != 0 ]; then
+  # 安装输出里最后一条像报错的（太短的是折行剩下的半截，不要）
+  last="$(tail -n 40 "$LOGF" | grep -E '不对|错误|失败|✗|!!|没有' | awk 'length($0) > 12' | tail -1 | tr -d '\r' | cut -c1-200 || true)"
+  sset reason "安装文件退出码 $rc$([ "$rc" = 124 ] && echo "（超过 $INSTALL_TIMEOUT s）")${last:+：$last}"
+  tb_after="$(envget TB_VERSION)"
+  args=(--rollback)
+  [ -n "$tb_after" ] && [ "$tb_after" != "$tb_before" ] && args+=(--restore-tb)
+  sset rollback "install.sh ${args[*]}"
+  phase rollback "install.sh ${args[*]}（本地 TB ${tb_before:-?} → ${tb_after:-?}）"
+  if [ -f "$EG/.previous/VERSION" ] && bash "$EG/install.sh" "${args[@]}" < /dev/null; then
+    phase rolled-back "已回退到 $(cat "$EG/VERSION" 2>/dev/null)"
+    exit 1
+  fi
+  fail rollback-failed "自动回退没成功（看上面的日志）：sudo bash $EG/install.sh ${args[*]}"
+fi
+
+phase check
+t1=$(date +%s)
+expect_tb="$(awk '$1 ~ /^thingsboard\/tb-node:/ { print $1; exit }' "$EG/IMAGES.txt" 2>/dev/null)"
+problems=''
+while :; do
+  problems=''
+  ver="$(cat "$EG/VERSION" 2>/dev/null)"
+  [ "$ver" = "$TO" ] || problems+="EG 版本是 ${ver:-?}，不是 $TO；"
+  for c in $CONTAINERS; do
+    [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = running ] || problems+="$c 没在跑；"
+  done
+  tb_img="$(docker inspect -f '{{.Config.Image}}' lsa-eg-tb 2>/dev/null)"
+  [ -z "$expect_tb" ] || [ "$tb_img" = "$expect_tb" ] || problems+="本地 TB 是 ${tb_img:-?}，不是 $expect_tb；"
+  [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' lsa-eg-tb 2>/dev/null)" = healthy ] || problems+='本地 TB 还没 healthy；'
+  since="$(docker inspect -f '{{.State.StartedAt}}' lsa-eg-agent 2>/dev/null)"
+  docker logs --since "$since" lsa-eg-agent 2>&1 | grep -q '已连子站' || problems+='agent 还没连上子站；'
+  [ -z "$problems" ] && break
+  [ $(( $(date +%s) - t1 )) -ge "$CHECK_TIMEOUT" ] && break
+  sleep 10
+done
+if [ -z "$problems" ]; then
+  # 60 s 内没有容器重启
+  declare -A rc0=()
+  for c in $CONTAINERS; do rc0[$c]="$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null)"; done
+  sleep 60
+  for c in $CONTAINERS; do
+    [ "$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null)" = "${rc0[$c]}" ] || problems+="$c 60 s 内重启过；"
+  done
+fi
+sset tb_image "${tb_img:-?}"
+sset check_s "$(( $(date +%s) - t1 ))"
+[ -z "$problems" ] || fail check-failed "${problems%；}（装完了，没有自动回退；要回退：sudo bash $EG/install.sh --rollback$([ "$(envget TB_VERSION)" != "$tb_before" ] && echo ' --restore-tb')）"
+sset reason ''
+phase done "$FROM → $TO，本地 TB $tb_img"
+find "$ST/tmp" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+exit 0
