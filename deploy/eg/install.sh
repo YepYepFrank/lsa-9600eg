@@ -13,6 +13,11 @@
 #   lsa-sp 没有口令、没有 shell，authorized_keys 带 restrict,port-forwarding,permitopen="127.0.0.1:18080"：
 #   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完用 --drop-sp-key 删掉（以后要再建实体重新 --sp-key）。
 # --drop-sp-key：删掉隧道账号 lsa-sp（连同它的 authorized_keys），别的不动。
+# --upgrade-key <子站公钥文件或公钥串> [--upgrade-from <子站地址>]（0.17.3）：给子站 upgrade-egs.sh 批量升级授权。
+#   建专用账号 lsa-upg（锁口令），authorized_keys 带 restrict,from="<子站地址>",command="sudo -n /usr/local/sbin/lsa-eg-upgrade …"：
+#   不管子站发什么都只进升级入口（只能交安装文件、开始升级、查进度，见 lsa-eg-upgrade 开头）；sudoers 只放行这个入口。
+#   子站地址缺省取 eg.yaml 的 station.mqtt。注意：持这把 key 的人能让 EG 装他给的任意安装文件（等于 root），不用时撤销。
+# --drop-upgrade-key：删掉 lsa-upg、它的 key 与 sudoers 条目、升级入口（升级日志 /var/log/lsa-upg.log 留着）。
 # 给过 --lan1 时同时加 LAN1 防火墙（nftables 表 inet lsa_eg：摄像机网只出不进，22 / 80 / 8554 都连不上，开机自起）；
 #   --fw-off 关掉并记住，--fw-on 重新打开；--status 显示它；回退到不管它的老版本时自动清掉。
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
@@ -34,6 +39,8 @@ cd "$(dirname "$0")"
 DC='docker compose'
 LAN1=''
 SPKEY=''
+UPGKEY=''
+UPGFROM=''
 MODE='install'
 FORCE=0
 RESTORE_TB=0
@@ -46,6 +53,9 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1 ;;
     --sp-key) SPKEY="${2:?--sp-key 后面给子站公钥（文件或公钥串）}"; shift ;;
     --drop-sp-key) MODE='drop-sp' ;;
+    --upgrade-key) UPGKEY="${2:?--upgrade-key 后面给子站的升级公钥（文件或公钥串）}"; MODE='upg-key'; shift ;;
+    --upgrade-from) UPGFROM="${2:?--upgrade-from 后面给子站地址（多个用逗号分开）}"; shift ;;
+    --drop-upgrade-key) MODE='drop-upg' ;;
     --fw-off) MODE='fw-off' ;;
     --fw-on) MODE='fw-on' ;;
     --watchdog-off) MODE='wd-off' ;;
@@ -328,13 +338,37 @@ status() {
   wd_status
   conv_status
   uplink_status
+  upg_status
   true
 }
+# ---------- 子站批量升级（0.17.3）：专用账号 lsa-upg + 固定入口 ----------
+UPG_AK=/var/lib/lsa-upg-ssh/.ssh/authorized_keys
+upg_from_now() { sed -n 's/.*from="\([^"]*\)".*/\1/p' "$UPG_AK" 2>/dev/null | head -1; }
+# 升级入口与任务脚本装到 /usr/local/sbin（先写新文件再改名：正在跑的升级任务读的是旧文件，不能原地覆盖）
+upg_install_entry() {
+  local f
+  for f in lsa-eg-upgrade lsa-eg-upgrade-job; do
+    [ -f "$f" ] || { echo "!! 发布件里没有 $f" >&2; return 1; }
+    install -m 755 -o root -g root "$f" "/usr/local/sbin/.$f.new"
+    mv -f "/usr/local/sbin/.$f.new" "/usr/local/sbin/$f"
+  done
+}
+upg_status() {
+  if id lsa-upg >/dev/null 2>&1; then
+    local ph
+    ph="$(sed -n 's/^phase=//p' /var/lib/lsa-upg/state 2>/dev/null | tail -1)"
+    echo "子站批量升级：已授权（lsa-upg，只认 $(upg_from_now)）；最近一次任务：${ph:-没有}$([ -n "$ph" ] && sed -n 's/^\(job\|from\|to\)=/ \1 /p' /var/lib/lsa-upg/state | tr -d '\n')"
+  else
+    echo '子站批量升级：没授权（要用时 sudo bash install.sh --upgrade-key <子站升级公钥>）'
+  fi
+}
+
 # 安全提醒（只提醒，不改系统配置：自动关 SSH 口令登录可能把维护人员锁在外面）
 security_notes() {
   local msg=()
   [ -f config/initial-password.txt ] && msg+=('本地维护账号 maint 的初始口令文件还在（config/initial-password.txt）：登录管理页改掉口令后删除它')
   id lsa-sp >/dev/null 2>&1 && msg+=('隧道账号 lsa-sp 还在：子站 provision-eg.sh 跑完后可删 —— sudo bash install.sh --drop-sp-key（以后要再建实体重新 --sp-key）')
+  id lsa-upg >/dev/null 2>&1 && msg+=("子站批量升级账号 lsa-upg 已授权（只认 $(upg_from_now)；只能交安装文件给 EG 自己升级，但持子站那把 key 的人能让 EG 装任意安装文件）：不用时 sudo bash install.sh --drop-upgrade-key")
   if command -v sshd >/dev/null 2>&1 && sshd -T 2>/dev/null | grep -x 'passwordauthentication yes' >/dev/null; then  # 不用 -q：提前退出会让 sshd 收 SIGPIPE，pipefail 下判成假
     msg+=('SSH 允许口令登录：维护账号改用密钥登录后建议关掉（/etc/ssh/sshd_config.d/ 下写 PasswordAuthentication no，再 systemctl reload ssh）')
   fi
@@ -394,6 +428,43 @@ tb_restore() {  # $1 = 备份文件
 }
 [ "$MODE" = 'status' ] && { status; security_notes; exit 0; }
 [ "$(id -u)" = 0 ] || { echo '要用 sudo 跑' >&2; exit 1; }
+if [ "$MODE" = 'upg-key' ]; then
+  key="$UPGKEY"; [ -f "$UPGKEY" ] && key="$(head -1 "$UPGKEY")"
+  echo "$key" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]+( [^"]*)?$' || { echo "--upgrade-key 不像 SSH 公钥：$key" >&2; exit 1; }
+  command -v sudo >/dev/null || { echo '没有 sudo：升级入口靠 sudoers 放行' >&2; exit 1; }
+  from="$UPGFROM"
+  [ -n "$from" ] || from="$(sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' config/eg.yaml 2>/dev/null | head -1)"
+  [ -n "$from" ] || { echo 'eg.yaml 里取不到子站地址：用 --upgrade-from <子站地址> 给' >&2; exit 1; }
+  [[ "$from" =~ ^[A-Za-z0-9.:,*/-]+$ ]] || { echo "--upgrade-from 不像地址：$from" >&2; exit 1; }
+  upg_install_entry || exit 1
+  # 账号：锁口令；shell 要是 /bin/sh（sshd 用它执行 command=，nologin 会把入口也挡掉）；home 与升级状态目录分开
+  id lsa-upg >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/lsa-upg-ssh --shell /bin/sh lsa-upg
+  passwd -l lsa-upg >/dev/null 2>&1 || true
+  install -d -m 700 -o lsa-upg -g lsa-upg /var/lib/lsa-upg-ssh/.ssh
+  body="$(echo "$key" | awk '{print $1" "$2}')"
+  touch "$UPG_AK"
+  grep -vF "$body" "$UPG_AK" > "$UPG_AK.tmp" || true
+  echo "restrict,from=\"$from\",command=\"sudo -n /usr/local/sbin/lsa-eg-upgrade \\\"\$SSH_ORIGINAL_COMMAND\\\"\" $key" >> "$UPG_AK.tmp"
+  mv "$UPG_AK.tmp" "$UPG_AK"; chown lsa-upg:lsa-upg "$UPG_AK"; chmod 600 "$UPG_AK"
+  sd=/etc/sudoers.d/lsa-upg
+  printf '%s\n' '# LSA-9600EG：子站批量升级账号只能跑升级入口（install.sh --upgrade-key 写的，--drop-upgrade-key 删）' \
+    'Defaults:lsa-upg !requiretty' 'lsa-upg ALL=(root) NOPASSWD: /usr/local/sbin/lsa-eg-upgrade' > "$sd.tmp"
+  visudo -cf "$sd.tmp" >/dev/null || { rm -f "$sd.tmp"; echo 'sudoers 条目没通过 visudo 检查，没装' >&2; exit 1; }
+  chmod 440 "$sd.tmp"; mv "$sd.tmp" "$sd"
+  echo "已给子站升级公钥授权：lsa-upg 只认来自 $from 的连接，只能进升级入口（lsa-eg-upgrade：hello / put / start / status / log / drop）"
+  echo '撤销：sudo bash install.sh --drop-upgrade-key'
+  exit 0
+fi
+if [ "$MODE" = 'drop-upg' ]; then
+  if id lsa-upg >/dev/null 2>&1; then
+    pkill -u lsa-upg 2>/dev/null || true
+    userdel -r lsa-upg 2>/dev/null || userdel lsa-upg
+  fi
+  rm -rf /var/lib/lsa-upg-ssh /var/lib/lsa-upg/incoming
+  rm -f /etc/sudoers.d/lsa-upg /usr/local/sbin/lsa-eg-upgrade /usr/local/sbin/lsa-eg-upgrade-job
+  echo '已撤销子站批量升级：账号 lsa-upg、它的 key、sudoers 条目、升级入口都删了（日志 /var/log/lsa-upg.log 留着）'
+  exit 0
+fi
 if [ "$MODE" = 'drop-sp' ]; then
   if id lsa-sp >/dev/null 2>&1; then
     pkill -u lsa-sp 2>/dev/null || true   # 子站隧道正开着的话断掉
@@ -428,7 +499,7 @@ if [ "$MODE" = 'fw-on' ]; then
   env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
 fi
 # 部署文件（升级时整个发布件覆盖过来的那些）
-DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt install-conv.sh conv-kit'
+DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt install-conv.sh conv-kit lsa-eg-upgrade lsa-eg-upgrade-job'
 
 # ---------- 转换程序（0.6.2）：发布件带镜像、缺省不启用；install-conv.sh 启用过的接着跑（换成本发布件的镜像） ----------
 conv_setup() {
@@ -632,6 +703,9 @@ if [ -n "$lan1_now" ] && ! grep -q '^EG_LAN1_FW=off' .env; then fw_apply "$lan1_
 grep -q '^EG_WATCHDOG=off' .env || wd_apply
 conv_setup
 mkdir -p config/gateway/config config/mediamtx recordings
+
+# 子站批量升级授权过的：入口换成本发布件的
+id lsa-upg >/dev/null 2>&1 && { upg_install_entry || true; }
 
 # ---------- 子站 provision-eg.sh 的隧道账号（--sp-key） ----------
 if [ -n "$SPKEY" ]; then

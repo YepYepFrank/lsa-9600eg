@@ -146,9 +146,12 @@ mkdirSync(join(B, 'eg/config'), { recursive: true })
 // 文档
 mkdirSync(join(B, 'docs'), { recursive: true })
 cpSync(resolve(ROOT, 'docs/EG部署手册.md'), join(B, 'docs/EG部署手册.md'))
+cpSync(resolve(ROOT, 'docs/子站批量升级EG.md'), join(B, 'docs/子站批量升级EG.md'))
 const spDoc = join(SP, 'lsa9600sp-backend/docs/子站部署手册.md')
 if (existsSync(spDoc)) cpSync(spDoc, join(B, 'docs/子站部署手册.md'))
 writeFileSync(join(B, 'setup.sh'), readFileSync(resolve(ROOT, 'deploy/bundle/setup.sh'), 'utf8').replace(/\r\n/g, '\n'))
+// 0.17.3：子站主机上批量升级 EG 的脚本（--role sp 时装到 /opt/lsa9600sp/upgrade-egs.sh）
+writeFileSync(join(B, 'upgrade-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/upgrade-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
 writeFileSync(join(B, 'VERSION'), VERSION + '\n')
 const egImages = readFileSync(join(EG, 'IMAGES.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => `    ${l.split(' ')[0]}  ${l.split(' ')[1]}`)
 const spEnv = readFileSync(join(SP, 'lsa9600sp-backend/docker/.env.prod.example'), 'utf8')

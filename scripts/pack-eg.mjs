@@ -76,14 +76,14 @@ console.log(`  → ${STAGE}（后端包取自 ${backendRev}）`)
 console.log('\n3. 发布件')
 rmSync(DIST, { recursive: true, force: true })
 mkdirSync(resolve(DIST, 'config'), { recursive: true })
-for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh']) cpSync(resolve(ROOT, 'deploy/eg', f), resolve(DIST, f))
+for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh', 'lsa-eg-upgrade', 'lsa-eg-upgrade-job']) cpSync(resolve(ROOT, 'deploy/eg', f), resolve(DIST, f))
 cpSync(resolve(ROOT, 'deploy/tb-gateway/extensions/lsa'), resolve(DIST, 'extensions/lsa'), { recursive: true, filter: s => !/__pycache__/.test(s) })
 // 0.6.2 转换程序接入：install-conv.sh（只这一套）+ conv-kit（lsa_check、sim.py：--check / --sim 用）+ 硬件联调步骤
 cpSync(resolve(ROOT, 'tools/conv-addon/install-conv.sh'), resolve(DIST, 'install-conv.sh'))
 cpSync(resolve(ROOT, 'tools/conv-addon/硬件联调步骤.md'), resolve(DIST, '转换程序硬件联调步骤.md'))
 cpSync(resolve(ROOT, 'tools/conv-kit'), resolve(DIST, 'conv-kit'), { recursive: true, filter: s => !/__pycache__|[\\/]images([\\/]|$)/.test(s) })
 // 装到 Linux 上：脚本与配置一律 LF（Windows 上打包时防 CRLF，子站 Linux 复测踩过）
-for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh', 'extensions/lsa/lsa_self_connector.py', 'install-conv.sh', 'conv-kit/lsa_check.py', 'conv-kit/sim.py', 'conv-kit/install.sh']) {
+for (const f of ['compose.yaml', 'mosquitto.conf', 'install.sh', 'diskcheck.sh', 'extensions/lsa/lsa_self_connector.py', 'install-conv.sh', 'lsa-eg-upgrade', 'lsa-eg-upgrade-job', 'conv-kit/lsa_check.py', 'conv-kit/sim.py', 'conv-kit/install.sh']) {
   const p = resolve(DIST, f)
   writeFileSync(p, readFileSync(p, 'utf8').replace(/\r\n/g, '\n'))
 }
