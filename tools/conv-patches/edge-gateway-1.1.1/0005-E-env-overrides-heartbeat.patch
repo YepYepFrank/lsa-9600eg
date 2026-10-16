@@ -1,0 +1,126 @@
+From a838f7957ccdf363108a1ecf9da304643100fff9 Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Thu, 15 Oct 2026 21:25:54 -0400
+Subject: [PATCH] =?UTF-8?q?EG=20=E7=BB=9F=E4=B8=80=E7=AE=A1=E7=90=86?=
+ =?UTF-8?q?=E6=80=BB=E7=BA=BF=E5=9C=B0=E5=9D=80=E4=B8=8E=E4=B8=B2=E5=8F=A3?=
+ =?UTF-8?q?=EF=BC=88LSA=5FMQTT=5FURL=20/=20LSA=5FSERIAL=20=E8=A6=86?=
+ =?UTF-8?q?=E7=9B=96=20gateway.yaml=EF=BC=89=EF=BC=8C=E5=8A=A0=E5=BF=83?=
+ =?UTF-8?q?=E8=B7=B3=E6=96=87=E4=BB=B6=E7=BB=99=E5=81=A5=E5=BA=B7=E6=A3=80?=
+ =?UTF-8?q?=E6=9F=A5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+EG 的 compose 给转换程序 LSA_MQTT_URL、LSA_SERIAL：有就覆盖 gateway.yaml 的 mqtt.host / port（及账号）、serial.port，现场改串口、总线地址不用进容器改配置。每次有数据发出或写入缓存就更新 /data/heartbeat（LSA_HEARTBEAT 可改路径，最多 5 s 写一次），EG 的健康检查看它多久没更新。第 3 轮联调后补（EG conv 服务按实际程序落地）。
+---
+ src/core/app.py            | 20 ++++++++++++++++++++
+ src/core/config_manager.py | 27 +++++++++++++++++++++++++++
+ 2 files changed, 47 insertions(+)
+
+diff --git a/src/core/app.py b/src/core/app.py
+index c870917..ccd2b51 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -12,6 +12,7 @@
+ """
+ 
+ import asyncio
++import os
+ import signal
+ import time
+ from typing import Any, Dict, Optional
+@@ -78,6 +79,10 @@ class Application:
+         self._flush_task: Optional[asyncio.Task] = None
+         self._buffer_debounce = 0.1  # 100ms 去抖
+ 
++        # 心跳文件（EG 健康检查用）：每次有数据发出或写入缓存就更新（最多 5 s 写一次）
++        self._heartbeat_path = os.environ.get("LSA_HEARTBEAT", "/data/heartbeat")
++        self._heartbeat_at = 0.0
++
+     def initialize(self) -> None:
+         """同步初始化所有组件"""
+         logger.info("边缘网关初始化中...")
+@@ -286,6 +291,7 @@ class Application:
+     
+         if not published and self._cache:
+             await self._cache.save(sensor_name, {"ts": event_ts, "values": values}, device)
++        self._beat()
+ 
+     # ── 数据回调: 设备级合并 ───────────────────────────────────
+ 
+@@ -376,6 +382,8 @@ class Application:
+                                      list(buf.get("items", []))))
+                     del self._device_buffer[device]
+ 
++        if to_flush:
++            self._beat()
+         for device, ts, values, items in to_flush:
+             published = False
+             if self._mqtt and self._mqtt.is_connected:
+@@ -392,6 +400,18 @@ class Application:
+                     for sensor_name, normalized in items:
+                         await self._cache.save(sensor_name, normalized, device)
+ 
++    def _beat(self) -> None:
++        """更新心跳文件：EG 的健康检查看它多久没更新（采集在跑、数据在出去或进缓存）"""
++        now = time.time()
++        if now - self._heartbeat_at < 5:
++            return
++        self._heartbeat_at = now
++        try:
++            with open(self._heartbeat_path, "w") as f:
++                f.write(str(int(now)))
++        except OSError:
++            pass
++
+     # ── 后台任务管理 ───────────────────────────────────────────
+ 
+     def _start_background_tasks(self) -> None:
+diff --git a/src/core/config_manager.py b/src/core/config_manager.py
+index 90d2c1f..b49eb28 100644
+--- a/src/core/config_manager.py
++++ b/src/core/config_manager.py
+@@ -3,6 +3,9 @@
+ 负责加载、验证和热更新 YAML 配置文件
+ """
+ 
++import os
++from urllib.parse import unquote, urlparse
++
+ import yaml
+ from pathlib import Path
+ from typing import Any, Dict, Optional
+@@ -35,6 +38,30 @@ class ConfigManager:
+         with open(path, "r", encoding="utf-8") as f:
+             self._gateway_config = yaml.safe_load(f)
+         logger.info("已加载主配置: %s", path)
++        self._apply_env_overrides()
++
++    def _apply_env_overrides(self) -> None:
++        """EG 统一管理的两项（deploy/eg/compose.yaml 的 conv 服务给环境变量）：有就覆盖 gateway.yaml 里的
++        LSA_MQTT_URL=mqtt://[user:pass@]host:port → mqtt.host / port / username / password
++        LSA_SERIAL=/dev/ttyS1                     → serial.port"""
++        cfg = self._gateway_config or {}
++        url = os.environ.get("LSA_MQTT_URL")
++        if url:
++            p = urlparse(url)
++            mqtt = cfg.setdefault("mqtt", {})
++            if p.hostname:
++                mqtt["host"] = p.hostname
++            if p.port:
++                mqtt["port"] = p.port
++            if p.username:
++                mqtt["username"] = unquote(p.username)
++                mqtt["password"] = unquote(p.password or "")
++            logger.info("总线地址按 LSA_MQTT_URL：%s:%s", mqtt.get("host"), mqtt.get("port"))
++        serial = os.environ.get("LSA_SERIAL")
++        if serial:
++            cfg.setdefault("serial", {})["port"] = serial
++            logger.info("串口按 LSA_SERIAL：%s", serial)
++        self._gateway_config = cfg
+ 
+     def _load_sensor_configs(self) -> None:
+         """加载 sensors/ 目录下所有传感器配置"""
+-- 
+2.54.0.windows.1
+

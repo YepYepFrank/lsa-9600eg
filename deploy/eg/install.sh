@@ -260,6 +260,25 @@ serial_byid() {
   done
   echo "$1"
 }
+# 启用的传感器的 device 都要在 eg.yaml 的设备清单里（对不上的数据进不了本地 TB、也不上送）
+conv_check_devices() {
+  [ -d config/conv/sensors ] && [ -f config/eg.yaml ] || return 0
+  local names f dev en bad=()
+  names=" $(awk '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{print $3}' config/eg.yaml | tr '\n' ' ') "
+  for f in config/conv/sensors/*.yaml; do
+    [ -f "$f" ] || continue
+    en="$(awk '$1=="enabled:"{print $2;exit}' "$f")"
+    [ "$en" = true ] || continue
+    dev="$(awk '$1=="device:"{gsub(/"/,"",$2);print $2;exit}' "$f")"
+    case "$names" in *" $dev "*) ;; *) bad+=("$(basename "$f") 的 device「${dev:-空}」") ;; esac
+  done
+  if [ ${#bad[@]} -gt 0 ]; then
+    echo "!! 转换程序配置的设备名和 eg.yaml 对不上（这些数据不会进本地 TB、不会上送）：${bad[*]}" >&2
+    echo "   eg.yaml 里的设备：$names；改 config/conv/sensors/*.yaml 的 device 后 docker restart lsa-eg-conv" >&2
+  fi
+  true
+}
+
 conv_status() {
   local ser state
   ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
@@ -273,6 +292,12 @@ conv_status() {
     n="$(sed -n 's/.*"restarts":\([0-9]*\).*/\1/p' config/conv-guard.json)"
     last="$(sed -n 's/.*"detail":"\([^"]*\)".*/\1/p' config/conv-guard.json)"
     [ "${n:-0}" -gt 0 ] 2>/dev/null && echo "  eg-agent 自动重启过转换程序 $n 次；最近一次：${last:-?}"
+  fi
+  if [ "$state" = 启用 ]; then
+    local h
+    h="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' lsa-eg-conv 2>/dev/null || true)"
+    [ -n "$h" ] && echo "  健康检查：$h（最近 2 分钟有没有数据发出或进缓存）"
+    conv_check_devices
   fi
   echo "可选串口（--conv-serial <设备>）："
   serial_list
@@ -445,7 +470,29 @@ conv_setup() {
   env_set EG_DIALOUT_GID "$(getent group dialout | cut -d: -f3)"
   env_set COMPOSE_PROFILES conv
   mkdir -p config/conv config/conv-data
+  conv_config "$img"
   echo "转换程序：$img，串口 $ser（容器里 /dev/ttyS1），连本机总线 127.0.0.1:1884"
+  conv_check_devices
+}
+
+# 转换程序的配置（EG 0.6.2）：同事的程序读 EDGE_GATEWAY_CONFIG（compose 给 /config = 本机 config/conv/）。
+# config/conv/ 还没有 gateway.yaml 时，从镜像里的同事配置模板（/app/config.default）生成：
+#   模板里设备名的柜号换成本柜的（SAM-AH03-B → SAM-<柜号>-B），串口写 /dev/ttyS1（容器里的；宿主机设备由 --conv-serial 映射），
+#   总线地址与串口另由 compose 的 LSA_MQTT_URL / LSA_SERIAL 覆盖（补丁 0005-E），配置里写的是什么都不要紧。
+# 之后按这面柜实际接的传感器改 config/conv/sensors/*.yaml 的 enabled 与 device（重跑 install.sh 不会覆盖）。
+conv_config() {
+  local img="$1" code
+  [ -f config/conv/gateway.yaml ] && return 0
+  if ! docker run --rm --network none --entrypoint tar "$img" -C /app/config.default -cf - . | tar -x -C config/conv; then
+    echo "!! 从镜像 $img 取配置模板失败：config/conv/ 是空的，转换程序会用镜像里的缺省配置" >&2
+    return 0
+  fi
+  code="$(awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true)"
+  if [ -n "$code" ]; then
+    sed -i -E "s/((device|name): *\"?)(SAM|PM6|PM|CAM)-[A-Z]{2}[0-9]{2}/\1\3-$code/" config/conv/gateway.yaml config/conv/sensors/*.yaml
+  fi
+  sed -i '/^serial:/,/^[a-z]/s#^\(  port: *\)"[^"]*"#\1"/dev/ttyS1"#' config/conv/gateway.yaml
+  echo "转换程序配置：从镜像模板生成 config/conv/（设备名柜号换成 ${code:-?}，串口 /dev/ttyS1）—— 按这面柜实际接的传感器改 config/conv/sensors/*.yaml 的 enabled 与 device"
 }
 if [ "$MODE" = 'conv-off' ]; then
   env_set EG_CONV off; conv_setup; exit 0
