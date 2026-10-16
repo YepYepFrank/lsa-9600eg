@@ -437,7 +437,8 @@ conv_setup() {
   [ -f CONV_IMAGE.txt ] && img="$(grep -v '^#' CONV_IMAGE.txt | head -1 | tr -d '[:space:]' || true)"
   [ -n "$img" ] || img="$(grep -E '^EG_CONV_IMAGE=' .env 2>/dev/null | cut -d= -f2- || true)"
   ser="$(grep -E '^EG_CONV_SERIAL=' .env 2>/dev/null | cut -d= -f2- || true)"; ser="${ser:-/dev/ttyS1}"
-  if ! conv_wanted; then off="没启用$([ -n "$img" ] && echo "（发布件带了 $img；现场要用时 sudo bash install-conv.sh）")"
+  # 注意：赋值里的 $(…) 失败会让 set -e 下的 install.sh 直接退出（没有镜像时这里曾让升级与回退都半路停下，批量升级沙箱测出）—— 用 if 拼
+  if ! conv_wanted; then off='没启用'; if [ -n "$img" ]; then off+="（发布件带了 $img；现场要用时 sudo bash install-conv.sh）"; fi
   elif [ -z "$img" ]; then off='!! 启用过，但发布件和本机都没有转换程序镜像'
   elif ! docker image inspect "$img" >/dev/null 2>&1; then off="!! 启用过，但本机没有镜像 $img（导入失败？）"
   elif [ ! -e "$ser" ]; then off="!! 启用过，但串口 $ser 不存在（USB 转 485 拔了？）—— 插好后 sudo bash install-conv.sh"
