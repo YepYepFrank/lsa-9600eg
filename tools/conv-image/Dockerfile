@@ -7,6 +7,7 @@ WORKDIR /app
 COPY deps/ /app/deps/
 COPY src/ /app/src/
 COPY config/ /app/config.default/
+COPY tools/ /app/tools/
 COPY entrypoint.sh /entrypoint.sh
 COPY VERSION /app/VERSION
 ENV PYTHONPATH=/app/deps:/app EDGE_GATEWAY_CONFIG=/config PYTHONUNBUFFERED=1 TZ=Asia/Shanghai
