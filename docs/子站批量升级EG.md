@@ -1,4 +1,4 @@
-# 子站主机上批量升级 EG（0.17.3 起）
+# 子站主机上批量升级 EG（0.17.2 起）
 
 > 给子站部署手册用的一节（子站部署手册「批量升级 EG」指向这里）。脚本 `/opt/lsa9600sp/upgrade-egs.sh`，由一键安装文件 `--role sp` 装上；EG 侧的授权与安全见 EG 部署手册 §6c。
 
@@ -9,7 +9,7 @@
    sudo bash /opt/lsa9600sp/upgrade-egs.sh --keygen
    ```
    key 放在 `/opt/lsa9600sp/keys/`（root，600）。这条命令会打印要在每台 EG 上执行的授权命令。
-2. 到每台 EG 上用维护账号执行打印出来的那条（EG 要已经是 0.17.3 或更新）：
+2. 到每台 EG 上用维护账号执行打印出来的那条（EG 要已经是 0.17.2（EG 0.6.2）或更新）：
    ```bash
    sudo bash /opt/lsa-eg/install.sh --upgrade-key 'ssh-ed25519 AAAA… lsa9600sp-eg-upgrade@<子站主机名>'
    ```

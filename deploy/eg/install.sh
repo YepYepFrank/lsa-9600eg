@@ -13,7 +13,7 @@
 #   lsa-sp 没有口令、没有 shell，authorized_keys 带 restrict,port-forwarding,permitopen="127.0.0.1:18080"：
 #   只能从子站开隧道到本机的本地 TB（18080），别的都不行。部署完用 --drop-sp-key 删掉（以后要再建实体重新 --sp-key）。
 # --drop-sp-key：删掉隧道账号 lsa-sp（连同它的 authorized_keys），别的不动。
-# --upgrade-key <子站公钥文件或公钥串> [--upgrade-from <子站地址>]（0.17.3）：给子站 upgrade-egs.sh 批量升级授权。
+# --upgrade-key <子站公钥文件或公钥串> [--upgrade-from <子站地址>]（0.17.2）：给子站 upgrade-egs.sh 批量升级授权。
 #   建专用账号 lsa-upg（锁口令），authorized_keys 带 restrict,from="<子站地址>",command="sudo -n /usr/local/sbin/lsa-eg-upgrade …"：
 #   不管子站发什么都只进升级入口（只能交安装文件、开始升级、查进度，见 lsa-eg-upgrade 开头）；sudoers 只放行这个入口。
 #   子站地址缺省取 eg.yaml 的 station.mqtt。注意：持这把 key 的人能让 EG 装他给的任意安装文件（等于 root），不用时撤销。
@@ -341,7 +341,7 @@ status() {
   upg_status
   true
 }
-# ---------- 子站批量升级（0.17.3）：专用账号 lsa-upg + 固定入口 ----------
+# ---------- 子站批量升级（0.17.2）：专用账号 lsa-upg + 固定入口 ----------
 UPG_AK=/var/lib/lsa-upg-ssh/.ssh/authorized_keys
 upg_from_now() { sed -n 's/.*from="\([^"]*\)".*/\1/p' "$UPG_AK" 2>/dev/null | head -1; }
 # 升级入口与任务脚本装到 /usr/local/sbin（先写新文件再改名：正在跑的升级任务读的是旧文件，不能原地覆盖）

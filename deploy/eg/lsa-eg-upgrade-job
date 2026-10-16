@@ -1,5 +1,5 @@
 #!/bin/bash
-# LSA-9600EG 升级任务（0.17.3）：由 lsa-eg-upgrade start 在后台起（systemd-run 或 setsid nohup），脱离 SSH 会话 ——
+# LSA-9600EG 升级任务（0.17.2）：由 lsa-eg-upgrade start 在后台起（systemd-run 或 setsid nohup），脱离 SSH 会话 ——
 # 子站断开、网络断了，这里照样做完；安装失败就自己回退，不会停在半路。不经 sudoers，子站调不到它。
 #   验签（0.17.4 起）：verify 阶段预留了 verify_signature；现在发布件还没有签名，只记「未验签」（state 的 sig=unsigned），不拦。
 #   阶段（/var/lib/lsa-upg/state 的 phase）：

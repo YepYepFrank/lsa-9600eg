@@ -1,5 +1,5 @@
 #!/bin/bash
-# LSA-9600EG 升级入口（0.17.3）：子站主机的 upgrade-egs.sh 经 SSH 用专用账号 lsa-upg 调这里，只能做下面几件事 ——
+# LSA-9600EG 升级入口（0.17.2）：子站主机的 upgrade-egs.sh 经 SSH 用专用账号 lsa-upg 调这里，只能做下面几件事 ——
 # 子站拿到的不是能在 EG 上执行任意命令的账号，而是「交一个指定的安装文件给 EG 自己升级、查进度」的钥匙。
 #
 # install.sh --upgrade-key <子站公钥> 装它（root 所有、755，在 /usr/local/sbin/），并写：
