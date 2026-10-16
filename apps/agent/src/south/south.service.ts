@@ -7,12 +7,16 @@
  * 校验错 dev.crc_24h、重试 dev.retry_24h 只有同事的程序知道，这里不编；
  * 同事的程序自己发了 dev.*（任何一个）的设备，这里就不再发，以他的为准。
  *
- * 计数按分钟分桶留 24 h；agent 重启后从零开始计（窗口按运行时长算，不会把重启前当成超时）。 */
-import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
+ * 计数按分钟分桶留 24 h；agent 重启后从零开始计（窗口按运行时长算，不会把重启前当成超时）。
+ *
+ * 0.6.2（全链路联调 W1）：转换程序配置里有传感器挂这台设备时，周期档只在它的预期测点里取（A 只接温湿度 → 按 10 s 算，
+ * 不再按物模型里最快的 2 s 弧光档算出 0 %）；配置改了重新起算这台的窗口。 */
+import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import type { EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
+import { ConvExpectService } from '../conv/conv-expect.service.js'
 
 const MIN = 60_000
 const DAY = 24 * 60 * MIN
@@ -26,6 +30,8 @@ interface DeviceStats {
   buckets: Map<number, Set<number>>
   /** 同事的程序自己发 dev.* */
   bySource: boolean
+  /** 窗口起点（agent 启动或预期测点改了的时刻） */
+  since: number
 }
 
 export interface SouthRow {
@@ -41,22 +47,37 @@ export class SouthService implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null
   private first: NodeJS.Timeout | null = null
 
+  private readonly log = new Logger('南向统计')
+
   constructor(
     @Inject(EG_CONFIG) private readonly cfg: EgConfig,
     private readonly bus: BusService,
+    @Optional() private readonly expect?: ConvExpectService,
   ) {
-    for (const d of cfg.devices) {
+    this.build(this.startedAt)
+  }
+
+  /** 按物模型（或预期测点）定每台的周期档；since 给了就把变了档的那几台窗口重起 */
+  private build(since: number): void {
+    for (const d of this.cfg.devices) {
       if (d.kind === 'eg') continue
-      const pts = pointsOf(d.kind, cfg.cabinet.group).map(p => ({ key: p.key, ms: expectedPeriodMs(p) }))
+      const all = pointsOf(d.kind, this.cfg.cabinet.group).map(p => ({ key: p.key, ms: expectedPeriodMs(p) }))
+      const e = this.expect?.expected(d.name)
+      const mine = e ? all.filter(p => e.has(p.key) && p.ms !== null) : []
+      const pts = mine.length ? mine : all
       const periods = pts.map(p => p.ms).filter((x): x is number => x !== null)
       if (!periods.length) continue
       const interval = Math.min(...periods)
       const fastKeys = new Set(pts.filter(p => p.ms === interval).map(p => p.key))
-      this.stats.set(d.name, { interval, fastKeys, buckets: new Map(), bySource: false })
+      const old = this.stats.get(d.name)
+      if (old && old.interval === interval && [...fastKeys].every(k => old.fastKeys.has(k)) && old.fastKeys.size === fastKeys.size) continue
+      if (old) this.log.log(`${d.name} 到达率改按 ${interval / 1000} s 档（${[...fastKeys].join(', ')}）重新起算`)
+      this.stats.set(d.name, { interval, fastKeys, buckets: new Map(), bySource: old?.bySource ?? false, since })
     }
   }
 
   onModuleInit(): void {
+    this.expect?.onChange(() => this.build(Date.now()))
     this.bus.onTelemetry((dev, entries, own) => {
       if (!own) this.take(dev, entries)
     })
@@ -76,7 +97,7 @@ export class SouthService implements OnModuleInit, OnModuleDestroy {
   rowOf(device: string, now = Date.now()): SouthRow | null {
     const s = this.stats.get(device)
     if (!s) return null
-    const from = Math.max(this.startedAt, now - DAY)
+    const from = Math.max(s.since, now - DAY)
     const req = Math.floor((now - from) / s.interval)
     let got = 0
     for (const [m, set] of s.buckets) {
