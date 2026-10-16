@@ -8,10 +8,16 @@
 #      —— pipefail 下整句赋值失败。local x="$(…)" 不算（local 吞掉返回码）
 #   2. 不在 while 条件里、也没有 || 兜底的 read：读到 EOF（没有终端、stdin 已关）返回 1
 #   3. 函数的最后一句是 [ … ] && …：条件不成立时函数返回 1，调用处退出（顶层循环里的不算，bash 会豁免）
+#   4. 赋值里嵌了 $([ … ] && …)、没有 ||：条件不成立时命令替换返回 1，整句赋值失败（不管赋值在行首还是 then / ; 后面）
+#      —— 0.17.2 install.sh 的 off="没启用$([ -n "$img" ] && echo …)" 就这样让升级与回退都半路停下（#35）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ $# -gt 0 ]; then files=("$@"); else files=("$ROOT"/deploy/eg/*.sh "$ROOT"/deploy/bundle/*.sh "$ROOT"/deploy/test/*.sh); fi
+if [ $# -gt 0 ]; then files=("$@"); else
+  files=("$ROOT"/deploy/eg/*.sh "$ROOT"/deploy/bundle/*.sh "$ROOT"/deploy/test/*.sh "$ROOT"/tools/conv-addon/*.sh)
+  # 没有扩展名、但在 EG / 子站上跑的脚本
+  for f in "$ROOT"/deploy/eg/lsa-eg-upgrade "$ROOT"/deploy/eg/lsa-eg-upgrade-job "$ROOT"/deploy/sp/*.sh; do [ -f "$f" ] && files+=("$f"); done
+fi
 
 n=0
 for f in "${files[@]}"; do
@@ -29,6 +35,8 @@ for f in "${files[@]}"; do
         }
         # 2. read：不在 while 条件里、没有 ||
         if (s ~ /(^|[;&|{ \t])read[ \t]+-/ && s !~ /while[ \t]/ && s !~ /\|\|/ && s !~ /<<</ && s !~ /^[ \t]*done/) printf "%s:%d: read 没有 || 兜底（读到 EOF 返回 1）\n", F, i
+        # 4. 赋值（行首或 then / ; / && 之后）里嵌了 $([ … ] && …)，整句没有 ||
+        if (s ~ /(^|[ \t;]|then[ \t]+)[A-Za-z_][A-Za-z0-9_]*\+?="[^"]*\$\([ \t]*\[\[? [^)]*&&/ && s !~ /\|\|/) printf "%s:%d: 赋值里的 $([ … ] && …) 条件不成立时返回 1，整句赋值失败（改用 if，或补 || true）\n", F, i
         # 3. 函数末尾的 [ … ] && …（下一行是单独的右花括号）
         if (s ~ /^[ \t]*\[\[? .*\]\]? && / && i < NR && line[i + 1] ~ /^[ \t]*}[ \t]*$/) printf "%s:%d: 函数最后一句是 [ … ] && …（条件不成立时函数返回 1）\n", F, i
       }
