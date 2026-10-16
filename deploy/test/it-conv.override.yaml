@@ -1,0 +1,10 @@
+# 全链路联调专用（不进发布件）：没有真传感器 —— 在 conv 容器里先起 conv-kit 的 sim.py 造一个虚拟串口 /tmp/ttyV0，
+# 再照常起同事的程序；LSA_SERIAL 指向它（补丁 0005-E 覆盖 gateway.yaml 的串口）。放到 /opt/lsa-eg/compose.override.yaml，
+# docker compose 会自动叠加；sim 的时间线从 conv 容器每次启动算起（见 sim.py 文件头）。
+services:
+  conv:
+    environment:
+      LSA_SERIAL: /tmp/ttyV0
+    volumes:
+      - ./test-kit:/kit:ro
+    entrypoint: ['sh', '-c', 'python3 /kit/sim.py /tmp/ttyV0 > /data/sim.log 2>&1 & sleep 1; exec sh /entrypoint.sh']
