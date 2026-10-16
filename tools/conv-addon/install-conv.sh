@@ -46,7 +46,8 @@ done
 [ "$(id -u)" = 0 ] || { echo '要 root：sudo bash install-conv.sh …' >&2; exit 1; }
 [ -f "$DIR/compose.yaml" ] && [ -f "$DIR/config/eg.yaml" ] || { echo "$DIR 下没有装好的 EG（compose.yaml、config/eg.yaml）：先装 EG，或用 --dir 指安装目录" >&2; exit 1; }
 grep -q '^  conv:' "$DIR/compose.yaml" || { echo "$DIR/compose.yaml 里没有 conv 服务：EG 版本太老（要 0.4 以上，建议 0.6.1）" >&2; exit 1; }
-IMG="$(grep -v '^#' "$HERE/CONV_IMAGE.txt" | head -1 | tr -d '[:space:]')"
+IMG="$(grep -v '^#' "$HERE/CONV_IMAGE.txt" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+[ -n "$IMG" ] || { echo "$HERE/CONV_IMAGE.txt 里没有转换程序镜像名（包不完整？）" >&2; exit 1; }
 cd "$DIR"
 DC='docker compose'
 
@@ -113,7 +114,7 @@ pick_serial() {
       echo "插了 ${#ids[@]} 个 USB 串口设备："
       for i in "${!ids[@]}"; do echo "  $((i + 1))) ${ids[$i]} → $(readlink -f "${ids[$i]}")"; done
       if [ -t 0 ]; then
-        read -r -p "用哪个（输编号）：" n
+        read -r -p "用哪个（输编号）：" n || n=''
         [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le ${#ids[@]} ] || { echo '编号不对' >&2; exit 1; }
         SERIAL="${ids[$((n - 1))]}"
       else
