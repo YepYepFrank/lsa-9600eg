@@ -15,7 +15,7 @@
    ```
    授权后，这把 key 只认子站主机来的连接，而且只能把安装文件交给 EG 自己升级、查进度，执行不了别的命令。
 3. EG 清单和地址从子站取。
-   - 0.17.3 起用子站后端的 `eg-list`（`docker exec lsa-ext node bin/eg-list.mjs --json`）：地址按 egUrl > EXT_EG_URLS > model.yaml 推好。
+   - 0.17.2 起用子站后端的 `eg-list`（`docker exec lsa-ext node bin/eg-list.mjs --json`）：地址按 egUrl > EXT_EG_URLS > model.yaml 推好。
    - 老子站没有 eg-list 时直接查子站 TB，只认 `EG-<柜号>` 的 `egUrl` 属性（provision-eg.sh `--ssh` / `--eg-url` 时写上的）。
    - 没有地址的 EG 会跳过，并在计划里列出来。
 
@@ -49,7 +49,7 @@ sudo bash /opt/lsa9600sp/upgrade-egs.sh --run <新的 .run> --only AH03,AH05 --p
   - 连不上或没授权（加 `--skip-offline` 改成跳过）；
   - 空间不够；
   - 子站扩展服务刚启动、EG 状态还没读全（等一两分钟再跑）。
-- **验签**：0.17.4 起发布件要带签名，EG 校验。现在只核对 sha256，汇总里写「安装文件未验签」。
+- **验签**：下一版起发布件要带签名，EG 校验。现在只核对 sha256，汇总里写「安装文件未验签」。
 - **每台的流程**：
   1. 拷安装文件，EG 收完核对 sha256；
   2. EG 在后台自己升级；
@@ -97,4 +97,4 @@ sudo bash /opt/lsa9600sp/upgrade-egs.sh --resume <批次>
 
 - 持这把 key 的人能让 EG 装他给的任意安装文件，等于 root。key 只放在子站主机 root 下，不要拷走。
 - 不用了就到各 EG 上撤销：`sudo bash /opt/lsa-eg/install.sh --drop-upgrade-key`。
-- 0.17.4：给发布件加签名，EG 在升级前校验（现在汇总里会写「安装文件未验签」）。
+- 下一版：给发布件加签名，EG 在升级前校验（现在汇总里会写「安装文件未验签」）。

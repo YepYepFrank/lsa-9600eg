@@ -70,7 +70,7 @@ run_eg_version() {  # 安装文件里 EG 发布件的版本（只读负载里的
 
 # ---------- EG 清单 ----------
 # 每行（TSV）：柜号 EG设备名 地址 EG报的版本 本地TB版本 配置版本 上送 上送多少秒前 跳过原因(-) 状态 上送正常(true/false) 配置已生效(true/false/-)
-# 0.17.3 起用子站后端的 eg-list（lsa-ext 里的 bin/eg-list.mjs，只认容器里本机发的请求）：地址按 egUrl > EXT_EG_URLS > model.yaml 推好，
+# 0.17.2 起用子站后端的 eg-list（lsa-ext 里的 bin/eg-list.mjs，只认容器里本机发的请求）：地址按 egUrl > EXT_EG_URLS > model.yaml 推好，
 #   状态 online / offline / backfill / degraded / never / disabled，skip（未接入 / 停用），uplinkOk，cfgApplied（期望 = 生效且 APPLIED）。
 #   退出码 3 = 扩展服务刚起、还没读全：照样输出，但调用方当成预检不过。老子站没有 eg-list 时直接查子站 TB（只认 egUrl 属性）。
 eg_list() {
@@ -315,7 +315,7 @@ up_one() {
     sleep 15
   done
   sshx "$h" "drop $SHA" >/dev/null 2>&1 || true
-  signote=''; [ "$sig" = unsigned ] && signote='；安装文件未验签（0.17.4 起要求签名）'
+  signote=''; [ "$sig" = unsigned ] && signote='；安装文件未验签（下一版起要求签名）'
   if [ -n "$ok" ]; then result "$c" 成功 "本地 TB ${tbv}，配置 ${cfg} 生效，上送正常${signote}"
   else result "$c" 失败 "EG 自查通过，但子站核对不过（版本 ${ver:-?} / 上送正常 ${upok:-?}、${age:-?} s 前 / 配置 ${cfg:-?} 生效 ${cfgok:-?}，升级前 $(plan_cfg "$c")）"; fi
 }
