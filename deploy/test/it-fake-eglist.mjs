@@ -1,4 +1,6 @@
 // 沙箱用：仿后端 eg-list --json 的输出（EG 库批量升级测试；字段同后端 lsa-9600sp-backend#95 的样例），数据取子站 TB
+// 子站沙箱里：EG_LIST_JSON_CMD="docker exec -i -e TBP=<租户口令> [-e FAKE_RC=3] lsa-ext node --input-type=module - < it-fake-eglist.mjs" bash upgrade-egs.sh …
+//   FAKE_RC=3：仿「扩展服务刚起、没读全」（upgrade-egs.sh 要整批不开始）
 const T = 'http://tb:8080'
 const j = async (u, o = {}) => { const r = await fetch(T + u, o); if (!r.ok) throw new Error(`${u} ${r.status}`); return r.json() }
 const tok = (await j('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin@lsa9600sp.local', password: process.env.TBP }) })).token
