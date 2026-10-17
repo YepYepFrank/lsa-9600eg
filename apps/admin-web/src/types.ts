@@ -34,6 +34,8 @@ export interface Status {
   rssMb: number
   state: 'online' | 'degraded'
   bus: { url: string; connected: boolean; msgs: number }
+  /** 0.17.4：485 总线清单（转换程序配置里打开的传感器）；没启用转换程序为 null */
+  convBus?: { port: string; baud: number | null; slaves: { a: number; t: string; n: string; dev: string }[] } | null
   devices: Dev[]
   unknownDevices: string[]
   /** 0.17：转换程序保险（eg-agent 自动重启转换程序的次数、最近一次） */
