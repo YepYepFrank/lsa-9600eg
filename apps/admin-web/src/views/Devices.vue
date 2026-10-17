@@ -29,6 +29,13 @@ function boxes(v: unknown): string {
     return String(v)
   }
 }
+/** 这台设备在 485 总线上的传感器（0.17.4，取自转换程序配置）：「COM2 · 从站 局放 2 / 弧光 5 · 9600」；没挂传感器为 null */
+function busText(dev: string): string | null {
+  const b = store.status?.convBus
+  const mine = b?.slaves.filter(s => s.dev === dev) ?? []
+  if (!b || !mine.length) return null
+  return `${b.port} · 从站 ${mine.map(s => `${s.n} ${s.a}`).join(' / ')}${b.baud ? ` · ${b.baud}` : ''}`
+}
 function qSummary(q: Record<string, string>): string {
   const e = Object.entries(q)
   if (!e.length) return '全部有效'
@@ -59,6 +66,10 @@ function copy(t: string) {
           <template v-for="k in MAIN_ATTRS.filter(k => r.conf.attrs[k] !== undefined)" :key="k">
             <dt>{{ ATTR_LABEL[k] }}</dt>
             <dd>{{ attrText(k, r.conf.attrs[k]) }}</dd>
+          </template>
+          <template v-if="busText(r.conf.name)">
+            <dt>485 实际</dt>
+            <dd>{{ busText(r.conf.name) }} <span class="t2">（转换程序配置）</span></dd>
           </template>
           <dt>遥测主题</dt>
           <dd><code>lsa/{{ r.conf.name }}/telemetry</code> <a @click="copy(`lsa/${r.conf.name}/telemetry`)">复制</a></dd>

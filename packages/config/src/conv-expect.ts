@@ -21,9 +21,39 @@ const BY_TYPE: Record<string, string[]> = {
   smoke: ['smoke.ppm'],
 }
 
+/** 485 总线清单（0.17.4，舱室 EG 方案 §4）：打开的传感器各占一个从站地址。EG 作为自己的客户端属性 conv.bus 报给子站（JSON 串） */
+export interface ConvBus {
+  v: 1
+  /** COM2（X26A 主板串口）或 USB（USB 转 485 模块） */
+  port: string
+  baud: number | null
+  /** a 从站地址、t 传感器类型、n 中文名、dev 挂在哪台设备；按地址升序 */
+  slaves: { a: number; t: string; n: string; dev: string }[]
+}
+
+/** 传感器类型的中文名（同事 1.1.1 的驱动） */
+export const SENSOR_NAME: Record<string, string> = {
+  infrared: '红外',
+  partial_discharge: '局放',
+  smoke: '气体',
+  temperature_humidity: '温湿度',
+  arc_light: '弧光',
+}
+
+/** 串口路径 → 接口名：主板串口 /dev/ttyS1 = COM2；USB 转 485 模块（/dev/ttyUSB*、/dev/serial/by-id/…）= USB */
+export function busPort(serial: string | undefined): string {
+  const s = (serial ?? '').trim()
+  if (!s || s === '/dev/ttyS1') return 'COM2'
+  if (/ttyUSB|ttyACM|serial\/by-id/.test(s)) return 'USB'
+  const m = /ttyS(\d+)$/.exec(s)
+  return m ? `COM${Number(m[1]) + 1}` : s
+}
+
 export interface ConvExpect {
   /** 设备名 → 预期测点 */
   byDevice: Map<string, Set<string>>
+  /** 485 总线清单（只含打开的传感器） */
+  bus: ConvBus
   /** 配置文件的签名（文件名 + 修改时间 + 大小），变了就重读 */
   sig: string
   /** 读不了的文件（文件名：原因） */
@@ -52,10 +82,23 @@ export function convExpectSig(configDir: string): string {
   }
 }
 
-export function loadConvExpect(configDir: string): ConvExpect | null {
+/** 转换程序 gateway.yaml 里的波特率（读不到为 null） */
+function readBaud(configDir: string): number | null {
+  try {
+    const g = parse(readFileSync(resolve(configDir, 'conv', 'gateway.yaml'), 'utf8')) as { serial?: { baudrate?: unknown } } | null
+    const b = Number(g?.serial?.baudrate)
+    return Number.isFinite(b) && b > 0 ? b : null
+  } catch {
+    return null
+  }
+}
+
+/** serial：宿主机上转换程序用的串口（compose 把 .env 的 EG_CONV_SERIAL 给 agent），只用来定接口名 */
+export function loadConvExpect(configDir: string, serial: string | undefined = process.env['EG_CONV_SERIAL']): ConvExpect | null {
   const dir = convSensorsDir(configDir)
   if (!existsSync(dir)) return null
   const byDevice = new Map<string, Set<string>>()
+  const slaves: ConvBus['slaves'] = []
   const errors: string[] = []
   let read = 0
   let files: string[]
@@ -92,7 +135,20 @@ export function loadConvExpect(configDir: string): ConvExpect | null {
     let set = byDevice.get(device)
     if (!set) byDevice.set(device, (set = new Set()))
     for (const k of list) set.add(k)
+    const a = Number(s['slave_id'])
+    if (Number.isInteger(a) && a >= 1 && a <= 247) slaves.push({ a, t: type, n: SENSOR_NAME[type] ?? type, dev: device })
+    else errors.push(`${f}：从站地址「${String(s['slave_id'] ?? '')}」不对（1–247）`)
   }
   if (!read) return null
-  return { byDevice, sig: convExpectSig(configDir), errors }
+  slaves.sort((p, q) => p.a - q.a)
+  const bus: ConvBus = { v: 1, port: busPort(serial), baud: readBaud(configDir), slaves }
+  return { byDevice, bus, sig: convExpectSig(configDir), errors }
+}
+
+/** 同一条总线上地址重复的：地址 → 「中文名（设备）」 */
+export function busConflicts(bus: ConvBus | null | undefined): Map<number, string[]> {
+  const by = new Map<number, string[]>()
+  for (const s of bus?.slaves ?? []) by.set(s.a, [...(by.get(s.a) ?? []), `${s.n}（${s.dev}）`])
+  for (const [a, l] of by) if (l.length < 2) by.delete(a)
+  return by
 }

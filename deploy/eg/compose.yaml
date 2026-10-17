@@ -148,6 +148,8 @@ services:
       EG_HTTP_DENY_ON: ${EG_LAN1:-}
       # 子站自签证书（上送 mqtts 8883、事件 https 443 都认它）：部署时拷到 config/sp-ca.pem（手册 §3）
       NODE_EXTRA_CA_CERTS: /config/sp-ca.pem
+      # 转换程序用的串口（install-conv.sh 记在 .env）：agent 只用来定 conv.bus 的接口名（COM2 / USB，0.17.4）
+      EG_CONV_SERIAL: ${EG_CONV_SERIAL:-/dev/ttyS1}
     volumes:
       - ./config:/config
       # 组件状态、日志、重启（只许本地 TB 与 IoT Gateway）

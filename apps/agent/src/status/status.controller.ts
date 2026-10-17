@@ -15,6 +15,7 @@ import { MetersService } from '../meters/meters.service.js'
 import { UplinkService } from '../uplink/uplink.service.js'
 import { ConvGuardService } from '../conv/conv-guard.service.js'
 import { CapsService } from '../caps/caps.service.js'
+import { ConvExpectService } from '../conv/conv-expect.service.js'
 
 const STARTED = Date.now()
 
@@ -31,6 +32,7 @@ export class StatusController {
     private readonly uplink: UplinkService,
     private readonly meters: MetersService,
     private readonly convGuard: ConvGuardService,
+    private readonly convExpect: ConvExpectService,
   ) {}
 
   @Get('status')
@@ -46,6 +48,8 @@ export class StatusController {
       uptimeSec: Math.round((now - STARTED) / 1000),
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       bus: { url: this.cfg.conn.bus, connected: this.bus.connected, msgs: this.bus.msgs },
+      // 0.17.4：485 总线清单（转换程序配置里打开的传感器，从站地址与挂哪台设备）；没启用转换程序为 null
+      convBus: this.convExpect.busList(),
       state: dead.size ? 'degraded' : 'online',
       devices: this.cfg.devices.map(d => {
         const live = this.bus.live.get(d.name)
