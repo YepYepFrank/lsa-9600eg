@@ -18,7 +18,7 @@
 #   不管子站发什么都只进升级入口（只能交安装文件、开始升级、查进度，见 lsa-eg-upgrade 开头）；sudoers 只放行这个入口。
 #   子站地址缺省取 eg.yaml 的 station.mqtt。注意：持这把 key 的人能让 EG 装他给的任意安装文件（等于 root），不用时撤销。
 # --drop-upgrade-key：删掉 lsa-upg、它的 key 与 sudoers 条目、升级入口（升级日志 /var/log/lsa-upg.log 留着）。
-# --join-key '<子站 join-egs.sh --keygen 打印的一行>'（0.17.3 一键加柜）：等于 --sp-key 加 --upgrade-key，两把 key 的 from= 都锁到子站地址；
+# --join-key '<子站 join-egs.sh --keygen 打印的一行>'（0.17.4 一键加柜）：等于 --sp-key 加 --upgrade-key，两把 key 的 from= 都锁到子站地址；
 #   记 config/join.json。还没有 eg.yaml 时是「待接入」：起只读的待接入页（80 口，各网口 IP / MAC、授权的子站），等子站 join-egs.sh。
 #   已接入别的子站时拒绝，要加 --force 才换。格式：LSAJOIN1 <子站地址> <隧道公钥> <升级公钥> <校验（前面内容 sha256 的前 8 位）>
 # 给过 --lan1 时同时加 LAN1 防火墙（nftables 表 inet lsa_eg：摄像机网只出不进，22 / 80 / 8554 都连不上，开机自起）；
@@ -364,7 +364,7 @@ key_fp() { echo "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' || true; 
 join_get() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" config/join.json 2>/dev/null | head -1 || true; }
 eg_sp_host() { sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' config/eg.yaml 2>/dev/null | head -1 || true; }
 eg_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true; }
-# 接入状态（0.17.3 一键加柜）：待接入 / 已接入子站 X
+# 接入状态（0.17.4 一键加柜）：待接入 / 已接入子站 X
 join_status() {
   local sp cab
   sp="$(join_get sp)"
@@ -804,7 +804,7 @@ mkdir -p config/gateway/config config/mediamtx recordings
 # 子站批量升级授权过的：入口换成本发布件的
 id lsa-upg >/dev/null 2>&1 && { upg_install_entry || true; }
 
-# ---------- 0.17.3：老版本建的专用账号 uid 撞了本地库容器的，迁到 900–989（授权不变，见 sys_user） ----------
+# ---------- 0.17.4：老版本建的专用账号 uid 撞了本地库容器的，迁到 900–989（授权不变，见 sys_user） ----------
 if id lsa-sp >/dev/null 2>&1; then sys_user lsa-sp /var/lib/lsa-sp /usr/sbin/nologin || exit 1; fi
 if id lsa-upg >/dev/null 2>&1; then sys_user lsa-upg /var/lib/lsa-upg-ssh /bin/sh || exit 1; fi
 
@@ -814,7 +814,7 @@ if [ -n "$SPKEY" ]; then
   sp_key_apply "$key" || exit 1
 fi
 
-# ---------- 一键加柜（0.17.3）：--join-key = 隧道 + 升级两把 key，from= 都锁到子站 ----------
+# ---------- 一键加柜（0.17.4）：--join-key = 隧道 + 升级两把 key，from= 都锁到子站 ----------
 # 前面（第 0 步之前）已核对过格式、校验位、换子站；这里写授权。只认这一个子站：两个 authorized_keys 都只留这两把
 if [ -n "$JOINKEY" ]; then
   sp_key_apply "${jw[2]} ${jw[3]} lsa9600sp-eg-tunnel" "$jsp" excl || exit 1
@@ -883,7 +883,7 @@ EOF
   fi
   cat <<EOF
 
-本地 TB 已起。下一步（手册 §4；0.17.3 起也可以一键加柜：子站 join-egs.sh --keygen 给一行 join-key，这里 sudo bash install.sh --join-key '<那一行>'，见 §4a）：
+本地 TB 已起。下一步（手册 §4；0.17.4 起也可以一键加柜：子站 join-egs.sh --keygen 给一行 join-key，这里 sudo bash install.sh --join-key '<那一行>'，见 §4a）：
   1. 给子站授权开隧道（没给过的话）：把子站主机的 SSH 公钥拷过来，sudo bash install.sh --sp-key <公钥文件>
      （建只能转发到本机 18080 的账号 lsa-sp，没有 shell）
   2. 在子站主机上（/opt/lsa9600sp/lsa9600sp-backend）：

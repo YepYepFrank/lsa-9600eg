@@ -7,7 +7,7 @@
 #     install 失败（安装文件非 0 退出 / 超时）→ rollback → rolled-back（回退也失败：rollback-failed）
 #     check 不过（装完了，但版本 / 容器 / 本地 TB / 上送有一项不对）→ check-failed：不自动回退（可能是子站或网络的问题），子站停下、给回退命令
 #   核对：EG VERSION = 安装文件里的版本；7 个容器 running、60 s 内没有重启；本地 TB 镜像 = 发布件 IMAGES.txt 里的；装完后 agent 连上子站。
-# 换配置任务（0.17.3 一键加柜，state 的 kind=config，lsa-eg-upgrade apply-config 起）：
+# 换配置任务（0.17.4 一键加柜，state 的 kind=config，lsa-eg-upgrade apply-config 起）：
 #   backup → apply（换上 eg.yaml / sp-ca.pem，跑 install.sh）→ check（7 个容器、agent 连上子站）→ conv（包里带了 conv.args 才做）→ done
 #   apply / check 不过 → rollback：换回旧的 eg.yaml / sp-ca.pem（原来待接入的就删掉、回到待接入）再跑一次 install.sh → rolled-back
 set -uo pipefail

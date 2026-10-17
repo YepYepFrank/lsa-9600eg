@@ -15,5 +15,5 @@ for (const d of (await j('/api/tenant/devices?pageSize=1000&page=0&textSearch=EG
     version: c.egAgentVersion || c.agent, tbVersion: c.tbVersion, uplink: up && up.value, uplinkAt: up && up.ts, uplinkAgeS: age, uplinkOk: !!up && up.value === 'ok' && age < 60,
     cfgWant: c.cfg, cfgActual: c.cfg, cfgStatus: 'APPLIED', cfgApplied: true })
 }
-console.log(JSON.stringify({ at: Date.now(), sp: '0.17.3', ready: { svc: true, live: process.env.FAKE_RC !== '3' }, egs }, null, 1))
+console.log(JSON.stringify({ at: Date.now(), sp: '0.17.4', ready: { svc: true, live: process.env.FAKE_RC !== '3' }, egs }, null, 1))
 process.exit(Number(process.env.FAKE_RC || 0))
