@@ -9,7 +9,8 @@
 #       对时：子站主机给各 EG 当时间服务器（chrony allow 站内私网、local stratum 10 orphan —— 没有上级时全站至少跟子站一致）；
 #       --ntp 给站内时钟源（GPS / 北斗授时或上级 NTP），记住，以后升级不用再给。
 #       --kiosk（0.16）：子站装好后再装机柜双屏（scripts/install-kiosk.sh sp/kiosk）；安装文件里要有 sp/kiosk/（子站离线包带 --with-kiosk 打的）。
-#   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--sp-key <子站公钥>] [--eg-config <目录>] [--no-tb-backup] [--yes]
+#   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--join-key '<子站 join-egs.sh --keygen 打印的一行>'] [--sp-key <子站公钥>] [--eg-config <目录>] [--no-tb-backup] [--yes]
+#       --join-key（0.17.3 一键加柜）：EG 上只这一次手动（可以在库房做），其余子站 join-egs.sh 完成；装完是「待接入」，浏览器开 EG 地址能看到
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
 #   --no-tb-backup（0.17）：TB 同一补丁线升级（如 4.2.2.5 → 4.2.2.6）时不做升级前备份、直接升（备份失败又腾不出空间时用；放弃退回旧版 TB 的能力）。
@@ -27,6 +28,7 @@ EGCFG=''
 YES=0
 FORCE=0
 SPKEY=''
+JOINKEY=''
 NTP=''
 KIOSK=0
 NO_TB_BACKUP=0
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
     --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
+    --join-key) JOINKEY="${2:?--join-key 后面给子站 join-egs.sh --keygen 打印的那一行（整行加引号）}"; shift ;;
     --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
@@ -288,6 +291,8 @@ install_sp() {
   cp -a docs "$SP_DEST/" 2>/dev/null || true
   # 0.17.2 子站一条命令批量升级 EG（EG 库 deploy/sp/upgrade-egs.sh）
   [ -f upgrade-egs.sh ] && install -m 755 upgrade-egs.sh "$SP_DEST/upgrade-egs.sh"
+  # 0.17.3 子站一条命令加柜（EG 库 deploy/sp/join-egs.sh）
+  [ -f join-egs.sh ] && install -m 755 join-egs.sh "$SP_DEST/join-egs.sh"
 
   ver="$(envget "$SP_B/docker/.env.prod.example" APP_VERSION)"
   if [ -f "$SP_ENV" ]; then
@@ -342,7 +347,8 @@ install_sp() {
   say '子站装好了'
   echo "  浏览器打开 http://$ip/    账号口令见 $SP_CRED（首次安装时生成，权限 600）"
   echo "  自检：curl -s http://127.0.0.1/ext/health"
-  echo "  接 EG：每台 EG 先用本安装文件 --role eg --sp-key <本机公钥> 装第一轮，再在 $SP_B 跑 scripts/provision-eg.sh --ssh lsa-sp@<EG> …、scripts/pack-eg.sh（docs/子站部署手册.md §5b）"
+  echo "  接 EG（一键加柜）：sudo bash $SP_DEST/join-egs.sh --keygen 打印一行 join-key，EG 用本安装文件 --role eg --join-key '<那一行>' 装，"
+  echo "        再在本机 sudo bash $SP_DEST/join-egs.sh --cabinet <柜号> --eg <EG 地址>（docs/子站一键加柜.md；手工 provision-eg.sh / pack-eg.sh 的老办法见子站部署手册 §5b）"
 }
 
 # 机柜双屏：子站装好以后调子站自己的 install-kiosk.sh（幂等、出错非 0；只支持 Ubuntu 24.04，它自己也查）
@@ -380,6 +386,10 @@ install_eg() {
   [ -n "$LAN1" ] && args+=(--lan1 "$LAN1")
   [ "$FORCE" = 1 ] && args+=(--force)
   [ -n "$SPKEY" ] && args+=(--sp-key "$SPKEY")
+  if [ -n "$JOINKEY" ]; then
+    grep -q -- '--join-key' "$DEST/install.sh" || die '这个 EG 版本的 install.sh 不认 --join-key（0.17.3 起才有）'
+    args+=(--join-key "$JOINKEY")
+  fi
   if [ "$NO_TB_BACKUP" = 1 ]; then
     if grep -q 'no-tb-backup' "$DEST/install.sh" 2>/dev/null; then args+=(--no-tb-backup)
     else echo '（这个 EG 版本的 install.sh 不认 --no-tb-backup，没传）'; fi

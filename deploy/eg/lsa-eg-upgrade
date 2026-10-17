@@ -13,16 +13,27 @@
 #   status                      当前 / 最近一次任务的状态（key=value）
 #   log [行数]                  任务日志最后几行（缺省 50，最多 500）
 #   drop <sha256>               删掉收到的安装文件
+# 一键加柜（0.17.3，子站 join-egs.sh 用）：
+#   put-config <sha256> <字节数>  从 stdin 收配置包（tar.gz，≤ 1 MB）到 /var/lib/lsa-upg/config-in/<sha256>.tgz（600）：
+#                               核对 sha256；包里只许 eg.yaml、sp-ca.pem、conv.args 三个普通文件（没有目录 / 链接 / ..），否则删掉并拒绝
+#   apply-config <sha256>       核对后后台换配置（同升级任务：state、日志、SSH 断了照跑）：包里 eg.yaml 的子站地址要和接入授权（join.json）一致、
+#                               已接入的柜号不能变；和现在的一样就直接答「same」。失败自动换回旧配置（原来待接入的回到待接入）
+#   conv <选项…>                调 install-conv.sh；选项白名单逐个校验（--serial / --sensors / --addr / --dev / --baud / --off / --status），
+#                               参数按数组传、不经 shell 拼接
+#   drop-tunnel                 撤掉子站 provision 隧道账号 lsa-sp（同 install.sh --drop-sp-key），升级授权留着
 # 其它一律拒绝，记进 /var/log/lsa-upg.log。
 set -euo pipefail
 umask 077
-ENTRY_VERSION=2
+ENTRY_VERSION=3
 EG=/opt/lsa-eg
 ST=/var/lib/lsa-upg
 IN="$ST/incoming"
 JOBS="$ST/jobs"
 LOG=/var/log/lsa-upg.log
 MAX_BYTES=$((8 * 1024 * 1024 * 1024))
+CFG_IN="$ST/config-in"
+CFG_NEW="$ST/config-new"
+MAX_CFG=$((1024 * 1024))
 
 say() { echo "$*"; }
 audit() { echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null || true; }
@@ -31,10 +42,18 @@ deny() { audit "拒绝：${CMD:-（空）} —— $1"; echo "ERR $1"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo 'ERR 要经 sudo 调'; exit 1; }
 [ $# -le 1 ] || deny '参数只能是一整句命令'
 CMD="${1:-}"
-[ ${#CMD} -le 200 ] || deny '命令太长'
-[[ "$CMD" =~ ^[a-z]+(\ [0-9a-f]{64})?(\ [0-9]{1,12})?$ ]] || deny '命令格式不对'
-read -r VERB A1 A2 <<< "$CMD" || true
-mkdir -p "$IN" "$JOBS"
+[ ${#CMD} -le 400 ] || deny '命令太长'
+# conv 的选项另有白名单（下面逐个校验）；其余动作只能是「动词 [sha256] [数字]」
+if [[ "$CMD" =~ ^conv(\ |$) ]]; then
+  [[ "$CMD" =~ ^conv(\ [A-Za-z0-9/_.,=-]+)*$ ]] || deny 'conv 的参数里有不允许的字符'
+  read -r -a CONV_WORDS <<< "$CMD" || true
+  VERB=conv A1='' A2=''
+else
+  [ ${#CMD} -le 200 ] || deny '命令太长'
+  [[ "$CMD" =~ ^[a-z][a-z-]*(\ [0-9a-f]{64})?(\ [0-9]{1,12})?$ ]] || deny '命令格式不对'
+  read -r VERB A1 A2 <<< "$CMD" || true
+fi
+mkdir -p "$IN" "$JOBS" "$CFG_IN" "$CFG_NEW"
 chmod 700 "$ST"
 
 free_bytes() { df -PB1 "$1" | awk 'NR==2 { print $4 }'; }
@@ -47,10 +66,55 @@ is_sha() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 # 这台 EG 正在做的别的维护（子站预检据此跳过，start 遇到安装在跑也拒绝）：一行一项，没有就空
 maintenance() {
   # 子站 provision-eg.sh 的隧道开着（在建实体 / 改设备清单）
-  pgrep -u lsa-sp >/dev/null 2>&1 && echo 'lsa-sp 隧道开着（子站在建本地实体或改设备清单）'
+  # 只认 sshd 会话：账号的 uid 可能和本地库容器（999）撞了，按 uid 一把抓会把本地库的进程当成隧道（0.17.3 修）
+  pgrep -u lsa-sp -f '^sshd' >/dev/null 2>&1 && echo 'lsa-sp 隧道开着（子站在建本地实体或改设备清单）'
   # 有人在手工跑安装 / 升级（排除我们自己的升级任务）
   pgrep -af 'install\.sh|lsa9600sp-bundle/setup\.sh|LSA-9600SP-.*\.run' 2>/dev/null | grep -v -e lsa-eg-upgrade -e pgrep | grep -q . && echo '有安装 / 升级在跑（install.sh 或一键安装文件）'
   true
+}
+# ---- 一键加柜：读 eg.yaml / join.json ----
+yaml_sp() { sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' "$1" 2>/dev/null | head -1 || true; }
+yaml_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' "$1" 2>/dev/null || true; }
+yaml_devs() { awk '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{gsub(/"/,"",$3);print $3}' "$1" 2>/dev/null || true; }
+join_sp() { sed -n 's/.*"sp": *"\([^"]*\)".*/\1/p' "$EG/config/join.json" 2>/dev/null | head -1 || true; }
+# conv 选项白名单：conv_parse <eg.yaml> <选项…> → CONV_ARGS；不认的 → CONV_ERR，返回 1
+SENS='pd|gas|temperature|arc|infrared'
+conv_parse() {
+  local egy="$1" v item; shift
+  CONV_ARGS=() CONV_ERR=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --serial)
+        v="${2:-}"
+        [[ "$v" =~ ^/dev/(ttyS[0-9]{1,2}|ttyUSB[0-9]{1,2}|ttyACM[0-9]{1,2}|serial/by-id/[A-Za-z0-9][A-Za-z0-9._-]{0,119})$ ]] || { CONV_ERR="--serial 只认 /dev/ttyS<n>、/dev/ttyUSB<n>、/dev/ttyACM<n>、/dev/serial/by-id/<名字>：$v"; return 1; }
+        CONV_ARGS+=(--serial "$v"); shift 2 ;;
+      --sensors)
+        v="${2:-}"
+        [[ "$v" =~ ^($SENS)(,($SENS)){0,4}$ ]] || { CONV_ERR="--sensors 只认 pd / gas / temperature / arc / infrared（逗号分开）：$v"; return 1; }
+        CONV_ARGS+=(--sensors "$v"); shift 2 ;;
+      --addr)
+        v="${2:-}"
+        for item in ${v//,/ }; do
+          [[ "$item" =~ ^($SENS)=([1-9][0-9]{0,2})$ ]] && [ "${BASH_REMATCH[2]}" -le 247 ] || { CONV_ERR="--addr 要「传感器=1–247」：$item"; return 1; }
+        done
+        [ -n "$v" ] || { CONV_ERR='--addr 后面没给值'; return 1; }
+        CONV_ARGS+=(--addr "$v"); shift 2 ;;
+      --dev)
+        v="${2:-}"
+        [ -n "$v" ] || { CONV_ERR='--dev 后面没给值'; return 1; }
+        for item in ${v//,/ }; do
+          [[ "$item" =~ ^($SENS)=([A-Za-z0-9-]{1,40})$ ]] || { CONV_ERR="--dev 要「传感器=设备名」：$item"; return 1; }
+          yaml_devs "$egy" | grep -qx "${BASH_REMATCH[2]}" || { CONV_ERR="--dev 的设备「${BASH_REMATCH[2]}」不在 eg.yaml 的设备清单里"; return 1; }
+        done
+        CONV_ARGS+=(--dev "$v"); shift 2 ;;
+      --baud)
+        v="${2:-}"
+        case "$v" in 1200 | 2400 | 4800 | 9600 | 19200 | 38400 | 57600 | 115200) ;; *) CONV_ERR="--baud 只认标准波特率：$v"; return 1 ;; esac
+        CONV_ARGS+=(--baud "$v"); shift 2 ;;
+      --off | --status) CONV_ARGS+=("$1"); shift ;;
+      *) CONV_ERR="不认的选项「$1」（只认 --serial / --sensors / --addr / --dev / --baud / --off / --status）"; return 1 ;;
+    esac
+  done
 }
 # 一键安装文件里 EG 发布件的版本（不执行它：只读负载里的 tar）
 run_eg_version() {
@@ -70,6 +134,10 @@ case "$VERB" in
     say "phase=$(state_get phase || true)"
     say "running=$(running && echo 1 || echo 0)"
     say "maint=$(maintenance | awk 'NR > 1 { printf "；" } { printf "%s", $0 }')"
+    # 一键加柜：接入了没有、柜号、接的子站（已接入看 eg.yaml，待接入看 join.json）
+    if [ -f "$EG/config/eg.yaml" ]; then say 'joined=1'; say "cabinet=$(yaml_cab "$EG/config/eg.yaml")"; say "sp=$(yaml_sp "$EG/config/eg.yaml")"
+    else say 'joined=0'; say 'cabinet='; say "sp=$(join_sp)"; fi
+    say "join_sp=$(join_sp)"
     ;;
   put)
     is_sha "${A1:-}" && [ -n "${A2:-}" ] || deny 'put <sha256> <字节数>'
@@ -135,5 +203,98 @@ case "$VERB" in
     audit "删掉安装文件 $A1"
     say "OK drop $A1"
     ;;
-  *) deny "不认识的命令「$VERB」（只认 hello / put / start / status / log / drop）" ;;
+  put-config)
+    is_sha "${A1:-}" && [ -n "${A2:-}" ] || deny 'put-config <sha256> <字节数>'
+    [ "$A2" -gt 0 ] && [ "$A2" -le "$MAX_CFG" ] || deny "配置包不能超过 $MAX_CFG 字节"
+    running && deny '有任务正在跑'
+    find "$CFG_IN" -maxdepth 1 -type f -delete
+    part="$CFG_IN/.part"
+    head -c "$A2" > "$part"
+    got="$(stat -c %s "$part")"
+    [ "$got" = "$A2" ] || { rm -f "$part"; deny "只收到 $got 字节（应为 $A2）"; }
+    sum="$(sha256sum "$part" | cut -d' ' -f1)"
+    [ "$sum" = "$A1" ] || { rm -f "$part"; deny "配置包 sha256 对不上：收到的是 $sum"; }
+    # 包里只许三个普通文件：eg.yaml（必须有）、sp-ca.pem、conv.args
+    listing="$(tar -tzvf "$part" 2>/dev/null || true)"
+    [ -n "$listing" ] || { rm -f "$part"; deny '不是 tar.gz 配置包'; }
+    has_eg=0
+    while read -r mode _ _ _ _ name rest; do
+      [ -n "${mode:-}" ] || continue
+      [ "${mode:0:1}" = - ] && [ -z "${rest:-}" ] || { rm -f "$part"; deny "配置包里有不是普通文件的条目：$name"; }
+      case "${name#./}" in
+        eg.yaml) has_eg=1 ;;
+        sp-ca.pem | conv.args) ;;
+        *) rm -f "$part"; deny "配置包里有不认的文件：$name（只许 eg.yaml、sp-ca.pem、conv.args）" ;;
+      esac
+    done <<< "$listing"
+    [ "$has_eg" = 1 ] || { rm -f "$part"; deny '配置包里没有 eg.yaml'; }
+    mv "$part" "$CFG_IN/$A1.tgz"; chmod 600 "$CFG_IN/$A1.tgz"
+    audit "收到配置包 $A1（$A2 字节）"
+    say "OK put-config $A1"
+    ;;
+  apply-config)
+    is_sha "${A1:-}" && [ -z "${A2:-}" ] || deny 'apply-config <sha256>'
+    f="$CFG_IN/$A1.tgz"
+    [ -f "$f" ] || deny "没有收到 $A1 这个配置包（先 put-config）"
+    running && deny '有任务正在跑'
+    maintenance | grep -q '安装 / 升级在跑' && deny '这台 EG 上有人在跑安装 / 升级，等它完了再来'
+    [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$A1" ] || { rm -f "$f"; deny '配置包 sha256 对不上（被改过？已删）'; }
+    d="$CFG_NEW/$A1"; rm -rf "$d"; mkdir -p "$d"
+    adeny() { rm -rf "$d"; deny "$@"; }   # 解开以后再拒：解开的目录一起删
+    tar -xzf "$f" -C "$d" --no-same-owner --no-same-permissions
+    chmod 600 "$d"/*
+    new_sp="$(yaml_sp "$d/eg.yaml")"; new_cab="$(yaml_cab "$d/eg.yaml")"
+    [ -n "$new_sp" ] && [ -n "$new_cab" ] || adeny '配置包里的 eg.yaml 取不到子站地址或柜号'
+    # 子站地址要和接入授权一致：有 join.json 认它；老办法接入的（没有 join.json）认现在 eg.yaml 里的
+    auth_sp="$(join_sp)"; [ -z "$auth_sp" ] && [ -f "$EG/config/eg.yaml" ] && auth_sp="$(yaml_sp "$EG/config/eg.yaml")"
+    [ -n "$auth_sp" ] || adeny '这台 EG 没有接入授权（install.sh --join-key）'
+    [ "$new_sp" = "$auth_sp" ] || adeny "配置包是给子站 $new_sp 的，这台 EG 授权的是 $auth_sp"
+    if [ -f "$EG/config/eg.yaml" ]; then
+      cur_cab="$(yaml_cab "$EG/config/eg.yaml")"
+      [ "$new_cab" = "$cur_cab" ] || adeny "这台 EG 已接入柜 $cur_cab，配置包是柜 $new_cab 的：不能直接改柜号（先撤再接）"
+    fi
+    # conv.args（可选）：一行一个参数，照 conv 的白名单校验，过了写成 conv.argv 给任务用
+    rm -f "$d/conv.argv"
+    if [ -f "$d/conv.args" ]; then
+      read -r -a cw < "$d/conv.args" || true
+      conv_parse "$d/eg.yaml" "${cw[@]}" || adeny "conv.args：$CONV_ERR"
+      printf '%s\n' "${CONV_ARGS[@]}" > "$d/conv.argv"
+    fi
+    # 和现在的配置一样：不用换
+    same=1
+    for x in eg.yaml sp-ca.pem; do
+      a="$( (sha256sum "$d/$x" 2>/dev/null || echo none) | cut -c1-64)"; b="$( (sha256sum "$EG/config/$x" 2>/dev/null || echo none) | cut -c1-64)"
+      [ "$a" = "$b" ] || same=0
+    done
+    if [ "$same" = 1 ]; then
+      rm -rf "$d"
+      audit "配置包 $A1 和现在的一样（柜 $new_cab）：不用换"
+      say "OK apply-config same $new_cab"
+      exit 0
+    fi
+    job="$(date +%Y%m%d-%H%M%S)"
+    printf 'job=%s\nkind=config\nsha=%s\nfrom=%s\nto=%s\nphase=queued\nstarted=%s\nreason=\n' "$job" "$A1" "$(yaml_cab "$EG/config/eg.yaml" || true)" "$new_cab" "$(date +%s)" > "$ST/state.tmp"
+    mv "$ST/state.tmp" "$ST/state"
+    : > "$JOBS/$job.log"
+    if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null; then
+      systemd-run --unit "lsa-eg-config-$job" --collect --quiet /usr/local/sbin/lsa-eg-upgrade-job "$job"
+    else
+      setsid nohup /usr/local/sbin/lsa-eg-upgrade-job "$job" > /dev/null 2>&1 < /dev/null &
+    fi
+    audit "开始换配置 $job：柜 $new_cab（$A1）"
+    say "OK apply-config $job $new_cab"
+    ;;
+  conv)
+    [ -f "$EG/config/eg.yaml" ] || deny '还没接入（没有 eg.yaml）：先 apply-config'
+    running && deny '有任务正在跑'
+    conv_parse "$EG/config/eg.yaml" "${CONV_WORDS[@]:1}" || deny "$CONV_ERR"
+    audit "转换程序：install-conv.sh ${CONV_ARGS[*]}"
+    bash "$EG/install-conv.sh" "${CONV_ARGS[@]}" < /dev/null 2>&1 || { echo "ERR install-conv.sh 退出码 $?"; exit 3; }
+    ;;
+  drop-tunnel)
+    [ -z "${A1:-}" ] || deny 'drop-tunnel 不带参数'
+    (cd "$EG" && bash install.sh --drop-sp-key < /dev/null 2>&1)
+    audit '撤掉 provision 隧道账号 lsa-sp'
+    ;;
+  *) deny "不认识的命令「$VERB」（只认 hello / put / start / status / log / drop / put-config / apply-config / conv / drop-tunnel）" ;;
 esac

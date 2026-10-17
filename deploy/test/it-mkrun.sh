@@ -5,22 +5,32 @@
 #     给了 APPID（环境变量，新版本应用镜像的 ID）就连 ID 一起改 —— agent 报的版本来自镜像里的 /app/package.json，
 #     沙箱里先从原镜像派生一个只改了版本号的镜像（docker build --network none），各 EG 上 docker save / load 同一个，ID 一致；
 #   - --break：把 IMAGES.txt 里 mosquitto 的镜像 ID 改错 —— install.sh 在第 3 步（已经把旧版挪成 .previous 之后）核对失败退出，测自动回退。
+#   - 顶层 setup.sh、join-egs.sh 也换成本分支的（一键加柜测试：--join-key 要新 setup.sh 转给 install.sh）。
+#   - KEEP_IMAGES=1：sp/ 和 eg/ 的镜像包都留着（给裸沙箱从头装子站、EG）；APPTAR=<docker save 的 .tar.gz>：放成 eg/images-it.tar.gz，
+#     install.sh 照样导入（新应用镜像，如带 pending.mjs 的派生镜像；配合 APPID）。
 # 重新算 SHA256SUMS，套回原来的 stub。在一次性 ubuntu:24.04 容器里做（不下载）。
-#   bash deploy/test/it-mkrun.sh <原 .run> <输出 .run> <新版本> [--break]
+#   [KEEP_IMAGES=1] [APPTAR=…] [APPID=…] bash deploy/test/it-mkrun.sh <原 .run> <输出 .run> <新版本> [--break]
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 SRC="${1:?原 .run}"; OUT="${2:?输出 .run}"; VER="${3:?新版本}"; BREAK="${4:-}"
 ROOT="$(cd "$(dirname "$0")/../.." && (pwd -W 2>/dev/null || pwd))"
 sd="$(cd "$(dirname "$SRC")" && (pwd -W 2>/dev/null || pwd))"; od="$(mkdir -p "$(dirname "$OUT")" && cd "$(dirname "$OUT")" && (pwd -W 2>/dev/null || pwd))"
-docker run --rm --pull never -v "$sd:/src:ro" -v "$od:/out" -v "$ROOT:/repo:ro" -e S="$(basename "$SRC")" -e O="$(basename "$OUT")" -e VER="$VER" -e BREAK="$BREAK" -e APPID="${APPID:-}" ubuntu:24.04 bash -c '
+at=()
+if [ -n "${APPTAR:-}" ]; then at=(-v "$(cd "$(dirname "$APPTAR")" && (pwd -W 2>/dev/null || pwd))/$(basename "$APPTAR"):/apptar.tar.gz:ro"); fi
+docker run --rm --pull never -v "$sd:/src:ro" -v "$od:/out" -v "$ROOT:/repo:ro" "${at[@]}" -e S="$(basename "$SRC")" -e O="$(basename "$OUT")" -e VER="$VER" -e BREAK="$BREAK" -e APPID="${APPID:-}" -e KEEP="${KEEP_IMAGES:-}" ubuntu:24.04 bash -c '
 set -euo pipefail
 skip=$(awk "/^__LSA_PAYLOAD_BELOW__\$/ { print NR + 1; exit }" "/src/$S")
-mkdir /w && tail -n +$skip "/src/$S" | tar -x -C /w --exclude="lsa9600sp-bundle/sp/*" --exclude="lsa9600sp-bundle/eg/images-*.tar.gz"
+ex=()
+if [ -z "$KEEP" ]; then ex=(--exclude="lsa9600sp-bundle/sp/*" --exclude="lsa9600sp-bundle/eg/images-*.tar.gz"); fi
+mkdir /w && tail -n +$skip "/src/$S" | tar -x -C /w "${ex[@]}"
 B=/w/lsa9600sp-bundle
 mkdir -p $B/sp
 old=$(cat $B/eg/VERSION)
 for f in install.sh compose.yaml lsa-eg-upgrade lsa-eg-upgrade-job; do sed "s/\r\$//" /repo/deploy/eg/$f > $B/eg/$f; done
 sed "s/\r\$//" /repo/tools/conv-addon/install-conv.sh > $B/eg/install-conv.sh
+sed "s/\r\$//" /repo/deploy/bundle/setup.sh > $B/setup.sh
+sed "s/\r\$//" /repo/deploy/sp/join-egs.sh > $B/join-egs.sh
+if [ -f /apptar.tar.gz ]; then cp /apptar.tar.gz $B/eg/images-it.tar.gz; fi
 echo "$VER" > $B/eg/VERSION
 if [ -n "$APPID" ]; then sed -i -E "s#^lsa-eg-app:$old .*#lsa-eg-app:$VER $APPID $APPID#" $B/eg/IMAGES.txt
 else sed -i "s#^lsa-eg-app:$old #lsa-eg-app:$VER #" $B/eg/IMAGES.txt; fi

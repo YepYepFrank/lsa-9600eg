@@ -7,6 +7,9 @@
 #     install 失败（安装文件非 0 退出 / 超时）→ rollback → rolled-back（回退也失败：rollback-failed）
 #     check 不过（装完了，但版本 / 容器 / 本地 TB / 上送有一项不对）→ check-failed：不自动回退（可能是子站或网络的问题），子站停下、给回退命令
 #   核对：EG VERSION = 安装文件里的版本；7 个容器 running、60 s 内没有重启；本地 TB 镜像 = 发布件 IMAGES.txt 里的；装完后 agent 连上子站。
+# 换配置任务（0.17.3 一键加柜，state 的 kind=config，lsa-eg-upgrade apply-config 起）：
+#   backup → apply（换上 eg.yaml / sp-ca.pem，跑 install.sh）→ check（7 个容器、agent 连上子站）→ conv（包里带了 conv.args 才做）→ done
+#   apply / check 不过 → rollback：换回旧的 eg.yaml / sp-ca.pem（原来待接入的就删掉、回到待接入）再跑一次 install.sh → rolled-back
 set -uo pipefail
 umask 077
 JOB="${1:?任务号}"
@@ -31,6 +34,69 @@ fail() { sset reason "$2"; phase "$1" "$2"; exit 1; }
 envget() { grep -E "^$1=" "$EG/.env" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
 SHA="$(sget sha)"; TO="$(sget to)"; FROM="$(sget from)"
+
+# ---------- 换配置（一键加柜） ----------
+if [ "$(sget kind)" = config ]; then
+  D="$ST/config-new/$SHA"
+  B="$EG/config/.join-backup-$JOB"
+  echo "== $(date '+%F %T') 换配置 $JOB：柜 ${FROM:-（待接入）} → $TO（$SHA）"
+  had=0
+  restore() {  # 换回旧配置再跑一次 install.sh
+    sset reason "$1"
+    phase rollback "$1"
+    if [ "$had" = 1 ]; then cp -p "$B/eg.yaml" "$EG/config/eg.yaml"; [ -f "$B/sp-ca.pem" ] && cp -p "$B/sp-ca.pem" "$EG/config/sp-ca.pem"
+    else rm -f "$EG/config/eg.yaml" "$EG/config/sp-ca.pem"; [ -f "$B/sp-ca.pem" ] && cp -p "$B/sp-ca.pem" "$EG/config/sp-ca.pem"; fi
+    if (cd "$EG" && timeout "$INSTALL_TIMEOUT" bash install.sh < /dev/null); then
+      phase rolled-back "已换回$([ "$had" = 1 ] && echo "旧配置（柜 $FROM）" || echo '待接入')"
+    else
+      sset reason "$1；换回以后 install.sh 也没成功：sudo bash $EG/install.sh"
+      phase rollback-failed
+    fi
+    rm -rf "$D"
+    exit 1
+  }
+  phase backup
+  [ -f "$D/eg.yaml" ] || fail failed '配置包解开的目录不见了'
+  mkdir -p "$B" && chmod 700 "$B"
+  [ -f "$EG/config/eg.yaml" ] && { cp -p "$EG/config/eg.yaml" "$B/"; had=1; }
+  [ -f "$EG/config/sp-ca.pem" ] && cp -p "$EG/config/sp-ca.pem" "$B/"
+  echo "旧配置备份在 $B（$([ "$had" = 1 ] && echo "柜 $FROM" || echo '原来待接入')）"
+  # 备份里有令牌：只留最近 3 份
+  ls -1dt "$EG"/config/.join-backup-* 2>/dev/null | tail -n +4 | xargs -r rm -rf
+  phase apply
+  install -m 600 "$D/eg.yaml" "$EG/config/eg.yaml"
+  [ -f "$D/sp-ca.pem" ] && install -m 600 "$D/sp-ca.pem" "$EG/config/sp-ca.pem"
+  t0=$(date +%s)
+  (cd "$EG" && timeout "$INSTALL_TIMEOUT" bash install.sh < /dev/null)
+  rc=$?
+  sset install_rc "$rc"; sset install_s "$(( $(date +%s) - t0 ))"
+  [ "$rc" = 0 ] || restore "install.sh 退出码 $rc"
+  phase check
+  t1=$(date +%s)
+  while :; do
+    problems=''
+    for c in $CONTAINERS; do [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = running ] || problems+="$c 没在跑；"; done
+    since="$(docker inspect -f '{{.State.StartedAt}}' lsa-eg-agent 2>/dev/null)"
+    docker logs --since "$since" lsa-eg-agent 2>&1 | grep -q '已连子站' || problems+='agent 还没连上子站；'
+    [ -z "$problems" ] && break
+    [ $(( $(date +%s) - t1 )) -ge "$CHECK_TIMEOUT" ] && break
+    sleep 10
+  done
+  sset check_s "$(( $(date +%s) - t1 ))"
+  [ -z "$problems" ] || restore "${problems%；}"
+  if [ -f "$D/conv.argv" ]; then
+    phase conv
+    mapfile -t cargs < "$D/conv.argv"
+    bash "$EG/install-conv.sh" "${cargs[@]}" < /dev/null; crc=$?
+    sset conv_rc "$crc"
+    [ "$crc" = 0 ] || echo "!! 转换程序没设好（退出码 $crc）：配置已经换好，转换程序之后再用 conv 设"
+  fi
+  rm -rf "$D" "$ST/config-in/$SHA.tgz"
+  sset reason ''
+  phase done "柜 $TO，agent 连上子站"
+  exit 0
+fi
+
 F="$ST/incoming/$SHA.run"
 echo "== $(date '+%F %T') 升级任务 $JOB：$FROM → $TO（$SHA）"
 
