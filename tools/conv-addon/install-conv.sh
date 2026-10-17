@@ -319,6 +319,14 @@ write_override
 echo "== 起转换程序"
 $DC --profile conv up -d conv 2>&1 | grep -vE '^\s*$' | tail -3
 [ -n "$changed" ] && [ -z "$fresh" ] && { docker restart lsa-eg-conv >/dev/null; echo '配置改了，已重启转换程序'; }
+# agent 按 EG_CONV_SERIAL 定 conv.bus 的接口名（COM2 / USB，0.17.4）：它在容器创建时拿这个值，串口换了要重建 agent（中断 1–2 s）
+if docker inspect lsa-eg-agent >/dev/null 2>&1; then
+  agent_ser="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' lsa-eg-agent 2>/dev/null | sed -n 's/^EG_CONV_SERIAL=//p' || true)"
+  if [ "$agent_ser" != "$SERIAL" ]; then
+    $DC up -d --no-deps agent 2>&1 | grep -vE '^\s*$' | tail -1 || true
+    echo "串口换了（agent 原来是 ${agent_ser:-（没有）}，现在 $SERIAL）：已重建 agent，conv.bus 的接口名跟着变"
+  fi
+fi
 echo "== 等 20 s 看采集"
 sleep 20
 docker ps --filter name=^lsa-eg-conv$ --format '容器：{{.Status}}'
