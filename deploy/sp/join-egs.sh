@@ -1,5 +1,5 @@
 #!/bin/bash
-# LSA-9600SP 子站主机上一条命令加柜（0.17.3 一键加柜）。在子站主机上用 root 跑：
+# LSA-9600SP 子站主机上一条命令加柜（0.17.4 一键加柜）。在子站主机上用 root 跑：
 #
 #   sudo bash join-egs.sh --keygen [--sp-addr <子站地址>]
 #       生成隧道 key（升级 key 有就复用，和 upgrade-egs.sh 同一把），打印 join-key —— EG 上装软件时带上：
@@ -134,7 +134,7 @@ preflight() {  # preflight <柜号> <EG 地址>
     else hello="$(tr '\n' ' ' <<< "$hello")"; echo "why=连不上 EG：${hello:0:80}（EG 开着吗、地址对吗、22 口通吗）"; fi
     return
   fi
-  [ "$(kv entry "$hello")" -ge 3 ] 2>/dev/null || { echo 'ok=0'; echo "why=EG 版本太老（入口 $(kv entry "$hello")，要 0.17.3 起）：先升级"; return; }
+  [ "$(kv entry "$hello")" -ge 3 ] 2>/dev/null || { echo 'ok=0'; echo "why=EG 版本太老（入口 $(kv entry "$hello")，要 0.17.4 起）：先升级"; return; }
   j="$(kv joined "$hello")"; jcab="$(kv cabinet "$hello")"; jsp="$(kv join_sp "$hello")"
   echo "eg_version=$(kv eg_version "$hello")"; echo "eg_joined=$j"; echo "eg_cabinet=$jcab"
   if [ "$j" = 1 ] && [ "$jcab" != "$c" ]; then echo 'ok=0'; echo "why=这台 EG 已接入柜 $jcab，不能直接接成 $c"; return; fi

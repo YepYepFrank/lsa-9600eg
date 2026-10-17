@@ -1,4 +1,4 @@
-// LSA-9600EG 待接入页（0.17.3 一键加柜）：给了 --join-key、还没有 eg.yaml 时，install.sh 用应用镜像起它（compose 的 pending 服务，宿主机网络 80 口）。
+// LSA-9600EG 待接入页（0.17.4 一键加柜）：给了 --join-key、还没有 eg.yaml 时，install.sh 用应用镜像起它（compose 的 pending 服务，宿主机网络 80 口）。
 // 现场的人笔记本接 LAN2 的交换机、浏览器打开 EG 地址，就能看到「待接入」、授权的子站、各网口的 IP / MAC，不用 SSH。
 // 只读：不带任何口令 / 令牌，不能做任何操作，只认 GET。只用 Node 自带模块（不经 Nest、不读 eg.yaml）。
 // 接入后（子站 join-egs.sh 推了 eg.yaml）install.sh 会删掉这个容器、起 agent。

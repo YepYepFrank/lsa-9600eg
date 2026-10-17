@@ -10,7 +10,7 @@
 #       --ntp 给站内时钟源（GPS / 北斗授时或上级 NTP），记住，以后升级不用再给。
 #       --kiosk（0.16）：子站装好后再装机柜双屏（scripts/install-kiosk.sh sp/kiosk）；安装文件里要有 sp/kiosk/（子站离线包带 --with-kiosk 打的）。
 #   sudo bash setup.sh --role eg [--lan1 <摄像机网口>] [--join-key '<子站 join-egs.sh --keygen 打印的一行>'] [--sp-key <子站公钥>] [--eg-config <目录>] [--no-tb-backup] [--yes]
-#       --join-key（0.17.3 一键加柜）：EG 上只这一次手动（可以在库房做），其余子站 join-egs.sh 完成；装完是「待接入」，浏览器开 EG 地址能看到
+#       --join-key（0.17.4 一键加柜）：EG 上只这一次手动（可以在库房做），其余子站 join-egs.sh 完成；装完是「待接入」，浏览器开 EG 地址能看到
 #       EG：/opt/lsa-eg → install.sh（离线装 Docker / chrony、导入镜像、起本地 TB）。
 #       --eg-config：该目录里的 eg.yaml、sp-ca.pem（子站对**这台** EG 跑过 provision:eg 之后 pack-eg.sh 出的）拷进 config/ 并起全部。
 #   --no-tb-backup（0.17）：TB 同一补丁线升级（如 4.2.2.5 → 4.2.2.6）时不做升级前备份、直接升（备份失败又腾不出空间时用；放弃退回旧版 TB 的能力）。
@@ -291,7 +291,7 @@ install_sp() {
   cp -a docs "$SP_DEST/" 2>/dev/null || true
   # 0.17.2 子站一条命令批量升级 EG（EG 库 deploy/sp/upgrade-egs.sh）
   [ -f upgrade-egs.sh ] && install -m 755 upgrade-egs.sh "$SP_DEST/upgrade-egs.sh"
-  # 0.17.3 子站一条命令加柜（EG 库 deploy/sp/join-egs.sh）
+  # 0.17.4 子站一条命令加柜（EG 库 deploy/sp/join-egs.sh）
   [ -f join-egs.sh ] && install -m 755 join-egs.sh "$SP_DEST/join-egs.sh"
 
   ver="$(envget "$SP_B/docker/.env.prod.example" APP_VERSION)"
@@ -387,7 +387,7 @@ install_eg() {
   [ "$FORCE" = 1 ] && args+=(--force)
   [ -n "$SPKEY" ] && args+=(--sp-key "$SPKEY")
   if [ -n "$JOINKEY" ]; then
-    grep -q -- '--join-key' "$DEST/install.sh" || die '这个 EG 版本的 install.sh 不认 --join-key（0.17.3 起才有）'
+    grep -q -- '--join-key' "$DEST/install.sh" || die '这个 EG 版本的 install.sh 不认 --join-key（0.17.4 起才有）'
     args+=(--join-key "$JOINKEY")
   fi
   if [ "$NO_TB_BACKUP" = 1 ]; then

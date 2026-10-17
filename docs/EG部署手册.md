@@ -154,7 +154,7 @@
 sudo bash LSA-9600SP-<版本>-offline.run --role sp [--ip <站内 IP>]     # 子站：随机口令写 /opt/lsa9600sp/初始账号口令.txt
 sudo bash LSA-9600SP-<版本>-offline.run --role sp --kiosk             # 0.16：子站装好后接着装机柜双屏（安装文件要带 sp/kiosk/）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口>  # EG 第一轮（= 下面 §4 的 install.sh）
-sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口> --join-key '<子站给的一行>'   # 0.17.3：一键加柜，其余在子站做（§4a）
+sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口> --join-key '<子站给的一行>'   # 0.17.4：一键加柜，其余在子站做（§4a）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --eg-config <目录>   # 子站 provision:eg + pack-eg.sh 之后，带 eg.yaml、sp-ca.pem 起全部
 ```
 
@@ -212,7 +212,7 @@ sudo bash install.sh        # 第二轮：配 chrony、生成 IoT Gateway 与 me
 **验收**：浏览器开 `http://<EG 的 LAN2 地址>/`，本地维护账号 `maint`，初始口令在 `config/initial-password.txt`（登录后改掉口令、删掉这个文件）。
 「诊断」页各项应为绿色：本机总线已连、到子站时延正常、数据上送「正常」、告警事件上送「正常」、对时偏差 < 1 s；子站网关页看到这台 EG 在线、积压为 0。
 
-## 4a. 一键加柜（0.17.3 起，推荐）
+## 4a. 一键加柜（0.17.4 起，推荐）
 
 §4 的 1–4 步（授权隧道、建实体、出配置包、拷到 EG 再跑第二轮）可以全交给子站：EG 上只动一次手，可以在进场前的库房做。子站侧用法见子站部署手册「一键加柜」（`docs/子站一键加柜.md`，脚本 `/opt/lsa9600sp/join-egs.sh`）。§4 的老做法照旧能用。
 
@@ -228,7 +228,7 @@ sudo bash /opt/lsa-eg/install.sh --join-key '<那一行>'        # 已经装好�
 - 已接入别的子站的 EG 再给别的子站的 join-key：拒绝，换子站加 `--force`。同一个子站的重复给：只更新 key（幂等）。
 - **待接入**：有 join.json、还没有 eg.yaml。第一轮装完起本地 TB 和一张只读的**待接入页**（容器 `lsa-eg-pending`，同一个应用镜像，在 80 口）：授权的子站、本机各网口的 IP / MAC、软件版本、本地 TB 起没起、子站上要执行的下一条命令。页面上没有密钥、没有任何操作，LAN1 进来照样 403。`install.sh --status` 显示「接入：待接入 —— 已授权子站 …」，接入后显示「接入：已接入子站 X（柜号 Y）」。
 
-**子站做的**（经升级入口，0.17.3 入口版本 3 新加 4 个动作，仍是白名单）：
+**子站做的**（经升级入口，0.17.4 入口版本 3 新加 4 个动作，仍是白名单）：
 
 | 动作 | 做什么 | 校验 |
 |---|---|---|
@@ -372,7 +372,7 @@ sudo bash /opt/lsa-eg/test/test.sh down
 | 本地维护账号 maint | 初始口令随机，在 `config/initial-password.txt`；登录后到「系统」改口令，再删这个文件。文件还在时管理页每页顶上有提醒条，install.sh 的「安全提醒」也会列 |
 | 隧道账号 lsa-sp | 只在部署 / 改设备清单时需要；用完 `install.sh --drop-sp-key` |
 | 批量升级账号 lsa-upg（0.17.2） | `install.sh --upgrade-key` 授权，只认子站、只能进升级入口（§6c）；持子站那把 key 等于能装任意安装文件，不用时 `--drop-upgrade-key` |
-| 一键加柜（0.17.3） | `--join-key` 一次给两把 key，都只认子站地址；隧道接入完由子站撤掉，升级授权留着（§4a）。能推配置的人也能改 EG 的配置，所以入口要求子站地址和 join.json 一致、已接入的柜号不能改 |
+| 一键加柜（0.17.4） | `--join-key` 一次给两把 key，都只认子站地址；隧道接入完由子站撤掉，升级授权留着（§4a）。能推配置的人也能改 EG 的配置，所以入口要求子站地址和 join.json 一致、已接入的柜号不能改 |
 | SSH | 维护账号改用密钥登录后，建议关掉口令登录（`/etc/ssh/sshd_config.d/` 下写 `PasswordAuthentication no`，`systemctl reload ssh`）。install.sh 只提醒、不替你改（免得把自己锁在外面）；防火墙可只放子站主机与维护笔记本访问 22 |
 | LAN1 防火墙 | `--lan1` 时自动加（见 §1）：摄像机网上 22 / 80 / 8554 都连不上。实测（无 AVX 样机）：从摄像机网全部超时；EG 主动连摄像机网、经 LAN1 拉 RTSP（TCP）照常；重启后 28 s 内规则在；回退到老版本清掉、再升回来又加上 |
 | 对外端口 | 只有 22、80（管理页）、8554（RTSP，mediamtx 只许子站主机与本机读）、8189/UDP（WebRTC）听所有网口；本地 TB 18080、本机总线 1884、mediamtx API / 回放、eg-video 都只绑 127.0.0.1（虚拟样机 `ss -tulnp` 核对过）。LAN1 进来的管理页请求一律 403（`--lan1`） |

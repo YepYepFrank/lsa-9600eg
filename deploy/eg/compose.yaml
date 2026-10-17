@@ -155,7 +155,7 @@ services:
     mem_limit: 384m
     logging: *log
 
-  # 待接入页（0.17.3 一键加柜）：给了 --join-key、还没有 eg.yaml 时 install.sh 起它（--profile pending），接入后删掉、让 agent 用 80 口。
+  # 待接入页（0.17.4 一键加柜）：给了 --join-key、还没有 eg.yaml 时 install.sh 起它（--profile pending），接入后删掉、让 agent 用 80 口。
   # 只读小页面：待接入、授权的子站、各网口 IP / MAC；不读 eg.yaml、不带任何口令，只认 GET（apps/agent/pending.mjs，只用 Node 自带模块）
   pending:
     profiles: [pending]

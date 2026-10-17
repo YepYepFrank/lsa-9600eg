@@ -13,7 +13,7 @@
 #   status                      当前 / 最近一次任务的状态（key=value）
 #   log [行数]                  任务日志最后几行（缺省 50，最多 500）
 #   drop <sha256>               删掉收到的安装文件
-# 一键加柜（0.17.3，子站 join-egs.sh 用）：
+# 一键加柜（0.17.4，子站 join-egs.sh 用）：
 #   put-config <sha256> <字节数>  从 stdin 收配置包（tar.gz，≤ 1 MB）到 /var/lib/lsa-upg/config-in/<sha256>.tgz（600）：
 #                               核对 sha256；包里只许 eg.yaml、sp-ca.pem、conv.args 三个普通文件（没有目录 / 链接 / ..），否则删掉并拒绝
 #   apply-config <sha256>       核对后后台换配置（同升级任务：state、日志、SSH 断了照跑）：包里 eg.yaml 的子站地址要和接入授权（join.json）一致、
@@ -66,7 +66,7 @@ is_sha() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 # 这台 EG 正在做的别的维护（子站预检据此跳过，start 遇到安装在跑也拒绝）：一行一项，没有就空
 maintenance() {
   # 子站 provision-eg.sh 的隧道开着（在建实体 / 改设备清单）
-  # 只认 sshd 会话：账号的 uid 可能和本地库容器（999）撞了，按 uid 一把抓会把本地库的进程当成隧道（0.17.3 修）
+  # 只认 sshd 会话：账号的 uid 可能和本地库容器（999）撞了，按 uid 一把抓会把本地库的进程当成隧道（0.17.4 修）
   pgrep -u lsa-sp -f '^sshd' >/dev/null 2>&1 && echo 'lsa-sp 隧道开着（子站在建本地实体或改设备清单）'
   # 有人在手工跑安装 / 升级（排除我们自己的升级任务）
   pgrep -af 'install\.sh|lsa9600sp-bundle/setup\.sh|LSA-9600SP-.*\.run' 2>/dev/null | grep -v -e lsa-eg-upgrade -e pgrep | grep -q . && echo '有安装 / 升级在跑（install.sh 或一键安装文件）'
