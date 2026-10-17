@@ -6,6 +6,7 @@
 # 查的写法（启发式，逐行看；确认没问题的行在行尾写 # sete-ok 跳过）：
 #   1. 命令替换里有 grep / head 却没有 || 兜底：grep 没匹配返回 1；| head 截断大输出时上游收到 SIGPIPE（141）
 #      —— pipefail 下整句赋值失败。local x="$(…)" 不算（local 吞掉返回码）
+#      sed 读文件（sed '…' <文件>）同理：文件不存在返回 2（0.17.2 install.sh --status 在没有 /var/lib/lsa-upg/state 时退出）
 #   2. 不在 while 条件里、也没有 || 兜底的 read：读到 EOF（没有终端、stdin 已关）返回 1
 #   3. 函数的最后一句是 [ … ] && …：条件不成立时函数返回 1，调用处退出（顶层循环里的不算，bash 会豁免）
 #   4. 赋值里嵌了 $([ … ] && …)、没有 ||：条件不成立时命令替换返回 1，整句赋值失败（不管赋值在行首还是 then / ; 后面）
@@ -32,6 +33,7 @@ for f in "${files[@]}"; do
           body = s; j = i
           while (body !~ /\)"?[ \t]*(;.*|#.*)?$/ && j < NR && j < i + 6) { j++; body = body "\n" line[j] }
           if (body ~ /(^|[ |(])(grep|head)[ \t]/ && body !~ /\|\|/) printf "%s:%d: 命令替换里有 grep / head，没有 || true 兜底\n", F, i
+          else if (body ~ /(^|[ |(])sed[ \t]+(-[A-Za-z]+[ \t]+)*\047[^\047]*\047[ \t]+["$\/]/ && body !~ /\|\|/) printf "%s:%d: 命令替换里 sed 读文件（文件不在时返回 2），没有 || true 兜底\n", F, i
         }
         # 2. read：不在 while 条件里、没有 ||
         if (s ~ /(^|[;&|{ \t])read[ \t]+-/ && s !~ /while[ \t]/ && s !~ /\|\|/ && s !~ /<<</ && s !~ /^[ \t]*done/) printf "%s:%d: read 没有 || 兜底（读到 EOF 返回 1）\n", F, i

@@ -161,8 +161,8 @@ fi
 if [ "$MODE" = resume ]; then
   BD="$LOGROOT/$BATCH"
   [ -f "$BD/meta" ] || { echo "没有批次 $BATCH（--list 看有哪些）" >&2; exit 1; }
-  RUN="$(sed -n 's/^run=//p' "$BD/meta")"; SHA="$(sed -n 's/^sha=//p' "$BD/meta")"; SIZE="$(sed -n 's/^size=//p' "$BD/meta")"
-  TO="$(sed -n 's/^to=//p' "$BD/meta")"; PAR="$(sed -n 's/^parallel=//p' "$BD/meta")"; CANARY="$(sed -n 's/^canary=//p' "$BD/meta")"
+  RUN="$(sed -n 's/^run=//p' "$BD/meta")"; SHA="$(sed -n 's/^sha=//p' "$BD/meta")"; SIZE="$(sed -n 's/^size=//p' "$BD/meta")"  # sete-ok：上面已核对 meta 存在，本脚本不用 set -e
+  TO="$(sed -n 's/^to=//p' "$BD/meta")"; PAR="$(sed -n 's/^parallel=//p' "$BD/meta")"; CANARY="$(sed -n 's/^canary=//p' "$BD/meta")"  # sete-ok
   rm -f "$BD/STOP.resume"
 else
   [ -f "$RUN" ] || { echo "没有安装文件：$RUN" >&2; exit 1; }

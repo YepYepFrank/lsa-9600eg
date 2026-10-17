@@ -343,7 +343,7 @@ status() {
 }
 # ---------- 子站批量升级（0.17.2）：专用账号 lsa-upg + 固定入口 ----------
 UPG_AK=/var/lib/lsa-upg-ssh/.ssh/authorized_keys
-upg_from_now() { sed -n 's/.*from="\([^"]*\)".*/\1/p' "$UPG_AK" 2>/dev/null | head -1; }
+upg_from_now() { sed -n 's/.*from="\([^"]*\)".*/\1/p' "$UPG_AK" 2>/dev/null | head -1 || true; }
 # 升级入口与任务脚本装到 /usr/local/sbin（先写新文件再改名：正在跑的升级任务读的是旧文件，不能原地覆盖）
 upg_install_entry() {
   local f
@@ -355,9 +355,13 @@ upg_install_entry() {
 }
 upg_status() {
   if id lsa-upg >/dev/null 2>&1; then
-    local ph
-    ph="$(sed -n 's/^phase=//p' /var/lib/lsa-upg/state 2>/dev/null | tail -1)"
-    echo "子站批量升级：已授权（lsa-upg，只认 $(upg_from_now)）；最近一次任务：${ph:-没有}$([ -n "$ph" ] && sed -n 's/^\(job\|from\|to\)=/ \1 /p' /var/lib/lsa-upg/state | tr -d '\n')"
+    # 授权了但还没跑过任务时没有 state 文件：sed 读不到返回 2，set -e 下 --status 会在这里退出（0.17.2 VM 上测出）
+    local ph='' st=/var/lib/lsa-upg/state more=''
+    if [ -f "$st" ]; then
+      ph="$(sed -n 's/^phase=//p' "$st" | tail -1 || true)"
+      more="$(sed -n 's/^\(job\|from\|to\)=/ \1 /p' "$st" | tr -d '\n' || true)"
+    fi
+    echo "子站批量升级：已授权（lsa-upg，只认 $(upg_from_now)）；最近一次任务：${ph:-没有}${ph:+$more}"
   else
     echo '子站批量升级：没授权（要用时 sudo bash install.sh --upgrade-key <子站升级公钥>）'
   fi
