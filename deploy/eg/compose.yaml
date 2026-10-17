@@ -155,6 +155,26 @@ services:
     mem_limit: 384m
     logging: *log
 
+  # 待接入页（0.17.3 一键加柜）：给了 --join-key、还没有 eg.yaml 时 install.sh 起它（--profile pending），接入后删掉、让 agent 用 80 口。
+  # 只读小页面：待接入、授权的子站、各网口 IP / MAC；不读 eg.yaml、不带任何口令，只认 GET（apps/agent/pending.mjs，只用 Node 自带模块）
+  pending:
+    profiles: [pending]
+    image: ${EG_APP_IMAGE:-lsa-eg-app:latest}
+    container_name: lsa-eg-pending
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app/apps/agent
+    command: ['node', 'pending.mjs']
+    environment:
+      TZ: Asia/Shanghai
+      EG_CONFIG_DIR: /config
+      EG_HTTP_DENY_ON: ${EG_LAN1:-}
+    volumes:
+      - ./config/join.json:/config/join.json:ro
+      - ./VERSION:/eg-version:ro
+    mem_limit: 64m
+    logging: *log
+
   # eg-video（G4 / G5）：与 agent 同一个镜像；只听本机 127.0.0.1:9110（管理页经 agent 转）；生成 config/mediamtx/mediamtx.yml
   video:
     image: ${EG_APP_IMAGE:-lsa-eg-app:latest}

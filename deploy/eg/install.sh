@@ -18,6 +18,9 @@
 #   不管子站发什么都只进升级入口（只能交安装文件、开始升级、查进度，见 lsa-eg-upgrade 开头）；sudoers 只放行这个入口。
 #   子站地址缺省取 eg.yaml 的 station.mqtt。注意：持这把 key 的人能让 EG 装他给的任意安装文件（等于 root），不用时撤销。
 # --drop-upgrade-key：删掉 lsa-upg、它的 key 与 sudoers 条目、升级入口（升级日志 /var/log/lsa-upg.log 留着）。
+# --join-key '<子站 join-egs.sh --keygen 打印的一行>'（0.17.3 一键加柜）：等于 --sp-key 加 --upgrade-key，两把 key 的 from= 都锁到子站地址；
+#   记 config/join.json。还没有 eg.yaml 时是「待接入」：起只读的待接入页（80 口，各网口 IP / MAC、授权的子站），等子站 join-egs.sh。
+#   已接入别的子站时拒绝，要加 --force 才换。格式：LSAJOIN1 <子站地址> <隧道公钥> <升级公钥> <校验（前面内容 sha256 的前 8 位）>
 # 给过 --lan1 时同时加 LAN1 防火墙（nftables 表 inet lsa_eg：摄像机网只出不进，22 / 80 / 8554 都连不上，开机自起）；
 #   --fw-off 关掉并记住，--fw-on 重新打开；--status 显示它；回退到不管它的老版本时自动清掉。
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
@@ -39,6 +42,7 @@ cd "$(dirname "$0")"
 DC='docker compose'
 LAN1=''
 SPKEY=''
+JOINKEY=''
 UPGKEY=''
 UPGFROM=''
 MODE='install'
@@ -56,6 +60,7 @@ while [ $# -gt 0 ]; do
     --upgrade-key) UPGKEY="${2:?--upgrade-key 后面给子站的升级公钥（文件或公钥串）}"; MODE='upg-key'; shift ;;
     --upgrade-from) UPGFROM="${2:?--upgrade-from 后面给子站地址（多个用逗号分开）}"; shift ;;
     --drop-upgrade-key) MODE='drop-upg' ;;
+    --join-key) JOINKEY="${2:?--join-key 后面给子站 join-egs.sh --keygen 打印的那一行}"; shift ;;
     --fw-off) MODE='fw-off' ;;
     --fw-on) MODE='fw-on' ;;
     --watchdog-off) MODE='wd-off' ;;
@@ -338,6 +343,7 @@ status() {
   wd_status
   conv_status
   uplink_status
+  join_status
   upg_status
   true
 }
@@ -353,13 +359,34 @@ upg_install_entry() {
     mv -f "/usr/local/sbin/.$f.new" "/usr/local/sbin/$f"
   done
 }
+# 读 join.json / eg.yaml 的小函数（--status 在下面各 MODE 之前就用到，要先定义，同 #25）
+key_fp() { echo "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' || true; }
+join_get() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" config/join.json 2>/dev/null | head -1 || true; }
+eg_sp_host() { sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' config/eg.yaml 2>/dev/null | head -1 || true; }
+eg_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true; }
+# 接入状态（0.17.3 一键加柜）：待接入 / 已接入子站 X
+join_status() {
+  local sp cab
+  sp="$(join_get sp)"
+  if [ -f config/eg.yaml ]; then
+    cab="$(eg_cab)"
+    echo "接入：已接入子站 $(eg_sp_host)（柜号 ${cab:-?}）$([ -n "$sp" ] && echo "，授权的子站 $sp")"
+  elif [ -n "$sp" ]; then
+    echo "接入：待接入 —— 已授权子站 $sp（$(join_get at)），等子站 join-egs.sh --cabinet <柜号> --eg <本机地址>；本机待接入页 http://<本机地址>/"
+  else
+    echo '接入：待接入 —— 还没给子站授权（--join-key，或老办法 --sp-key + 手工拷 eg.yaml）'
+  fi
+}
 upg_status() {
   if id lsa-upg >/dev/null 2>&1; then
     # 授权了但还没跑过任务时没有 state 文件：sed 读不到返回 2，set -e 下 --status 会在这里退出（0.17.2 VM 上测出）
     local ph='' st=/var/lib/lsa-upg/state more=''
+    upg_st() { sed -n "s/^$1=//p" "$st" | tail -1 || true; }
     if [ -f "$st" ]; then
-      ph="$(sed -n 's/^phase=//p' "$st" | tail -1 || true)"
-      more="$(sed -n 's/^\(job\|from\|to\)=/ \1 /p' "$st" | tr -d '\n' || true)"
+      ph="$(upg_st phase)"
+      # 换配置（一键加柜，kind=config）：「换配置 <任务号>，柜 <旧> → <新>」；升级：「升级 <任务号>，<旧版本> → <新版本>」
+      if [ "$(upg_st kind)" = config ]; then more="（换配置 $(upg_st job)，柜 $(upg_st from | sed 's/^$/待接入/') → $(upg_st to)）"
+      else more="（升级 $(upg_st job)，$(upg_st from) → $(upg_st to)）"; fi
     fi
     echo "子站批量升级：已授权（lsa-upg，只认 $(upg_from_now)）；最近一次任务：${ph:-没有}${ph:+$more}"
   else
@@ -432,37 +459,68 @@ tb_restore() {  # $1 = 备份文件
 }
 [ "$MODE" = 'status' ] && { status; security_notes; exit 0; }
 [ "$(id -u)" = 0 ] || { echo '要用 sudo 跑' >&2; exit 1; }
-if [ "$MODE" = 'upg-key' ]; then
-  key="$UPGKEY"; [ -f "$UPGKEY" ] && key="$(head -1 "$UPGKEY")"
-  echo "$key" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]+( [^"]*)?$' || { echo "--upgrade-key 不像 SSH 公钥：$key" >&2; exit 1; }
-  command -v sudo >/dev/null || { echo '没有 sudo：升级入口靠 sudoers 放行' >&2; exit 1; }
-  from="$UPGFROM"
-  [ -n "$from" ] || from="$(sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' config/eg.yaml 2>/dev/null | head -1)"
-  [ -n "$from" ] || { echo 'eg.yaml 里取不到子站地址：用 --upgrade-from <子站地址> 给' >&2; exit 1; }
-  [[ "$from" =~ ^[A-Za-z0-9.:,*/-]+$ ]] || { echo "--upgrade-from 不像地址：$from" >&2; exit 1; }
-  upg_install_entry || exit 1
+# 升级授权（--upgrade-key、--join-key 共用）：upg_key_apply <公钥> <子站地址>
+# 专用系统账号（lsa-upg、lsa-sp）：uid 取 900–989 里空着的。不能让 useradd 自己挑 —— 新装系统上它给 999，
+# 和本地库容器（postgres，uid 999）撞上：宿主机上看本地库的进程就成了这个账号的，pgrep / pkill -u 会误判、误杀本地库
+sys_user() {  # sys_user <账号> <home> <shell>
+  local u
+  id "$1" >/dev/null 2>&1 && return 0
+  for u in $(seq 989 -1 900); do
+    getent passwd "$u" >/dev/null || getent group "$u" >/dev/null || break
+  done
+  useradd --system --uid "$u" --user-group --create-home --home-dir "$2" --shell "$3" "$1"
+}
+upg_key_apply() {  # upg_key_apply <公钥> <子站地址> [excl]：excl = 只留这一把（--join-key：授权给谁就只认谁）
+  local key="$1" from="$2" body sd
+  echo "$key" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]+( [^"]*)?$' || { echo "升级公钥不像 SSH 公钥：$key" >&2; return 1; }
+  command -v sudo >/dev/null || { echo '没有 sudo：升级入口靠 sudoers 放行' >&2; return 1; }
+  [[ "$from" =~ ^[A-Za-z0-9.:,*/-]+$ ]] || { echo "子站地址不对：$from" >&2; return 1; }
+  upg_install_entry || return 1
   # 账号：锁口令；shell 要是 /bin/sh（sshd 用它执行 command=，nologin 会把入口也挡掉）；home 与升级状态目录分开
-  id lsa-upg >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/lsa-upg-ssh --shell /bin/sh lsa-upg
+  sys_user lsa-upg /var/lib/lsa-upg-ssh /bin/sh
   passwd -l lsa-upg >/dev/null 2>&1 || true
   install -d -m 700 -o lsa-upg -g lsa-upg /var/lib/lsa-upg-ssh/.ssh
   body="$(echo "$key" | awk '{print $1" "$2}')"
   touch "$UPG_AK"
-  grep -vF "$body" "$UPG_AK" > "$UPG_AK.tmp" || true
+  if [ -n "${3:-}" ]; then : > "$UPG_AK.tmp"; else grep -vF "$body" "$UPG_AK" > "$UPG_AK.tmp" || true; fi
   echo "restrict,from=\"$from\",command=\"sudo -n /usr/local/sbin/lsa-eg-upgrade \\\"\$SSH_ORIGINAL_COMMAND\\\"\" $key" >> "$UPG_AK.tmp"
   mv "$UPG_AK.tmp" "$UPG_AK"; chown lsa-upg:lsa-upg "$UPG_AK"; chmod 600 "$UPG_AK"
   sd=/etc/sudoers.d/lsa-upg
-  printf '%s\n' '# LSA-9600EG：子站批量升级账号只能跑升级入口（install.sh --upgrade-key 写的，--drop-upgrade-key 删）' \
+  printf '%s\n' '# LSA-9600EG：子站批量升级账号只能跑升级入口（install.sh --upgrade-key / --join-key 写的，--drop-upgrade-key 删）' \
     'Defaults:lsa-upg !requiretty' 'lsa-upg ALL=(root) NOPASSWD: /usr/local/sbin/lsa-eg-upgrade' > "$sd.tmp"
-  visudo -cf "$sd.tmp" >/dev/null || { rm -f "$sd.tmp"; echo 'sudoers 条目没通过 visudo 检查，没装' >&2; exit 1; }
+  visudo -cf "$sd.tmp" >/dev/null || { rm -f "$sd.tmp"; echo 'sudoers 条目没通过 visudo 检查，没装' >&2; return 1; }
   chmod 440 "$sd.tmp"; mv "$sd.tmp" "$sd"
-  echo "已给子站升级公钥授权：lsa-upg 只认来自 $from 的连接，只能进升级入口（lsa-eg-upgrade：hello / put / start / status / log / drop）"
+  echo "已给子站升级公钥授权：lsa-upg 只认来自 $from 的连接，只能进升级入口（lsa-eg-upgrade）"
+}
+# 隧道授权（--sp-key、--join-key 共用）：sp_key_apply <公钥> [子站地址] [excl]；给了地址就加 from=（--join-key 都给）；excl 同上
+sp_key_apply() {
+  local key="$1" from="${2:-}" ak=/var/lib/lsa-sp/.ssh/authorized_keys body opts
+  echo "$key" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]+' || { echo "隧道公钥不像 SSH 公钥：$key" >&2; return 1; }
+  sys_user lsa-sp /var/lib/lsa-sp /usr/sbin/nologin
+  install -d -m 700 -o lsa-sp -g lsa-sp /var/lib/lsa-sp/.ssh
+  touch "$ak"
+  body="$(echo "$key" | awk '{print $1" "$2}')"
+  opts='restrict,port-forwarding,permitopen="127.0.0.1:18080"'
+  [ -n "$from" ] && opts="restrict,from=\"$from\",port-forwarding,permitopen=\"127.0.0.1:18080\""
+  # 同一把 key 已有的那行换掉（from= 可能变了）；excl 时别的 key 也都去掉
+  if [ -n "${3:-}" ]; then : > "$ak.tmp"; else grep -vF "$body" "$ak" > "$ak.tmp" || true; fi
+  echo "$opts $key" >> "$ak.tmp"
+  mv "$ak.tmp" "$ak"; chown lsa-sp:lsa-sp "$ak"; chmod 600 "$ak"
+  echo "已给子站公钥授权：lsa-sp 只能开隧道到本机 127.0.0.1:18080${from:+，只认来自 $from 的连接}"
+}
+if [ "$MODE" = 'upg-key' ]; then
+  key="$UPGKEY"; [ -f "$UPGKEY" ] && key="$(head -1 "$UPGKEY")"
+  from="$UPGFROM"
+  [ -n "$from" ] || from="$(eg_sp_host)"
+  [ -n "$from" ] || { echo 'eg.yaml 里取不到子站地址：用 --upgrade-from <子站地址> 给' >&2; exit 1; }
+  upg_key_apply "$key" "$from" || exit 1
   echo '撤销：sudo bash install.sh --drop-upgrade-key'
   exit 0
 fi
 if [ "$MODE" = 'drop-upg' ]; then
   if id lsa-upg >/dev/null 2>&1; then
-    pkill -u lsa-upg 2>/dev/null || true
-    userdel -r lsa-upg 2>/dev/null || userdel lsa-upg
+    pkill -u lsa-upg -f '^sshd' 2>/dev/null || true   # 只断 sshd 会话（同上）
+    userdel -f -r lsa-upg 2>/dev/null || userdel -f lsa-upg
   fi
   rm -rf /var/lib/lsa-upg-ssh /var/lib/lsa-upg/incoming
   rm -f /etc/sudoers.d/lsa-upg /usr/local/sbin/lsa-eg-upgrade /usr/local/sbin/lsa-eg-upgrade-job
@@ -471,8 +529,8 @@ if [ "$MODE" = 'drop-upg' ]; then
 fi
 if [ "$MODE" = 'drop-sp' ]; then
   if id lsa-sp >/dev/null 2>&1; then
-    pkill -u lsa-sp 2>/dev/null || true   # 子站隧道正开着的话断掉
-    userdel -r lsa-sp 2>/dev/null || userdel lsa-sp
+    pkill -u lsa-sp -f '^sshd' 2>/dev/null || true   # 子站隧道正开着的话断掉（只断 sshd 会话：老系统上账号可能和本地库容器同 uid，见 sys_user）
+    userdel -f -r lsa-sp 2>/dev/null || userdel -f lsa-sp
     echo '已删除隧道账号 lsa-sp（以后要让子站再建本地实体：sudo bash install.sh --sp-key <子站公钥>）'
   else
     echo '没有隧道账号 lsa-sp，不用删'
@@ -596,6 +654,23 @@ if [ "$MODE" = 'rollback' ]; then
   exit 0
 fi
 
+# ---------- --join-key 先核对（装任何东西之前）：格式、校验位、子站地址、换子站要 --force ----------
+if [ -n "$JOINKEY" ]; then
+  read -r -a jw <<< "$JOINKEY" || true
+  [ "${#jw[@]}" = 7 ] && [ "${jw[0]}" = LSAJOIN1 ] || { echo '--join-key 格式不对：应是一行「LSAJOIN1 <子站地址> <隧道公钥> <升级公钥> <校验>」（子站 join-egs.sh --keygen 打印的，整行带引号粘过来）' >&2; exit 1; }
+  jsum="$(printf '%s' "${jw[*]:0:6}" | sha256sum | cut -c1-8)"
+  [ "$jsum" = "${jw[6]}" ] || { echo '--join-key 校验不对：粘贴不完整或抄错了，回子站重新复制一整行' >&2; exit 1; }
+  jsp="${jw[1]}"
+  [[ "$jsp" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "--join-key 里的子站地址不对：$jsp" >&2; exit 1; }
+  # 已接入 / 已授权别的子站：要 --force 才换（老办法接入的没有 join.json，看 eg.yaml 里的子站）
+  cur_sp="$(join_get sp)"; [ -f config/eg.yaml ] && [ -z "$cur_sp" ] && cur_sp="$(eg_sp_host)"
+  if [ -n "$cur_sp" ] && [ "$cur_sp" != "$jsp" ] && [ "$FORCE" != 1 ]; then
+    if [ -f config/eg.yaml ]; then echo "!! 这台 EG 已接入子站 $cur_sp（柜号 $(eg_cab)），--join-key 是给子站 $jsp 的：要换子站加 --force" >&2
+    else echo "!! 这台 EG 已授权给子站 $cur_sp（待接入），--join-key 是给子站 $jsp 的：要换子站加 --force" >&2; fi
+    exit 1
+  fi
+fi
+
 # ---------- 0. 系统：只支持 Ubuntu Server 24.04 ----------
 os_id="$( . /etc/os-release 2>/dev/null; echo "${ID:-?}" )"
 os_ver="$( . /etc/os-release 2>/dev/null; echo "${VERSION_ID:-?}" )"
@@ -714,17 +789,19 @@ id lsa-upg >/dev/null 2>&1 && { upg_install_entry || true; }
 # ---------- 子站 provision-eg.sh 的隧道账号（--sp-key） ----------
 if [ -n "$SPKEY" ]; then
   key="$SPKEY"; [ -f "$SPKEY" ] && key="$(head -1 "$SPKEY")"
-  echo "$key" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]+' || { echo "--sp-key 不像 SSH 公钥：$key" >&2; exit 1; }
-  id lsa-sp >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/lsa-sp --shell /usr/sbin/nologin lsa-sp
-  install -d -m 700 -o lsa-sp -g lsa-sp /var/lib/lsa-sp/.ssh
-  ak=/var/lib/lsa-sp/.ssh/authorized_keys
-  touch "$ak"
-  body="$(echo "$key" | awk '{print $1" "$2}')"
-  if ! grep -qF "$body" "$ak"; then
-    echo "restrict,port-forwarding,permitopen=\"127.0.0.1:18080\" $key" >> "$ak"
-    echo "已给子站公钥授权：lsa-sp 只能开隧道到本机 127.0.0.1:18080"
-  fi
-  chown lsa-sp:lsa-sp "$ak"; chmod 600 "$ak"
+  sp_key_apply "$key" || exit 1
+fi
+
+# ---------- 一键加柜（0.17.3）：--join-key = 隧道 + 升级两把 key，from= 都锁到子站 ----------
+# 前面（第 0 步之前）已核对过格式、校验位、换子站；这里写授权。只认这一个子站：两个 authorized_keys 都只留这两把
+if [ -n "$JOINKEY" ]; then
+  sp_key_apply "${jw[2]} ${jw[3]} lsa9600sp-eg-tunnel" "$jsp" excl || exit 1
+  upg_key_apply "${jw[4]} ${jw[5]} lsa9600sp-eg-upgrade" "$jsp" excl || exit 1
+  umask_old="$(umask)"; umask 077
+  printf '{\n  "sp": "%s",\n  "at": "%s",\n  "tunnelFp": "%s",\n  "upgradeFp": "%s"\n}\n' \
+    "$jsp" "$(date '+%F %T')" "$(key_fp "${jw[2]} ${jw[3]}")" "$(key_fp "${jw[4]} ${jw[5]}")" > config/join.json
+  umask "$umask_old"
+  echo "已记下接入授权（config/join.json）：子站 $jsp"
 fi
 
 # ---------- 5. 本地 TB：库是空的先建库；已有库按版本判断（0.17：同一补丁线换镜像起，不跑升级脚本） ----------
@@ -768,9 +845,23 @@ fi
 
 # ---------- 6. eg.yaml 齐了（带本地 TB 账号 tb:）才起其余 ----------
 if [ ! -f config/eg.yaml ] || ! grep -q '^tb:' config/eg.yaml; then
+  if [ -f config/join.json ]; then
+    # 一键加柜：起只读的待接入页（80 口），等子站 join-egs.sh。
+    # 换配置失败回到待接入时，上一次起来的 agent 等还在（没有 eg.yaml 起不来、还占着 80 口）：先撤掉
+    docker rm -f lsa-eg-agent lsa-eg-video lsa-eg-gateway lsa-eg-mediamtx lsa-eg-conv >/dev/null 2>&1 || true
+    $DC --profile pending up -d pending >/dev/null 2>&1 || echo '!! 待接入页没起来（docker logs lsa-eg-pending）' >&2
+    cat <<EOF
+
+本地 TB 已起。这台 EG 待接入：已授权子站 $(join_get sp)。
+  现场：笔记本接到 LAN2 的交换机上，浏览器打开 http://<这台 EG 的 LAN2 地址>/ 能看到「待接入」和各网口的 IP / MAC。
+  子站主机上：sudo bash /opt/lsa9600sp/join-egs.sh --cabinet <柜号> --eg <这台 EG 的 LAN2 地址>（见 EG 部署手册 §4a「一键加柜」）
+  老办法（手工 provision-eg.sh、pack-eg.sh、拷配置）照旧能用，见手册 §4。
+EOF
+    exit 0
+  fi
   cat <<EOF
 
-本地 TB 已起。下一步（手册 §4）：
+本地 TB 已起。下一步（手册 §4；0.17.3 起也可以一键加柜：子站 join-egs.sh --keygen 给一行 join-key，这里 sudo bash install.sh --join-key '<那一行>'，见 §4a）：
   1. 给子站授权开隧道（没给过的话）：把子站主机的 SSH 公钥拷过来，sudo bash install.sh --sp-key <公钥文件>
      （建只能转发到本机 18080 的账号 lsa-sp，没有 shell）
   2. 在子站主机上（/opt/lsa9600sp/lsa9600sp-backend）：
@@ -807,6 +898,8 @@ if [ -n "$sp_host" ] && [ -d /etc/chrony ]; then
   fi
 fi
 
+# 待接入页占着 80 口：接入了（有 eg.yaml）就撤掉，让 agent 起来
+docker rm -f lsa-eg-pending >/dev/null 2>&1 || true
 # 先生成 IoT Gateway 与 mediamtx 的配置（agent / video 每次启动也会生成；先生成一次，免得它们先起来拿默认配置）
 RUN="$DC run --rm --no-deps"
 $RUN agent node --import @swc-node/register/esm-register src/gateway/cli.ts
