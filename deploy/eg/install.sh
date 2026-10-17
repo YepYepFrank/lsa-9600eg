@@ -462,13 +462,31 @@ tb_restore() {  # $1 = 备份文件
 # 升级授权（--upgrade-key、--join-key 共用）：upg_key_apply <公钥> <子站地址>
 # 专用系统账号（lsa-upg、lsa-sp）：uid 取 900–989 里空着的。不能让 useradd 自己挑 —— 新装系统上它给 999，
 # 和本地库容器（postgres，uid 999）撞上：宿主机上看本地库的进程就成了这个账号的，pgrep / pkill -u 会误判、误杀本地库
+# 老版本（0.17.2 及以前）建的账号已经撞了的，sys_user 迁过来：先 userdel -f 再按新 uid 建（usermod 在同 uid 的本地库进程
+# 跑着时会拒绝），home、authorized_keys 原样留下、改属主，from= / command= 不动，授权不丢。
+uid_clash() {  # uid_clash <uid>：和本地库容器的 postgres 同 uid，或在 990 以上（useradd 自己挑的范围，容器常用）
+  local pg
+  pg="$(docker exec lsa-eg-postgres id -u postgres 2>/dev/null || echo 999)"
+  [ "$1" = "$pg" ] || [ "$1" -ge 990 ]   # sete-ok：判断函数
+}
 sys_user() {  # sys_user <账号> <home> <shell>
-  local u
-  id "$1" >/dev/null 2>&1 && return 0
+  local u old='' err
+  if id "$1" >/dev/null 2>&1; then
+    old="$(id -u "$1")"
+    uid_clash "$old" || return 0
+    pkill -u "$1" -f '^sshd' 2>/dev/null || true   # 正开着的 SSH 会话断掉（子站会重连）；只认 sshd，不碰同 uid 的本地库
+    userdel -f "$1" 2>/dev/null || { echo "!! 账号 $1（uid $old）删不掉，没迁" >&2; return 1; }
+    if getent group "$1" >/dev/null; then groupdel "$1" 2>/dev/null || true; fi
+  fi
   for u in $(seq 989 -1 900); do
     getent passwd "$u" >/dev/null || getent group "$u" >/dev/null || break
   done
-  useradd --system --uid "$u" --user-group --create-home --home-dir "$2" --shell "$3" "$1"
+  # home 已在（迁移）时 useradd 只提醒「目录已存在」，不算错
+  err="$(useradd --system --uid "$u" --user-group --create-home --home-dir "$2" --shell "$3" "$1" 2>&1)" || { echo "!! 建账号 $1 失败：$err" >&2; return 1; }
+  if [ -n "$old" ]; then
+    chown -R "$1:$1" "$2"
+    echo "账号 $1 的 uid $old 和本地库容器撞了（0.17.2 及以前建的）：已迁到 uid $u，授权不变"
+  fi
 }
 upg_key_apply() {  # upg_key_apply <公钥> <子站地址> [excl]：excl = 只留这一把（--join-key：授权给谁就只认谁）
   local key="$1" from="$2" body sd
@@ -785,6 +803,10 @@ mkdir -p config/gateway/config config/mediamtx recordings
 
 # 子站批量升级授权过的：入口换成本发布件的
 id lsa-upg >/dev/null 2>&1 && { upg_install_entry || true; }
+
+# ---------- 0.17.3：老版本建的专用账号 uid 撞了本地库容器的，迁到 900–989（授权不变，见 sys_user） ----------
+if id lsa-sp >/dev/null 2>&1; then sys_user lsa-sp /var/lib/lsa-sp /usr/sbin/nologin || exit 1; fi
+if id lsa-upg >/dev/null 2>&1; then sys_user lsa-upg /var/lib/lsa-upg-ssh /bin/sh || exit 1; fi
 
 # ---------- 子站 provision-eg.sh 的隧道账号（--sp-key） ----------
 if [ -n "$SPKEY" ]; then
