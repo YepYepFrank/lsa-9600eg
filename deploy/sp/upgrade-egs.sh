@@ -9,6 +9,7 @@
 #                                                           任何一台失败就不再开新的，打印那台的回退命令。--force：已经是目标版本的也重装
 #                                                           --skip-offline：连不上的 EG 跳过（缺省有一台连不上就整批不开始）
 #   跳过（不算失败）：子站上标了未接入 / 停用、没有地址、已是该版本、比目标版本新（不降级）、这台正在做别的维护（lsa-sp 隧道开着、有安装在跑）
+#   --only / --canary 给单元号（0.18.0 舱室 EG：EG-AH01-A 的单元号 AH01-A；照旧一柜一台的单元号 = 柜号，如 AH03），一台 EG 一项
 #   sudo bash upgrade-egs.sh --resume <批次>                 断开以后续查 / 接着做（EG 上的升级任务不受子站断开影响）
 #   sudo bash upgrade-egs.sh --list                         列出做过的批次与结果
 #
@@ -17,7 +18,7 @@
 #   key 在 /opt/lsa9600sp/keys/（root 600）：持这把 key 的人能让 EG 装他给的任意安装文件，不要拷走。
 # 每台的流程：拷安装文件（EG 上核对 sha256 与空间）→ 开始（EG 自己在后台做，失败自动回退）→ 每 10 s 查进度 →
 #   EG 自查（版本、7 个容器、本地 TB、连上子站）→ 子站核对（子站 TB 上 EG 报的版本、上送、配置版本没丢）→ 删掉 EG 上的拷贝。
-# 日志：/var/log/lsa9600sp/eg-upgrade/<批次>/（run.log、summary.tsv、每台一份 <柜号>.log）。
+# 日志：/var/log/lsa9600sp/eg-upgrade/<批次>/（run.log、summary.tsv、每台一份 <单元号>.log）。
 set -uo pipefail
 SP=/opt/lsa9600sp
 SP_ENV="$SP/lsa9600sp-backend/docker/.env"
@@ -69,7 +70,7 @@ run_eg_version() {  # 安装文件里 EG 发布件的版本（只读负载里的
 }
 
 # ---------- EG 清单 ----------
-# 每行（TSV）：柜号 EG设备名 地址 EG报的版本 本地TB版本 配置版本 上送 上送多少秒前 跳过原因(-) 状态 上送正常(true/false) 配置已生效(true/false/-)
+# 每行（TSV）：单元号（0.18.0 舱室 EG；照旧一柜一台的 = 柜号） EG设备名 地址 EG报的版本 本地TB版本 配置版本 上送 上送多少秒前 跳过原因(-) 状态 上送正常(true/false) 配置已生效(true/false/-)
 # 0.17.2 起用子站后端的 eg-list（lsa-ext 里的 bin/eg-list.mjs，只认容器里本机发的请求）：地址按 egUrl > EXT_EG_URLS > model.yaml 推好，
 #   状态 online / offline / backfill / degraded / never / disabled，skip（未接入 / 停用），uplinkOk，cfgApplied（期望 = 生效且 APPLIED）。
 #   退出码 3 = 扩展服务刚起、还没读全：照样输出，但调用方当成预检不过。老子站没有 eg-list 时直接查子站 TB（只认 egUrl 属性）。
@@ -205,7 +206,7 @@ fi
 
 printf '\n目标 EG %s（安装文件 %s，sha256 %s…）\n' "$TO" "$(basename "$RUN")" "${SHA:0:12}"
 [ "$lrc" = 3 ] && echo '!! 子站扩展服务刚启动、EG 状态还没读全（eg-list 退出码 3）：等一两分钟再跑'
-printf '\n%-8s %-8s %-36s %-6s %s\n' 柜号 在线 '版本（当前 → 目标）' 动作 原因
+printf '\n%-8s %-8s %-36s %-6s %s\n' 单元 在线 '版本（当前 → 目标）' 动作 原因
 GO=() BAD=0 NOADDR=() n_skip=0
 [ "$lrc" = 3 ] && BAD=1
 need_mb=$(( (SIZE * 2) / 1024 / 1024 + 1536 ))
@@ -256,13 +257,13 @@ if [ "$MODE" != resume ]; then
   for c in "${GO[@]}"; do printf '%s\t%s\t%s\t%s\n' "$c" "${HOST[$c]}" "${CUR[$c]}" "${CFG[$c]}"; done > "$BD/plan.tsv"
 fi
 exec > >(tee -a "$BD/run.log") 2>&1
-exec 3>&1   # 每台的结果行写这里（屏幕 + run.log）；每台的过程写它自己的 <柜号>.log
+exec 3>&1   # 每台的结果行写这里（屏幕 + run.log）；每台的过程写它自己的 <单元号>.log
 echo "== $(ts) 批次 $BATCH：${#GO[@]} 台，canary $CANARY，并发 $PAR；日志 $BD"
 
 # ---------- 每台 ----------
 plan_cfg() { awk -F'\t' -v c="$1" '$1==c { print $4 }' "$BD/plan.tsv"; }
 plan_from() { awk -F'\t' -v c="$1" '$1==c { print $3 }' "$BD/plan.tsv"; }
-result() {  # result <柜号> <结果> <原因>：写一行，失败就让后面的不再开
+result() {  # result <单元号> <结果> <原因>：写一行，失败就让后面的不再开
   local c="$1" r="$2" why="$3" s=$(( $(date +%s) - T0 ))
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$c" "$(plan_from "$c")" "$TO" "$s" "$r" "$why" > "$BD/$c.result"
   echo "$(ts) [$c] $r：$why（${s} s）" >&3
@@ -354,7 +355,7 @@ for p in "${pids[@]}"; do wait "$p"; done
 : > "$BD/summary.tsv"
 echo
 echo "== $(ts) 汇总（批次 $BATCH，目标 EG $TO）"
-printf '%-8s %-18s %-8s %-6s %s\n' 柜号 原版本 耗时s 结果 说明
+printf '%-8s %-18s %-8s %-6s %s\n' 单元 原版本 耗时s 结果 说明
 fails=0
 while IFS=$'\t' read -r c _ _ _; do
   if [ -f "$BD/$c.result" ]; then

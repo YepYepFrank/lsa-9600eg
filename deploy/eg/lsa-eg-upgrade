@@ -16,15 +16,18 @@
 # 一键加柜（0.17.4，子站 join-egs.sh 用）：
 #   put-config <sha256> <字节数>  从 stdin 收配置包（tar.gz，≤ 1 MB）到 /var/lib/lsa-upg/config-in/<sha256>.tgz（600）：
 #                               核对 sha256；包里只许 eg.yaml、sp-ca.pem、conv.args 三个普通文件（没有目录 / 链接 / ..），否则删掉并拒绝
-#   apply-config <sha256>       核对后后台换配置（同升级任务：state、日志、SSH 断了照跑）：包里 eg.yaml 的子站地址要和接入授权（join.json）一致、
-#                               已接入的柜号不能变；和现在的一样就直接答「same」。失败自动换回旧配置（原来待接入的回到待接入）
+#   apply-config <sha256> [force]  核对后后台换配置（同升级任务：state、日志、SSH 断了照跑）：包里 eg.yaml 的子站地址要和接入授权（join.json）一致、
+#                               已接入的单元不能变（0.18.0 舱室 EG：比 unit.code，schema 1 退回柜号）—— 例外：拆柜（本机照旧一柜一台接在柜 X，
+#                               配置包是 X 的某个单元）、子站带 force（join-egs.sh --force）；和现在的一样就直接答「same」。
+#                               失败自动换回旧配置（原来待接入的回到待接入）
 #   conv <选项…>                调 install-conv.sh；选项白名单逐个校验（--serial / --sensors / --addr / --dev / --baud / --off / --status），
 #                               参数按数组传、不经 shell 拼接
 #   drop-tunnel                 撤掉子站 provision 隧道账号 lsa-sp（同 install.sh --drop-sp-key），升级授权留着
 # 其它一律拒绝，记进 /var/log/lsa-upg.log。
 set -euo pipefail
 umask 077
-ENTRY_VERSION=3
+# 4 = 0.18.0 舱室 EG（EG 0.7.0）：hello 报 unit=，apply-config 按单元、认 force
+ENTRY_VERSION=4
 EG=/opt/lsa-eg
 ST=/var/lib/lsa-upg
 IN="$ST/incoming"
@@ -50,7 +53,7 @@ if [[ "$CMD" =~ ^conv(\ |$) ]]; then
   VERB=conv A1='' A2=''
 else
   [ ${#CMD} -le 200 ] || deny '命令太长'
-  [[ "$CMD" =~ ^[a-z][a-z-]*(\ [0-9a-f]{64})?(\ [0-9]{1,12})?$ ]] || deny '命令格式不对'
+  [[ "$CMD" =~ ^[a-z][a-z-]*(\ [0-9a-f]{64})?(\ [0-9]{1,12}|\ force)?$ ]] || deny '命令格式不对'
   read -r VERB A1 A2 <<< "$CMD" || true
 fi
 mkdir -p "$IN" "$JOBS" "$CFG_IN" "$CFG_NEW"
@@ -75,6 +78,12 @@ maintenance() {
 # ---- 一键加柜：读 eg.yaml / join.json ----
 yaml_sp() { sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' "$1" 2>/dev/null | head -1 || true; }
 yaml_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' "$1" 2>/dev/null || true; }
+# 本 EG 的身份（0.18.0 舱室 EG）：eg.yaml 顶层 unit 段的 code；没有（schema 1，照旧一柜一台）= 柜号
+yaml_unit() {
+  local u
+  u="$(awk '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' "$1" 2>/dev/null || true)"
+  if [ -n "$u" ]; then echo "$u"; else yaml_cab "$1"; fi
+}
 yaml_devs() { awk '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{gsub(/"/,"",$3);print $3}' "$1" 2>/dev/null || true; }
 join_sp() { sed -n 's/.*"sp": *"\([^"]*\)".*/\1/p' "$EG/config/join.json" 2>/dev/null | head -1 || true; }
 # conv 选项白名单：conv_parse <eg.yaml> <选项…> → CONV_ARGS；不认的 → CONV_ERR，返回 1
@@ -134,9 +143,9 @@ case "$VERB" in
     say "phase=$(state_get phase || true)"
     say "running=$(running && echo 1 || echo 0)"
     say "maint=$(maintenance | awk 'NR > 1 { printf "；" } { printf "%s", $0 }')"
-    # 一键加柜：接入了没有、柜号、接的子站（已接入看 eg.yaml，待接入看 join.json）
-    if [ -f "$EG/config/eg.yaml" ]; then say 'joined=1'; say "cabinet=$(yaml_cab "$EG/config/eg.yaml")"; say "sp=$(yaml_sp "$EG/config/eg.yaml")"
-    else say 'joined=0'; say 'cabinet='; say "sp=$(join_sp)"; fi
+    # 一键加柜：接入了没有、单元号（0.18.0；照旧一柜一台的 = 柜号）、柜号、接的子站（已接入看 eg.yaml，待接入看 join.json）
+    if [ -f "$EG/config/eg.yaml" ]; then say 'joined=1'; say "unit=$(yaml_unit "$EG/config/eg.yaml")"; say "cabinet=$(yaml_cab "$EG/config/eg.yaml")"; say "sp=$(yaml_sp "$EG/config/eg.yaml")"
+    else say 'joined=0'; say 'unit='; say 'cabinet='; say "sp=$(join_sp)"; fi
     say "join_sp=$(join_sp)"
     ;;
   put)
@@ -233,7 +242,7 @@ case "$VERB" in
     say "OK put-config $A1"
     ;;
   apply-config)
-    is_sha "${A1:-}" && [ -z "${A2:-}" ] || deny 'apply-config <sha256>'
+    is_sha "${A1:-}" && { [ -z "${A2:-}" ] || [ "$A2" = force ]; } || deny 'apply-config <sha256> [force]'
     f="$CFG_IN/$A1.tgz"
     [ -f "$f" ] || deny "没有收到 $A1 这个配置包（先 put-config）"
     running && deny '有任务正在跑'
@@ -243,15 +252,20 @@ case "$VERB" in
     adeny() { rm -rf "$d"; deny "$@"; }   # 解开以后再拒：解开的目录一起删
     tar -xzf "$f" -C "$d" --no-same-owner --no-same-permissions
     chmod 600 "$d"/*
-    new_sp="$(yaml_sp "$d/eg.yaml")"; new_cab="$(yaml_cab "$d/eg.yaml")"
+    new_sp="$(yaml_sp "$d/eg.yaml")"; new_cab="$(yaml_cab "$d/eg.yaml")"; new_unit="$(yaml_unit "$d/eg.yaml")"
     [ -n "$new_sp" ] && [ -n "$new_cab" ] || adeny '配置包里的 eg.yaml 取不到子站地址或柜号'
     # 子站地址要和接入授权一致：有 join.json 认它；老办法接入的（没有 join.json）认现在 eg.yaml 里的
     auth_sp="$(join_sp)"; [ -z "$auth_sp" ] && [ -f "$EG/config/eg.yaml" ] && auth_sp="$(yaml_sp "$EG/config/eg.yaml")"
     [ -n "$auth_sp" ] || adeny '这台 EG 没有接入授权（install.sh --join-key）'
     [ "$new_sp" = "$auth_sp" ] || adeny "配置包是给子站 $new_sp 的，这台 EG 授权的是 $auth_sp"
     if [ -f "$EG/config/eg.yaml" ]; then
-      cur_cab="$(yaml_cab "$EG/config/eg.yaml")"
-      [ "$new_cab" = "$cur_cab" ] || adeny "这台 EG 已接入柜 $cur_cab，配置包是柜 $new_cab 的：不能直接改柜号（先撤再接）"
+      # 已接入的单元不能改（0.18.0 舱室 EG：比单元号，照旧一柜一台的单元号 = 柜号）。例外：
+      #   拆柜 —— 本机照旧一柜一台接在柜 X（单元号 = X），配置包是柜 X 的某个单元（X-A…）：原来那台改作这面柜的一个单元；
+      #   force —— 子站 join-egs.sh --force（确认要把这台改接到别的单元）
+      cur_unit="$(yaml_unit "$EG/config/eg.yaml")"
+      if [ "$new_unit" != "$cur_unit" ] && [ "$cur_unit" != "$new_cab" ] && [ "${A2:-}" != force ]; then
+        adeny "这台 EG 已接入单元 $cur_unit，配置包是单元 $new_unit 的：不能直接改（确认要改接：子站 join-egs.sh 加 --force）"
+      fi
     fi
     # conv.args（可选）：一行一个参数，照 conv 的白名单校验，过了写成 conv.argv 给任务用
     rm -f "$d/conv.argv"
@@ -268,12 +282,12 @@ case "$VERB" in
     done
     if [ "$same" = 1 ]; then
       rm -rf "$d"
-      audit "配置包 $A1 和现在的一样（柜 $new_cab）：不用换"
-      say "OK apply-config same $new_cab"
+      audit "配置包 $A1 和现在的一样（单元 $new_unit）：不用换"
+      say "OK apply-config same $new_unit"
       exit 0
     fi
     job="$(date +%Y%m%d-%H%M%S)"
-    printf 'job=%s\nkind=config\nsha=%s\nfrom=%s\nto=%s\nphase=queued\nstarted=%s\nreason=\n' "$job" "$A1" "$(yaml_cab "$EG/config/eg.yaml" || true)" "$new_cab" "$(date +%s)" > "$ST/state.tmp"
+    printf 'job=%s\nkind=config\nsha=%s\nfrom=%s\nto=%s\nphase=queued\nstarted=%s\nreason=\n' "$job" "$A1" "$(yaml_unit "$EG/config/eg.yaml" || true)" "$new_unit" "$(date +%s)" > "$ST/state.tmp"
     mv "$ST/state.tmp" "$ST/state"
     : > "$JOBS/$job.log"
     if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null; then
@@ -281,8 +295,8 @@ case "$VERB" in
     else
       setsid nohup /usr/local/sbin/lsa-eg-upgrade-job "$job" > /dev/null 2>&1 < /dev/null &
     fi
-    audit "开始换配置 $job：柜 $new_cab（$A1）"
-    say "OK apply-config $job $new_cab"
+    audit "开始换配置 $job：单元 $new_unit（柜 $new_cab；$A1）${A2:+（force）}"
+    say "OK apply-config $job $new_unit"
     ;;
   conv)
     [ -f "$EG/config/eg.yaml" ] || deny '还没接入（没有 eg.yaml）：先 apply-config'

@@ -348,7 +348,7 @@ install_sp() {
   echo "  浏览器打开 http://$ip/    账号口令见 $SP_CRED（首次安装时生成，权限 600）"
   echo "  自检：curl -s http://127.0.0.1/ext/health"
   echo "  接 EG（一键加柜）：sudo bash $SP_DEST/join-egs.sh --keygen 打印一行 join-key，EG 用本安装文件 --role eg --join-key '<那一行>' 装，"
-  echo "        再在本机 sudo bash $SP_DEST/join-egs.sh --cabinet <柜号> --eg <EG 地址>（docs/子站一键加柜.md；手工 provision-eg.sh / pack-eg.sh 的老办法见子站部署手册 §5b）"
+  echo "        再在本机 sudo bash $SP_DEST/join-egs.sh --unit <单元号> --eg <EG 地址>（docs/子站一键加柜.md；手工 provision-eg.sh / pack-eg.sh 的老办法见子站部署手册 §5b）"
 }
 
 # 机柜双屏：子站装好以后调子站自己的 install-kiosk.sh（幂等、出错非 0；只支持 Ubuntu 24.04，它自己也查）

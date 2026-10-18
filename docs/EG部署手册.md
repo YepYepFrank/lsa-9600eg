@@ -228,16 +228,16 @@ sudo bash /opt/lsa-eg/install.sh --join-key '<那一行>'        # 已经装好�
 - 已接入别的子站的 EG 再给别的子站的 join-key：拒绝，换子站加 `--force`。同一个子站的重复给：只更新 key（幂等）。
 - **待接入**：有 join.json、还没有 eg.yaml。第一轮装完起本地 TB 和一张只读的**待接入页**（容器 `lsa-eg-pending`，同一个应用镜像，在 80 口）：授权的子站、本机各网口的 IP / MAC、软件版本、本地 TB 起没起、子站上要执行的下一条命令。页面上没有密钥、没有任何操作，LAN1 进来照样 403。`install.sh --status` 显示「接入：待接入 —— 已授权子站 …」，接入后显示「接入：已接入子站 X（柜号 Y）」。
 
-**子站做的**（经升级入口，0.17.4 入口版本 3 新加 4 个动作，仍是白名单）：
+**子站做的**（经升级入口，0.17.4 入口版本 3 新加 4 个动作，仍是白名单；0.18.0 入口版本 4：hello 报 `unit=`、apply-config 按单元）：
 
 | 动作 | 做什么 | 校验 |
 |---|---|---|
 | `put-config <sha256> <字节>` | 收配置包（tar.gz） | ≤ 1 MB、sha256 对；包里只许 `eg.yaml`（必须有）、`sp-ca.pem`、`conv.args` 三个普通文件 |
-| `apply-config <sha256>` | 后台任务换配置：备份 → 换上 → install.sh 起全部 → 自查（7 个容器、agent 连上子站，最多 240 s）→ 包里带 conv.args 就设转换程序 | eg.yaml 的子站地址要和 join.json 一致（老办法接入的认现在 eg.yaml 里的）；已接入的柜号不能改；和现在的配置一模一样就不换（不重启）。**失败自动换回**：原来待接入的回到待接入，已接入的回到旧配置（state 记 rolled-back） |
+| `apply-config <sha256> [force]` | 后台任务换配置：备份 → 换上 → install.sh 起全部 → 自查（7 个容器、agent 连上子站，最多 240 s）→ 包里带 conv.args 就设转换程序 | eg.yaml 的子站地址要和 join.json 一致（老办法接入的认现在 eg.yaml 里的）；已接入的单元不能改（比 eg.yaml 的 `unit.code`，照旧一柜一台的比柜号；例外：拆柜 —— 本机照旧接在柜 X、配置包是 X 的某个单元，原来那台改作单元；子站 `join-egs.sh --force` 带 `force`）；和现在的配置一模一样就不换（不重启）。**失败自动换回**：原来待接入的回到待接入，已接入的回到旧配置（state 记 rolled-back） |
 | `conv <选项…>` | 调 install-conv.sh | 只认 `--serial`（`/dev/ttyS<n>`、`/dev/ttyUSB<n>`、`/dev/ttyACM<n>`、`/dev/serial/by-id/…`）、`--sensors`（pd / gas / temperature / arc / infrared）、`--addr`（名字=1–247）、`--dev`（设备名要在 eg.yaml 里）、`--baud`（标准波特率）、`--off`、`--status`；不认的整句拒绝，参数按数组传、不经 shell |
 | `drop-tunnel` | 撤隧道账号 lsa-sp（同 `--drop-sp-key`） | 升级授权留着 |
 
-`hello` 多报 `joined`、`cabinet`、`sp`、`join_sp`。换配置的状态、日志和升级任务同一处（`/var/lib/lsa-upg/state`、`jobs/`），旧配置备份在 `config/.join-backup-<任务号>/`。
+`hello` 多报 `joined`、`unit`（0.18.0；照旧一柜一台的 = 柜号，待接入为空）、`cabinet`、`sp`、`join_sp`。换配置的状态、日志和升级任务同一处（`/var/lib/lsa-upg/state`、`jobs/`），旧配置备份在 `config/.join-backup-<任务号>/`。
 
 ## 5. eg.yaml 的现场取值
 
@@ -372,7 +372,7 @@ sudo bash /opt/lsa-eg/test/test.sh down
 | 本地维护账号 maint | 初始口令随机，在 `config/initial-password.txt`；登录后到「系统」改口令，再删这个文件。文件还在时管理页每页顶上有提醒条，install.sh 的「安全提醒」也会列 |
 | 隧道账号 lsa-sp | 只在部署 / 改设备清单时需要；用完 `install.sh --drop-sp-key` |
 | 批量升级账号 lsa-upg（0.17.2） | `install.sh --upgrade-key` 授权，只认子站、只能进升级入口（§6c）；持子站那把 key 等于能装任意安装文件，不用时 `--drop-upgrade-key` |
-| 一键加柜（0.17.4） | `--join-key` 一次给两把 key，都只认子站地址；隧道接入完由子站撤掉，升级授权留着（§4a）。能推配置的人也能改 EG 的配置，所以入口要求子站地址和 join.json 一致、已接入的柜号不能改 |
+| 一键加柜（0.17.4） | `--join-key` 一次给两把 key，都只认子站地址；隧道接入完由子站撤掉，升级授权留着（§4a）。能推配置的人也能改 EG 的配置，所以入口要求子站地址和 join.json 一致、已接入的单元不能改（拆柜、`force` 例外，见 §4a） |
 | SSH | 维护账号改用密钥登录后，建议关掉口令登录（`/etc/ssh/sshd_config.d/` 下写 `PasswordAuthentication no`，`systemctl reload ssh`）。install.sh 只提醒、不替你改（免得把自己锁在外面）；防火墙可只放子站主机与维护笔记本访问 22 |
 | LAN1 防火墙 | `--lan1` 时自动加（见 §1）：摄像机网上 22 / 80 / 8554 都连不上。实测（无 AVX 样机）：从摄像机网全部超时；EG 主动连摄像机网、经 LAN1 拉 RTSP（TCP）照常；重启后 28 s 内规则在；回退到老版本清掉、再升回来又加上 |
 | 对外端口 | 只有 22、80（管理页）、8554（RTSP，mediamtx 只许子站主机与本机读）、8189/UDP（WebRTC）听所有网口；本地 TB 18080、本机总线 1884、mediamtx API / 回放、eg-video 都只绑 127.0.0.1（虚拟样机 `ss -tulnp` 核对过）。LAN1 进来的管理页请求一律 403（`--lan1`） |
