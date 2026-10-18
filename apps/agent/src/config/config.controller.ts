@@ -59,6 +59,8 @@ export class ConfigController {
         station: { name: c.station.name, label: c.station.label },
         sp: c.sp,
         cabinet: c.cabinet,
+        unit: c.unit,
+        schema: c.schema,
         eg: { name: c.eg.name, token: mask(c.eg.token), attrs: c.eg.attrs },
         stationUplink: { mqtt: c.station.mqtt ?? null, token: mask(c.station.token ?? '') },
         tb: c.tb ? { user: c.tb.user, password: mask(c.tb.password) } : null,

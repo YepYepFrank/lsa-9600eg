@@ -84,7 +84,7 @@ export class VideoService {
   async start(): Promise<void> {
     // 0.17：被拒的 CONNACK 之后照样重连、兜底换客户端（MqttKeeper）
     this.keeper = new MqttKeeper<MqttClient>({
-      create: () => mqtt.connect(this.cfg.conn.bus, mqttKeepOptions({ clientId: `eg-video-${this.cfg.cabinet.code}`, protocolVersion: 5 as const, reconnectPeriod: 3000 })),
+      create: () => mqtt.connect(this.cfg.conn.bus, mqttKeepOptions({ clientId: `eg-video-${this.cfg.unit.code}`, protocolVersion: 5 as const, reconnectPeriod: 3000 })),
       wire: c => {
         this.bus = c
         c.on('error', e => {
@@ -148,7 +148,7 @@ export class VideoService {
       const r = await renderMtxConfig(this.cfg, Object.fromEntries(Object.entries(next).map(([k, v]) => [k, v!.uri])))
       this.mtx = { ...r, at: Date.now() }
       this.mtxError = null
-      if (r.changed) this.log.log(`mediamtx 配置已更新：${CHANNELS.filter(c => next[c.key]).map(c => pathOf(this.cfg.cabinet.code, c.key)).join('、') || '（没有可用的流地址）'} → ${r.file}`)
+      if (r.changed) this.log.log(`mediamtx 配置已更新：${CHANNELS.filter(c => next[c.key]).map(c => pathOf(this.cfg.unit.code, c.key)).join('、') || '（没有可用的流地址）'} → ${r.file}`)
     } catch (e) {
       this.mtxError = (e as Error).message
       this.log.error(`写 mediamtx 配置失败：${this.mtxError}`)
@@ -296,10 +296,10 @@ export class VideoService {
   }
 
   status() {
-    const cab = this.cfg.cabinet.code
+    const unit = this.cfg.unit.code
     const channels = CHANNELS.map(c => {
       const s = this.sources[c.key]
-      const path = pathOf(cab, c.key)
+      const path = pathOf(unit, c.key)
       return {
         key: c.key,
         label: c.label,
@@ -312,7 +312,8 @@ export class VideoService {
       }
     })
     return {
-      cabinet: cab,
+      cabinet: this.cfg.cabinet.code,
+      unit,
       camera: this.camera,
       driver: this.streamsInfo,
       configured: channels.some(c => c.from),
@@ -360,7 +361,7 @@ export class VideoService {
         this.log.warn(`摄像机抓图失败：${(e as Error).message}，改从视频流解一帧`)
       }
     }
-    const url = `rtsp://127.0.0.1:${this.cfg.local.video.rtspPort}/${pathOf(this.cfg.cabinet.code, key)}`
+    const url = `rtsp://127.0.0.1:${this.cfg.local.video.rtspPort}/${pathOf(this.cfg.unit.code, key)}`
     return { jpeg: await ffmpegFrame(url), via: 'rtsp', ts }
   }
 }

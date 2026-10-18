@@ -86,7 +86,7 @@ async function main() {
   checkEventTiming(check)
 
   const cfg = loadConfig()
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const tb = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()
   const events = async () => (await agent<{ events: EventsStatus }>(cfg.dir, '/api/diag')).events
   const debug = (q: string) => fetch(`${AGENT}/api/_debug/alarms?${q}`, { method: 'POST' }).then(r => r.json() as Promise<EventsStatus>)

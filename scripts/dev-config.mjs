@@ -2,6 +2,7 @@
 //
 //   pnpm dev:config               默认 AH03
 //   pnpm dev:config -- AH05       换一面柜
+//   pnpm dev:config -- AH01-A     0.18.0 舱室单元（eg.yaml schema 2，后端 tb/provision/out/eg/<单元号>/eg.yaml）
 //
 // eg.yaml 从子站后端仓库拷：I 阶段起是 provision:eg 生成的 tb/provision/out/eg/<柜号>.yaml（EG独立TB调整方案 §8.1），
 // 还没有就用 E 阶段 eg:config 的 tb/provision/out/eg/<柜号>/eg.yaml。

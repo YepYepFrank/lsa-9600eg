@@ -257,7 +257,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
           this.cfg.station.mqtt!,
           mqttKeepOptions({
             username: stationToken(this.cfg),
-            clientId: `eg-uplink-${this.cfg.cabinet.code}-${this.bootId}`,
+            clientId: `eg-uplink-${this.cfg.unit.code}-${this.bootId}`,
             clean: true,
             reconnectPeriod: 5000,
             connectTimeout: 10_000,

@@ -128,7 +128,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
   }
 
   get target(): string {
-    return `${this.cfg.conn.stationHttp}/ext/eg/${this.cfg.cabinet.code}/events`
+    return `${this.cfg.conn.stationHttp}/ext/eg/${this.cfg.unit.code}/events`
   }
 
   onModuleInit(): void {

@@ -42,6 +42,8 @@ export class StatusController {
     return {
       eg: this.cfg.eg.name,
       cabinet: this.cfg.cabinet,
+      // 0.18.0：本 EG 是哪个舱室单元（照旧一柜一台的 code = 柜号、at 空）；视频路径、本地页标题用它
+      unit: this.cfg.unit,
       station: { name: this.cfg.station.name, label: this.cfg.station.label },
       sp: this.cfg.sp,
       version: AGENT_VERSION,

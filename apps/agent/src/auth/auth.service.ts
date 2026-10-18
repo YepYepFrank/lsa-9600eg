@@ -97,7 +97,7 @@ export class AuthService {
     const now = Date.now()
     for (const [j, exp] of this.usedTickets) if (exp < now - 120_000) this.usedTickets.delete(j)
     // 票据由子站用它那边 EG 网关设备的令牌派生密钥签（I 阶段起本地 TB 的令牌可以不同，见 @lsa-eg/config stationToken）
-    const v = verifyTicket(stationToken(this.cfg), ticket, this.cfg.cabinet.code, now)
+    const v = verifyTicket(stationToken(this.cfg), ticket, this.cfg.unit.code, now)
     // 服务票据换不了浏览器会话
     const c = 'error' in v || v.r !== 'station' ? v : { error: '这是服务票据，不能用来登录' }
     if ('error' in c) {
@@ -118,7 +118,7 @@ export class AuthService {
   verifyService(ticket: string | undefined, now = Date.now()): TicketClaims | TicketError {
     if (!ticket) return { error: '没带服务票据（X-EG-Ticket）', code: 'TICKET_INVALID' }
     for (const [j, exp] of this.usedTickets) if (exp < now - 120_000) this.usedTickets.delete(j)
-    const c = verifyTicket(stationToken(this.cfg), ticket, this.cfg.cabinet.code, now)
+    const c = verifyTicket(stationToken(this.cfg), ticket, this.cfg.unit.code, now)
     if ('error' in c) return c
     if (c.r !== 'station') return { error: '不是服务票据（角色要 station）', code: 'TICKET_INVALID' }
     if (this.usedTickets.has(c.j)) return { error: '票据已用过', code: 'TICKET_INVALID' }

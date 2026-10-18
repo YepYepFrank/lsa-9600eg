@@ -66,7 +66,7 @@ async function viaSp(user: string, code: string) {
 async function main() {
   console.log(`G2 自检：本地服务与访问${FAST ? '（--fast）' : ''}\n`)
   const cfg = loadConfig()
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const pw = localPassword(cfg.dir)
 
   console.log('1. 票据：两边实现一致、验签严格')

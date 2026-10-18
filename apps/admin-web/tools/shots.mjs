@@ -26,10 +26,16 @@ const BROWSERS = [process.env.BROWSER, 'C:/Program Files (x86)/Microsoft/Edge/Ap
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 const localPw = process.env.EG_ADMIN_PASSWORD ?? readFileSync(resolve(ROOT, 'run/initial-password.txt'), 'utf8').trim()
+// 本 EG 的单元号（照旧一柜一台的 = 柜号；子站反代 /eg/<单元号>/、票据 c 都用它）
 const cabinet = process.env.CABINET ?? readFileSync(resolve(ROOT, 'run/dev-cabinet'), 'utf8').trim()
-const EG = `EG-${cabinet}`
-const SAM_A = `SAM-${cabinet}-A`
-const SAM_B = `SAM-${cabinet}-B`
+// 设备名从 run/eg.yaml 读（0.18.0 舱室 EG：一台 EG 只有本单元的设备，不能再按柜号拼 SAM-<柜>-A/B）
+const egYaml = readFileSync(resolve(ROOT, 'run/eg.yaml'), 'utf8')
+const devs = [...egYaml.matchAll(/^  - name: "?([^"\n]+)"?\n    kind: (\w+)/gm)].map(m => ({ name: m[1], kind: m[2] }))
+const EG = /^eg:\n  name: "?([^"\n]+)/m.exec(egYaml)?.[1] ?? `EG-${cabinet}`
+const sams = devs.filter(d => d.kind === 'sam').map(d => d.name)
+const SAM_A = sams[0] ?? `SAM-${cabinet}-A`
+const SAM_B = sams.at(-1) ?? SAM_A
+const PM6 = devs.find(d => d.kind === 'pm')?.name ?? `PM6-${cabinet}`
 
 /** [名字, 进入方式, 路由, 宽, 高, 额外动作]
  *  进入方式：login 不预置会话 / local 本地账号 / sp:<子站用户> 经子站票据 */
@@ -135,7 +141,7 @@ for (const [name, mode, route, w = 1366, h = 768, action] of SHOTS) {
   // 质量异常两张：让仿真器停发 SAM-A 的环境温湿度、整台停发颗粒物，等看护标到「无效」
   if (action === 'fault' && !faultOn) {
     await fetch(`${EMU}/emu/dev/${SAM_A}/drop?keys=env.t,env.rh`, { method: 'POST' })
-    await fetch(`${EMU}/emu/dev/PM6-${cabinet}/dead?on=1`, { method: 'POST' })
+    await fetch(`${EMU}/emu/dev/${PM6}/dead?on=1`, { method: 'POST' })
     faultOn = true
     console.log('  （制造质量异常，等 60 s 让看护标到「无效」）')
     await sleep(60_000)
@@ -215,7 +221,7 @@ for (const [name, mode, route, w = 1366, h = 768, action] of SHOTS) {
 
 if (faultOn) {
   await fetch(`${EMU}/emu/dev/${SAM_A}/drop?keys=`, { method: 'POST' })
-  await fetch(`${EMU}/emu/dev/PM6-${cabinet}/dead?on=0`, { method: 'POST' })
+  await fetch(`${EMU}/emu/dev/${PM6}/dead?on=0`, { method: 'POST' })
   console.log('  （质量异常已撤销）')
 }
 ws.close()

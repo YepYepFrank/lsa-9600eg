@@ -87,7 +87,7 @@ export function renderGatewayConfig(cfg: EgConfig, outDir = resolve(cfg.dir, 'ga
     broker: {
       host: bus.hostname,
       port: Number(bus.port || 1883),
-      clientId: `tb-gateway-${cfg.cabinet.code}`,
+      clientId: `tb-gateway-${cfg.unit.code}`,
       version: 5,
       maxMessageNumberPerWorker: 10,
       maxNumberOfWorkers: 100,

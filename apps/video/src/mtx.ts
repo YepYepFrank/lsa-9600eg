@@ -1,5 +1,5 @@
 /* EG 本机 mediamtx 的配置生成与 API（接口约定 §2、§3）。
- *   四路：<柜号>、<柜号>-sub、<柜号>-ir、<柜号>-ir-sub —— 每路 source 指向摄像机，sourceOnDemand：没有读者就不连摄像机；
+ *   四路：<单元号>、<单元号>-sub、<单元号>-ir、<单元号>-ir-sub（单元号 = eg.yaml unit.code，照旧一柜一台的 = 柜号）—— 每路 source 指向摄像机，sourceOnDemand：没有读者就不连摄像机；
  *   只开 RTSP（子站拉）与本机 API；读权限只给子站主机与本机，任何地址都不许推流。
  * G5 修订（docs/G5证据约定.md §1）：两路**子码流一直拉、一直录**（循环录像要覆盖故障前，边缘不能「没人看就不拉」），
  *   主码流仍按需；录像 fMP4、每段 60 s、按 evidence.ringHours 自动删最旧的；回放服务（裁证据片段）只给本机。
@@ -19,7 +19,8 @@ export const CHANNELS: { key: ChannelKey; suffix: string; label: string }[] = [
   { key: 'thermalSub', suffix: '-ir-sub', label: '热像子码流' },
 ]
 
-export const pathOf = (cab: string, key: ChannelKey) => cab + CHANNELS.find(c => c.key === key)!.suffix
+/** mediamtx 路径 = 本 EG 的单元号 + 后缀（子站按它拉流，舱室 EG 方案 §2.2） */
+export const pathOf = (unit: string, key: ChannelKey) => unit + CHANNELS.find(c => c.key === key)!.suffix
 
 /** 常录的两路（循环录像、证据片段）：证据的 channelId → 录像路径 */
 export const RECORDED: Record<'visible' | 'ir', ChannelKey> = { visible: 'visibleSub', ir: 'thermalSub' }
@@ -69,7 +70,7 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
   for (const c of CHANNELS) {
     const src = sources[c.key]
     if (!src) continue
-    paths[pathOf(cfg.cabinet.code, c.key)] = isRecorded(c.key)
+    paths[pathOf(cfg.unit.code, c.key)] = isRecorded(c.key)
       ? { source: src, sourceOnDemand: false, rtspTransport: 'tcp', record: true }
       : {
           source: src,
@@ -123,7 +124,7 @@ export async function renderMtxConfig(cfg: EgConfig, sources: Partial<Record<Cha
     },
     paths,
   }
-  const head = `# EG ${cfg.cabinet.code} 的 mediamtx 配置 —— eg-video 按 local.yaml 的摄像机与 ONVIF 查询结果生成（apps/video/src/mtx.ts），不要手改\n`
+  const head = `# ${cfg.eg.name}（单元 ${cfg.unit.code}）的 mediamtx 配置 —— eg-video 按 local.yaml 的摄像机与 ONVIF 查询结果生成（apps/video/src/mtx.ts），不要手改\n`
   const text = head + stringify(conf)
   const file = mtxConfigFile(cfg)
   mkdirSync(dirname(file), { recursive: true })

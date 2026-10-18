@@ -1,6 +1,9 @@
 /* EG 的配置：两份文件，按归属分开（开发计划 §6.2）。
  *
  *   eg.yaml     子站下发：本柜是谁、下挂哪些设备、设备名、额定电流、这台 EG 的访问令牌。
+ *               0.18.0 起（舱室 EG 方案 v0.5 §8.1）一面柜按电气舱室分几台 EG：schema 2 多一段 unit（本 EG 是哪个舱室单元），
+ *               EG 的身份（票据、clientId、上送 / 事件 / 证据路径、caps / meters 取键、mediamtx 路径、hello）一律用 unit.code；
+ *               cabinet 仍是真实的柜（柜号、额定、分组）。schema 1（照旧一柜一台）按 unit.code = cabinet.code。
  *               子站 `pnpm eg:config` 生成，EG 上只读（改要回子站改 tb/model.yaml 再生成）。
  *   local.yaml  EG 本地：本机总线与本地 TB 的地址、摄像机地址与账号、管理页端口。本地管理页可改。
  *
@@ -25,7 +28,15 @@ export interface DeviceConf {
   attrs: Record<string, unknown>
 }
 
-/** eg.yaml（子站下发），字段与后端 tb/provision/src/eg-config.ts 一致 */
+/** 舱室单元（eg.yaml schema 2 的 unit 段；方案 §8.1）。id = SAM 字母，code = 单元号（unitId，EG 的身份），at = 舱室，index = 全站单元序号 */
+export interface EgUnit {
+  id: string
+  code: string
+  at: string
+  index: number
+}
+
+/** eg.yaml（子站下发），字段与后端 tb/provision/src/eg-config-lib.ts 一致 */
 export interface EgFile {
   schema: number
   generatedAt: string
@@ -34,14 +45,17 @@ export interface EgFile {
     label: string
     /** 子站 TB 的 MQTT（上送遥测，§8.1）：开发 mqtt://127.0.0.1:1883，现场 mqtts://<子站>:8883 */
     mqtt?: string
-    /** 子站上 EG-<柜号> 网关设备的访问令牌：上送、X-EG-Token、验子站签的票据都用它 */
+    /** 子站上本 EG 网关设备（EG-<单元号>）的访问令牌：上送、X-EG-Token、验子站签的票据都用它 */
     token?: string
-    /** 子站扩展服务的 HTTP 基址（告警事件 POST <http>/ext/eg/<柜号>/events，§8.2）；缺省 http://<sp.host>（经子站 Nginx） */
+    /** 子站扩展服务的 HTTP 基址（告警事件 POST <http>/ext/eg/<单元号>/events，§8.2）；缺省 http://<sp.host>（经子站 Nginx） */
     http?: string
   }
   sp: { host: string }
   cabinet: { code: string; name: string; group: Group; kind: string; rated: number; riseLimit: number; rooms: string[]; index: number }
+  /** schema 2（0.18.0）：本 EG 是哪个舱室单元；schema 1 没有 */
+  unit?: EgUnit
   eg: { name: string; token: string; attrs: Record<string, unknown> }
+  /** 本 EG 的下挂设备（schema 2 只列本单元的；schema 1 是整柜） */
   devices: DeviceConf[]
   /** 本地 TB 的租户管理员（provision:eg 建）；没有时 agent 不读本地告警、不写设备配置 */
   tb?: { user: string; password: string }
@@ -71,7 +85,7 @@ export interface LocalFile {
   convGuard: { enabled: boolean; silentS: number; maxBackoffS: number }
   /** EG 本机 mediamtx（G4，docs/G4视频接口约定.md）：配置由 eg-video 生成到 <配置目录>/mediamtx/mediamtx.yml */
   video: {
-    /** 子站从这里拉流：rtsp://<EG 上行 IP>:<rtspPort>/<柜号>[-sub|-ir|-ir-sub]（开发样机 18554，与子站的 8554 错开） */
+    /** 子站从这里拉流：rtsp://<EG 上行 IP>:<rtspPort>/<单元号>[-sub|-ir|-ir-sub]（开发样机 18554，与子站的 8554 错开） */
     rtspPort: number
     /** eg-video 访问 mediamtx API 的地址（读各路状态与码率） */
     api: string
@@ -143,6 +157,8 @@ export interface LocalFile {
 }
 
 export interface EgConfig extends EgFile {
+  /** 本 EG 的身份（舱室单元）：schema 2 取 eg.yaml 的 unit，schema 1 按 { code: cabinet.code, index: cabinet.index } —— 身份一律用 unit.code */
+  unit: EgUnit
   /** local.yaml 原样（写给同一 compose 网络里的容器看的地址，IoT Gateway 配置按它生成） */
   local: LocalFile
   /** 本进程自己连的地址：local.yaml 的值，开发时可被环境变量覆盖（进程跑在宿主机、总线在容器里） */
@@ -150,7 +166,30 @@ export interface EgConfig extends EgFile {
   dir: string
 }
 
-export const SUPPORTED_SCHEMA = 1
+/** 认的 eg.yaml 格式版本：1 = 照旧一柜一台；2 = 舱室单元（0.18.0，多 unit 段） */
+export const SUPPORTED_SCHEMAS: readonly number[] = [1, 2]
+
+/** 本 EG 的身份：schema 2 用 eg.yaml 的 unit；schema 1 没有 unit，按单单元（unit.code = 柜号，方案 §8.1） */
+export function unitOf(eg: Pick<EgFile, 'schema' | 'cabinet' | 'unit'>): EgUnit {
+  const u = eg.unit
+  if (eg.schema >= 2 && u && typeof u.code === 'string' && u.code) {
+    return { id: String(u.id ?? ''), code: u.code, at: String(u.at ?? ''), index: Number(u.index ?? eg.cabinet.index) }
+  }
+  return { id: '', code: eg.cabinet.code, at: '', index: eg.cabinet.index }
+}
+
+/** eg.attrs.unit、devices[].attrs.unit 只当属性原样上报、不解析；和 unit.code 不一致时返回提示（启动时打警告，不拒绝启动） */
+export function unitWarnings(cfg: Pick<EgConfig, 'unit' | 'eg' | 'devices'>): string[] {
+  const out: string[] = []
+  const code = cfg.unit.code
+  const a = cfg.eg.attrs?.['unit']
+  if (a !== undefined && a !== null && String(a) !== code) out.push(`eg.attrs.unit 是 ${String(a)}，和身份 unit.code ${code} 不一致（以 unit.code 为准）`)
+  for (const d of cfg.devices ?? []) {
+    const du = d.attrs?.['unit']
+    if (du !== undefined && du !== null && String(du) !== code) out.push(`${d.name} 的 attrs.unit 是 ${String(du)}，和本 EG 的 unit.code ${code} 不一致`)
+  }
+  return out
+}
 
 export const LOCAL_DEFAULTS: LocalFile = {
   mqtt: { bus: 'mqtt://mosquitto:1883', tb: 'mqtt://tb:1883' },
@@ -204,7 +243,8 @@ export function loadConfig(dir = configDir()): EgConfig {
   const egPath = resolve(dir, 'eg.yaml')
   if (!existsSync(egPath)) throw new Error(`没有 ${egPath} —— 在子站上跑 pnpm eg:config 生成后拷过来（开发机：pnpm dev:config）`)
   const eg = parse(readFileSync(egPath, 'utf8')) as EgFile
-  if (eg.schema !== SUPPORTED_SCHEMA) throw new Error(`eg.yaml 格式版本 ${eg.schema}，本程序只认 ${SUPPORTED_SCHEMA}`)
+  if (!SUPPORTED_SCHEMAS.includes(eg.schema)) throw new Error(`eg.yaml 格式版本 ${eg.schema}，本程序只认 ${SUPPORTED_SCHEMAS.join(' / ')}`)
+  if (eg.schema >= 2 && !(eg.unit && typeof eg.unit.code === 'string' && eg.unit.code)) throw new Error('eg.yaml 是 schema 2，但没有 unit.code（子站 provision 生成的应当有）')
 
   const localPath = resolve(dir, 'local.yaml')
   let local: LocalFile
@@ -227,7 +267,7 @@ export function loadConfig(dir = configDir()): EgConfig {
     mtxWebrtc: (env['EG_MTX_WEBRTC'] || local.video.webrtc).replace(/\/$/, ''),
     mtxHls: (env['EG_MTX_HLS'] || local.video.hls).replace(/\/$/, ''),
   }
-  return { ...eg, local, conn, dir }
+  return { ...eg, unit: unitOf(eg), local, conn, dir }
 }
 
 export function saveLocal(local: LocalFile, dir = configDir()): void {

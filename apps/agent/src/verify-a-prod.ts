@@ -23,7 +23,7 @@ async function main() {
   console.log('阶段 A 现场口径（production）自检\n')
   const cfg = loadConfig()
   const dir = process.env['EG_CONFIG_DIR'] ?? ''
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const model = loadModel(MODEL)
   const tb = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()
   const codes = [code, 'AH12'].filter((c, i, a) => a.indexOf(c) === i).sort()

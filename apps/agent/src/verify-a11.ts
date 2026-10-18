@@ -18,7 +18,7 @@ const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG
 async function main() {
   console.log('阶段 A11 自检：requestId / errorCode / 票据 401 的 code\n')
   const cfg = loadConfig()
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const model = loadModel(MODEL)
   const tok = stationToken(cfg)
   const ticket = (over: Partial<TicketClaims> = {}) => {
@@ -52,7 +52,7 @@ async function main() {
     ['设备清单不同', { ...good('a11-x'), devices: [...cfg.devices.map(d => ({ name: d.name, kind: d.kind })), { name: 'SAM-X-Z', kind: 'sam' }] }, 'DEVICES_MISMATCH'],
     ['caps 不是对象', { ...good('a11-x'), caps: 1 }, 'BAD_REQUEST'],
     ['rules 不是数组', { ...good('a11-x'), rules: {} }, 'BAD_REQUEST'],
-    ['meters 里的表不是本机的（I3）', { ...good('a11-x'), meters: { [cfg.cabinet.code]: { 'PM-NOPE': { ct: 40 } } } }, 'BAD_REQUEST'],
+    ['meters 里的表不是本机的（I3）', { ...good('a11-x'), meters: { [cfg.unit.code]: { 'PM-NOPE': { ct: 40 } } } }, 'BAD_REQUEST'],
   ]
   for (const [what, body, want] of cases) {
     const id = randomUUID()

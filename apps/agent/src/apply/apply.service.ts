@@ -444,7 +444,8 @@ export class ApplyService {
         continue
       }
       // 存与算哈希的都是本柜生效后的 { id, on }：别的柜进出 offCabs 对本柜不算新内容；不带 offCabs 与老哈希一致
-      rules.push({ id: r['id'], on: r['on'] && !offCabs.includes(this.cfg.cabinet.code) })
+      // offCabs 的键：0.18.0 起单元号；柜号也认（柜停用 = 该柜全部单元停用；老子站只发柜号）
+      rules.push({ id: r['id'], on: r['on'] && !offCabs.includes(this.cfg.unit.code) && !offCabs.includes(this.cfg.cabinet.code) })
     }
 
     let extras = this.applied?.extras ?? DEFAULT_EXTRAS
@@ -476,7 +477,7 @@ export class ApplyService {
     // 阶段 A：能力清单（本柜那一份）与下挂设备离线判据
     let caps: CapsConfig | null
     try {
-      caps = parseCaps(b, this.cfg.cabinet.code)
+      caps = parseCaps(b, [this.cfg.unit.code, this.cfg.cabinet.code])
     } catch (e) {
       throw new Invalid((e as Error).message)
     }
@@ -493,7 +494,7 @@ export class ApplyService {
     }
     let meters: Record<string, Partial<Ratio>> | null
     try {
-      meters = parseMeters(b['meters'], this.cfg.cabinet.code, this.meters.names)
+      meters = parseMeters(b['meters'], [this.cfg.unit.code, this.cfg.cabinet.code], this.meters.names)
     } catch (e) {
       throw new Invalid((e as Error).message)
     }

@@ -108,6 +108,7 @@ async function realTb() {
   const cfg = {
     dir,
     cabinet: { code: 'KP99', group: 'mv' },
+    unit: { id: '', code: 'KP99', at: '', index: 1 },
     eg: { name, token, attrs: {} },
     station: { mqtt: MQ, token },
     local: { outbox: { maxAgeDays: 7, maxMb: 64, backfillRate: 2000 } },
@@ -258,6 +259,7 @@ async function main() {
     const cfg = {
       dir,
       cabinet: { code: 'AH99', group: 'mv' },
+      unit: { id: '', code: 'AH99', at: '', index: 1 },
       eg: { name: 'EG-AH99', token: 'bad-token', attrs: {} },
       station: { mqtt: fb.url, token: 'bad-token' },
       local: { outbox: { maxAgeDays: 7, maxMb: 64, backfillRate: 2000 } },

@@ -107,7 +107,7 @@ export class BusService implements OnModuleInit, OnModuleDestroy {
         mqtt.connect(
           this.cfg.conn.bus,
           mqttKeepOptions({
-            clientId: this.passive ? `eg-agent-${this.cfg.cabinet.code}-passive-${process.pid}` : `eg-agent-${this.cfg.cabinet.code}`,
+            clientId: this.passive ? `eg-agent-${this.cfg.unit.code}-passive-${process.pid}` : `eg-agent-${this.cfg.unit.code}`,
             protocolVersion: 5 as const,
             clean: this.passive,
             properties: this.passive ? {} : { sessionExpiryInterval: 86_400 },

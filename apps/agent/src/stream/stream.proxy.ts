@@ -2,7 +2,7 @@
  *   POST   /api/stream/<路径>/whep            WebRTC 信令（WHEP，SDP offer → answer）→ mediamtx WebRTC（只听本机）
  *   PATCH / DELETE /api/stream/<路径>/whep/<会话>
  *   GET    /api/stream/<路径>/index.m3u8 等     HLS（WebRTC 连不通时的兜底）→ mediamtx HLS（只听本机）
- * 路径只认本柜四路：<柜号>、<柜号>-sub、<柜号>-ir、<柜号>-ir-sub。
+ * 路径只认本 EG 四路：<单元号>、<单元号>-sub、<单元号>-ir、<单元号>-ir-sub（单元号 = eg.yaml unit.code；照旧一柜一台的 = 柜号）。
  * 鉴权与其它 /api 一样：Authorization: Bearer <会话令牌>，没有就 401；LAN1 进来的在更前面已被 403（net/deny.ts）。
  * 不用 Nest 控制器：WHEP 的请求体是 application/sdp，要原样转发，不能让 body parser 吃掉。 */
 import http from 'node:http'
@@ -14,8 +14,8 @@ const PASS_REQ = ['content-type', 'if-match', 'accept']
 const PASS_RES = ['content-type', 'content-length', 'etag', 'link', 'cache-control', 'accept-patch', 'accept-post', 'location']
 
 export function streamProxy(cfg: EgConfig, auth: AuthService) {
-  const cab = cfg.cabinet.code
-  const paths = new Set([cab, `${cab}-sub`, `${cab}-ir`, `${cab}-ir-sub`])
+  const unit = cfg.unit.code
+  const paths = new Set([unit, `${unit}-sub`, `${unit}-ir`, `${unit}-ir-sub`])
   const deny = (res: Response, status: number, code: string, message: string) => res.status(status).json({ code, message })
 
   return (req: Request, res: Response, _next: NextFunction) => {

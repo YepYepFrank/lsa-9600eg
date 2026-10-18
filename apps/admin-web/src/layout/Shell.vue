@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import brandLogo from '../components/brand-logo.png'
 import { NAV, type NavKey } from '../router'
+import { here } from '../scope'
 import { demoMode, logout, session } from '../session'
 import { startPolling, stopPolling, store } from '../store'
 import { theme, toggleTheme } from '../theme'
@@ -27,7 +28,8 @@ onBeforeUnmount(() => {
 const view = computed(() => (route.meta['nav'] as NavKey | undefined) ?? 'overview')
 const navigate = (k: NavKey) => router.push('/' + k)
 const clockText = computed(() => new Date(now.value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))
-const title = computed(() => (store.status ? `${store.status.cabinet.code} ${store.status.cabinet.name}` : demoMode ? 'AH03 1#出线柜' : '本柜监测'))
+// 0.18.0 舱室 EG：标题带舱室名（AH01 1#进线柜 · 断路器室），网关名在旁边的小字里
+const title = computed(() => (store.status ? `${store.status.cabinet.code} ${store.status.cabinet.name}${store.status.unit?.at ? ` · ${store.status.unit.at}` : ''}` : demoMode ? 'AH03 1#出线柜' : `${here.value}监测`))
 const mode = computed(() => (demoMode ? '本地演示' : session.me?.via === 'sp' ? '经子站访问' : '本地访问'))
 /** 「设备与通信」上的小红点：诊断有问题项、下挂设备有质量码 */
 const issues = computed(() => {
@@ -48,8 +50,8 @@ async function bye() {
     <aside class="eg-side">
       <div class="eg-brand"><span class="eg-logo"><img :src="brandLogo" alt="" /></span><div><strong>LSA-9600EG</strong><small>态势感知边缘网关</small></div></div>
       <nav aria-label="主导航">
-        <button v-for="item in NAV" :key="item.key" :class="{ selected: view === item.key }" :aria-current="view === item.key ? 'page' : undefined" :title="item.label" @click="navigate(item.key)">
-          <span class="nav-icon">{{ item.icon }}</span><span class="nav-label">{{ item.label }}</span>
+        <button v-for="item in NAV" :key="item.key" :class="{ selected: view === item.key }" :aria-current="view === item.key ? 'page' : undefined" :title="item.key === 'overview' ? `${here}总览` : item.label" @click="navigate(item.key)">
+          <span class="nav-icon">{{ item.icon }}</span><span class="nav-label">{{ item.key === 'overview' ? `${here}总览` : item.label }}</span>
           <span v-if="item.key === 'manage' && issues" class="nav-bdg">{{ issues }}</span>
         </button>
       </nav>

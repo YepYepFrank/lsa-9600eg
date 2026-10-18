@@ -26,7 +26,7 @@ async function raw(path: string, init: RequestInit = {}, base = AGENT) {
 async function main() {
   console.log(`单柜界面接口自检（${AGENT}）\n`)
   const cfg = loadConfig()
-  const cab = cfg.cabinet.code
+  const cab = cfg.unit.code // 视频路径按本 EG 的单元号
   const sam = cfg.devices.find(d => d.kind === 'sam')!.name
   const cam = cfg.devices.find(d => d.kind === 'camera')?.name
   const meter = cfg.devices.find(d => d.kind === 'meter')?.name

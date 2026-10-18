@@ -46,6 +46,8 @@ const NOT_FROM_SENSORS = new Set(['el.load_pct'])
 
 function cabinetOf(cfg: EgConfig): CabinetSpec {
   const sub = (d: EgConfig['devices'][number]): SubDeviceSpec => ({ name: d.name, kind: d.kind, profile: '', label: d.label, attrs: d.attrs })
+  const eg: SubDeviceSpec = { name: cfg.eg.name, kind: 'eg', profile: '', label: cfg.eg.name, attrs: cfg.eg.attrs }
+  const subs = cfg.devices.map(sub)
   return {
     ...cfg.cabinet,
     // 后端 I5 起 CabinetSpec 必带 egMode，EG 一律独立 TB
@@ -53,8 +55,11 @@ function cabinetOf(cfg: EgConfig): CabinetSpec {
     assetType: '',
     samProfile: '',
     camProfile: '',
-    eg: { name: cfg.eg.name, kind: 'eg', profile: '', label: cfg.eg.name, attrs: cfg.eg.attrs },
-    subs: cfg.devices.map(sub),
+    eg,
+    subs,
+    // 后端 0.18.0 起 CabinetSpec 必带：舱室单元。仿真器只模拟本 EG 这一个单元（eg.yaml schema 1 = 照旧一柜一台，单元号 = 柜号）
+    legacy: cfg.unit.code === cfg.cabinet.code,
+    units: [{ id: cfg.unit.id, code: cfg.unit.code, at: cfg.unit.at, index: cfg.unit.index, recorded: true, eg, subs }],
     // 后端 0.11 / 0.13 起 CabinetSpec 必带：SAM 清单（id 取设备名最后一段，所在位置取 attrs.room）、北向槽位、配置提示、能力（仿真器全量出数 = demo）
     sams: cfg.devices.filter(d => d.kind === 'sam').map(d => ({ id: d.name.split('-').pop() ?? '', at: String(d.attrs['room'] ?? '') })),
     samSlots: [],

@@ -48,15 +48,18 @@ export function keyMatch(pattern: string, key: string): boolean {
   return pattern === key
 }
 
-/** 校验并取出本柜的一份（下发体里的 caps、capKeys）；没带 caps 返回 null（= 不过滤） */
-export function parseCaps(body: Record<string, unknown>, cabinet: string): CapsConfig | null {
+/** 校验并取出本 EG 的一份（下发体里的 caps、capKeys）；没带 caps 返回 null（= 不过滤）。
+ *  key：按顺序找的键 —— 0.18.0 起先找单元号（unit.code），没有再找柜号（子站过渡期两种键都发；老子站只有柜号键） */
+export function parseCaps(body: Record<string, unknown>, key: string | readonly string[]): CapsConfig | null {
+  const keys = typeof key === 'string' ? [key] : [...new Set(key)]
   const rawCaps = body['caps']
   const rawKeys = body['capKeys']
   if (rawCaps === undefined && rawKeys === undefined) return null
-  if (!isObj(rawCaps)) throw new Error('caps 要是对象 { "<柜号>": { "<能力>": 状态 } }')
+  if (!isObj(rawCaps)) throw new Error('caps 要是对象 { "<单元号或柜号>": { "<能力>": 状态 } }')
   if (!isObj(rawKeys)) throw new Error('capKeys 要是对象 { "<能力>": ["前缀:key", …] }')
+  const cabinet = keys.find(k => rawCaps[k] !== undefined)
+  if (cabinet === undefined) throw new Error(`caps 里没有本 EG（${keys.join(' / ')}）`)
   const mine = rawCaps[cabinet]
-  if (mine === undefined) throw new Error(`caps 里没有本柜 ${cabinet}`)
   if (!isObj(mine)) throw new Error(`caps.${cabinet} 要是对象`)
   const caps: Record<string, CapState> = {}
   for (const [k, v] of Object.entries(mine)) {
