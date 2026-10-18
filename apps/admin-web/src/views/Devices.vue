@@ -20,7 +20,16 @@ const rows = computed(() => {
 /** 属性里给人看的几项（其余在展开里） */
 const MAIN_ATTRS = ['room', 'port', 'proto', 'rated', 'fw']
 const ATTR_LABEL: Record<string, string> = { room: '隔室', port: '端口', proto: '协议', rated: '额定电流', fw: '固件', cab: '柜号', voltage: '电压等级', channels: '路数', 'ir.boxes': '分框' }
-const attrText = (k: string, v: unknown) => (k === 'rated' ? `${v} A` : k === 'ir.boxes' ? boxes(v) : String(v))
+const attrText = (k: string, v: unknown) => (k === 'rated' ? `${v} A` : k === 'ir.boxes' ? boxes(v) : k === 'proto' ? protoText(String(v)) : String(v))
+/** 「协议」一行只改显示、不动 eg.yaml 里的字符串（改了已装 EG 的 eg.yaml 和子站就对不上）：从站清单前面没写「从站」就补上，
+ *  和下面「485 实际」写法一致 ——「Modbus RTU · 红外 1 / 局放 2 · 9600」→「Modbus RTU · 从站 红外 1 / 局放 2 · 9600」（协调 2026-10-18 定，子站网关页同） */
+function protoText(p: string): string {
+  if (p.includes('从站')) return p
+  return p
+    .split(' · ')
+    .map(seg => (/^[^\d/·]+ \d{1,3}( \/ [^\d/·]+ \d{1,3})*$/.test(seg) ? `从站 ${seg}` : seg))
+    .join(' · ')
+}
 function boxes(v: unknown): string {
   try {
     const a = JSON.parse(String(v)) as { id: string; label: string }[]
