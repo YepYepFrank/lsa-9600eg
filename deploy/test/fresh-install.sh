@@ -12,7 +12,10 @@
 #   5. 删掉沙箱（--keep 留着，之后 docker rm -f -v egfresh）
 #
 #   用法（开发机 Git Bash；后端库在 ../lsa-9600sp-backend，开发机子站在跑）：
-#     bash deploy/test/fresh-install.sh <一键安装文件 .run> [柜号，缺省 AH07] [--keep]
+#     bash deploy/test/fresh-install.sh <一键安装文件 .run> [单元号，缺省 AH07] [--keep]
+#   单元号（EG 0.7.0 起，舱室 EG 方案 v0.5）：舱室单元 AH07-A（provision:eg --unit，出 eg.yaml schema 2）；
+#   照旧一柜一台的柜就是柜号 AH07（--cabinet，schema 1）。开发机子站要有这个单元（model 里这面柜不是 legacyEg）。
+#   装完核对本 EG 的身份：/api/status 的 unit、mediamtx 路径、IoT Gateway clientId 都是这个单元号
 #   不下载任何东西：ubuntu:24.04 用本机已有的（--pull never），Docker 用安装文件里的 deb，镜像用安装文件里的。
 #
 # 沙箱与真机的差别（只为在容器里跑得起来，不改安装脚本）：
@@ -22,7 +25,7 @@
 #   - /usr/sbin/policy-rc.d 返回 101：dpkg 装包时不去起服务（Docker 官方镜像的做法）
 #   - 没有 modprobe：看门狗打「加载不了 softdog」的提醒，属正常
 set -uo pipefail
-RUNFILE="${1:?用法：fresh-install.sh <安装文件 .run> [柜号] [--keep]}"
+RUNFILE="${1:?用法：fresh-install.sh <安装文件 .run> [单元号] [--keep]}"
 CAB="${2:-AH07}"; [ "$CAB" = --keep ] && CAB=AH07
 KEEP=0; for a in "$@"; do [ "$a" = --keep ] && KEEP=1; done
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -34,6 +37,8 @@ RUN="$(basename "$RUNFILE")"
 OUT="$BE/tb/provision/out/eg/$CAB"
 BAK="$(mktemp -d)"
 fail=0
+# 舱室单元（柜号-字母）按 --unit provision、出 schema 2；照旧一柜一台按 --cabinet
+if [[ "$CAB" =~ ^.+-[A-Z]$ ]]; then PROV_KEY=--unit; else PROV_KEY=--cabinet; fi
 ok() { echo "  ✓ $*"; }
 bad() { echo "  ✗ $*"; fail=1; }
 os() { docker exec "$D" "$@"; }
@@ -94,12 +99,12 @@ os docker run -d --name egfresh-fwd --network host "lsa-eg-app:$VER" node -e \
   'const n=require("net");n.createServer(c=>{const u=n.connect(18080,"127.0.0.1");c.pipe(u).pipe(c);u.on("error",()=>c.destroy());c.on("error",()=>u.destroy())}).listen(38080,"0.0.0.0")' >/dev/null
 sleep 2
 [ -d "$OUT" ] && cp -a "$OUT" "$BAK/orig"
-( cd "$BE" && pnpm -s provision:eg -- --cabinet "$CAB" --url http://127.0.0.1:38080 --sp 192.0.2.1 --hook http://host.docker.internal/hooks/alarm --thresholds model --no-cleanup ) > "$BAK/prov.log" 2>&1; rc=$?
+( cd "$BE" && pnpm -s provision:eg -- "$PROV_KEY" "$CAB" --url http://127.0.0.1:38080 --sp 192.0.2.1 --hook http://host.docker.internal/hooks/alarm --thresholds model --no-cleanup ) > "$BAK/prov.log" 2>&1; rc=$?
 tail -6 "$BAK/prov.log" | sed 's/^/    /'
 [ "$rc" = 0 ] && ok 'provision:eg rc 0' || { bad "provision:eg rc $rc"; exit 1; }
 os mkdir -p /cfg
 # 经 stdin 传（Git Bash 下 $OUT 是 /d/… 写法，docker cp 认不出）
-docker exec -i "$D" sh -c 'cat > /cfg/eg.yaml' < "$OUT/eg.yaml" && ok "eg.yaml 拷进沙箱（tb: 段 $(grep -c '^tb:' "$OUT/eg.yaml") 个；上送 $(grep -oE 'mqtts?://[^ "]+' "$OUT/eg.yaml" | head -1)）"
+docker exec -i "$D" sh -c 'cat > /cfg/eg.yaml' < "$OUT/eg.yaml" && ok "eg.yaml 拷进沙箱（schema $(sed -n 's/^schema: *//p' "$OUT/eg.yaml" | head -1)；tb: 段 $(grep -c '^tb:' "$OUT/eg.yaml") 个；上送 $(grep -oE 'mqtts?://[^ "]+' "$OUT/eg.yaml" | head -1)）"
 os docker rm -f egfresh-fwd >/dev/null
 
 echo; echo "== 3. 第二轮：$RUN --role eg --yes --eg-config /cfg"
@@ -128,10 +133,20 @@ const j=await r.json().catch(()=>({}));const H={authorization:"Bearer "+j.token}
 console.log("    登录 maint："+r.status);
 const s=await (await fetch(B+"/api/status",{headers:H})).json();
 console.log("    /api/status：eg "+s.eg+"，版本 "+s.version+"，总线 "+(s.bus&&s.bus.connected?"连上":"没连上")+"，设备 "+(s.devices||[]).length+" 台");
+console.log("    UNIT="+(s.unit?s.unit.code:"（没报）")+" AT="+(s.unit?s.unit.at:""));
 const c=await (await fetch(B+"/api/components",{headers:H})).json();
 for(const x of (Array.isArray(c)?c:c.rows||c.items||[]))console.log("    组件 "+JSON.stringify(x).slice(0,160));
 if(!Array.isArray(c))console.log("    /api/components "+JSON.stringify(c).slice(0,400));
-})().catch(e=>{console.log("    !! "+e.message);process.exit(1)})' || bad 'agent 查不了'
+})().catch(e=>{console.log("    !! "+e.message);process.exit(1)})' > "$BAK/api.txt" 2>&1 || bad 'agent 查不了'
+grep -v '^    UNIT=' "$BAK/api.txt"
+# 本 EG 的身份（EG 0.7.0）：agent 报的单元号、mediamtx 路径、IoT Gateway clientId 都是 $CAB
+u="$(sed -n 's/^    UNIT=\([^ ]*\) AT=.*/\1/p' "$BAK/api.txt" || true)"; at="$(sed -n 's/^    UNIT=[^ ]* AT=//p' "$BAK/api.txt" || true)"
+if [ "$u" = "$CAB" ]; then ok "/api/status 的单元号 $u${at:+（$at）}"; else bad "/api/status 的单元号是 ${u:-（没报）}，不是 $CAB"; fi
+if [ "$PROV_KEY" = --unit ] && [ -z "$at" ]; then bad '舱室单元却没有舱室名（eg.yaml 不是 schema 2？）'; fi
+if os grep -qE "^  $CAB(-sub|-ir|-ir-sub)?:" /opt/lsa-eg/config/mediamtx/mediamtx.yml 2>/dev/null; then ok "mediamtx 路径按单元号：$(os grep -oE "^  $CAB[a-z-]*:" /opt/lsa-eg/config/mediamtx/mediamtx.yml | tr -d ' :' | tr '\n' ' ')"
+else echo "  （mediamtx 还没有 $CAB 的路径：沙箱没接摄像机时 eg-video 不出路径，不算失败）"; fi
+cid="$(os sh -c 'grep -rhoE "tb-gateway-[A-Za-z0-9-]+" /opt/lsa-eg/config/gateway/config 2>/dev/null' | sort -u | tr '\n' ' ')"
+[ "$cid" = "tb-gateway-$CAB " ] && ok "IoT Gateway clientId $cid" || bad "IoT Gateway clientId：${cid:-（没找到）}，应为 tb-gateway-$CAB"
 
 echo; echo "== 5. --kiosk 的拒绝路径（0.16）"
 rc=0; out="$(os bash "/rel/$RUN" --role eg --kiosk --yes 2>&1)" || rc=$?
