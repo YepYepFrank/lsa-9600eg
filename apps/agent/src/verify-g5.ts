@@ -34,7 +34,7 @@ type List = { status: { recOk: boolean | null; indexPending: number; target: str
 async function main() {
   console.log('G5 自检（EG 侧）：循环录像、证据锁定与生产\n')
   const cfg = loadConfig()
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const list = () => agent<List>(cfg.dir, '/api/evidence?limit=500')
   const ticket = () => {
     const now = Date.now()

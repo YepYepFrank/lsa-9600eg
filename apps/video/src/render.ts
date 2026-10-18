@@ -5,7 +5,7 @@ import { VideoService } from './video.service.js'
 const svc = new VideoService()
 await svc.refresh()
 const s = svc.status()
-console.log(`${s.cabinet} 的 mediamtx 配置 → ${s.mediamtx.file}`)
+console.log(`${s.unit} 的 mediamtx 配置 → ${s.mediamtx.file}`)
 for (const c of s.channels) console.log(`  ${c.path.padEnd(14)} ${c.from ? `${c.from === 'manual' ? '手填' : '驱动'} ${c.uri}` : '（没有地址）'}`)
 if (s.driver && !s.driver.ok) console.log(`  取流地址失败（${s.driver.driver} 驱动）：${s.driver.error}`)
 process.exit(0)

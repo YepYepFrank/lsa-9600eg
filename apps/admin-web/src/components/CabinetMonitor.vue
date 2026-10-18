@@ -12,6 +12,7 @@ import { arcPreview, smokeSeries, climateSeries, countSeries, currentSeries, dem
 import { dewPoint, streamsOf, useMonitor, type AlarmRow, type EvidenceItem } from '../monitor'
 import { session } from '../session'
 import { store } from '../store'
+import { here, unitCode } from '../scope'
 
 const props = defineProps<{ demo: boolean; tab: 'overview' | 'electric' | 'events' }>()
 const emit = defineEmits<{ navigate: [tab: 'overview' | 'electric' | 'events' | 'manage'] }>()
@@ -40,7 +41,8 @@ const CARD_CAPS = {
 } as const
 const show = (k: keyof typeof CARD_CAPS) => props.demo || card(...CARD_CAPS[k]) !== 'hidden'
 const pendingCard = (k: keyof typeof CARD_CAPS) => !props.demo && card(...CARD_CAPS[k]) === 'pending'
-const cab = computed(() => store.status?.cabinet.code)
+// 视频路径 = 本 EG 的单元号（照旧一柜一台的 = 柜号）
+const cab = unitCode
 /** 页面上的单位一律取点表；局放幅值按子站与现场口径写 dBμV（点表目前写的是 dB，已报后端统一） */
 const UNIT_FIX: Record<string, string> = { 'us.amp': 'dBμV' }
 const catalogUnit = (kind: string, key: string, fallback = '') => UNIT_FIX[key] ?? (store.catalog?.devices[kind]?.find(p => p.key === key)?.unit || fallback)
@@ -285,7 +287,7 @@ async function download(id: string, label: string) {
         <div class="monitor-card-heading"><b>双光摄像头</b><span v-if="!demo && cam" class="muted">{{ labelOf(cam) }}</span><span class="grow"/><select v-model="palette" aria-label="热像调色板" :disabled="!demo" :title="demo ? '' : '实况热像的伪彩由摄像机出'"><option value="iron">铁红</option><option value="white">白热</option><option value="rainbow">彩虹</option></select><label><input v-model="boxes" type="checkbox" :disabled="!demo && !rois.length" />测温标注</label><button @click="fullscreen">全屏</button></div>
         <div ref="camera" class="camera-frame">
           <DualLightPlayer v-if="demo" fill big mode="side" :palette="palette" :boxes="boxes ? [62.2, 78.6, 62.4] : false" :box-labels="['R1', 'R2', 'R3']" :tmax="78.6" :env-t="26.5" />
-          <DualLightPlayer v-else fill big mode="side" :palette="palette" :streams="streams" :boxes="boxes && rois.length ? true : false" :rois="rois" :frame-aspect="frameAspect" :tmax="tmax" :env-t="envT" :offline="!cam" offline-text="本柜没有配置双光摄像机" />
+          <DualLightPlayer v-else fill big mode="side" :palette="palette" :streams="streams" :boxes="boxes && rois.length ? true : false" :rois="rois" :frame-aspect="frameAspect" :tmax="tmax" :env-t="envT" :offline="!cam" :offline-text="`${here}没有配置双光摄像机`" />
         </div>
         <div class="camera-summary"><div>最高温 <b>{{ demo ? '78.6' : f1(tmax) }}</b><small>℃</small></div><div>温升 <b>{{ demo ? '52.1' : f1(rise) }}</b><small>K</small></div></div>
       </section>
@@ -327,11 +329,11 @@ async function download(id: string, label: string) {
       </section>
     </div>
 
-    <section v-else-if="tab === 'electric' && !show('meter')" class="monitor-card"><div class="monitor-empty"><strong>本柜不配电表</strong><span>子站能力清单里电表各项都是「不具备」</span></div></section>
+    <section v-else-if="tab === 'electric' && !show('meter')" class="monitor-card"><div class="monitor-empty"><strong>{{ here }}不配电表</strong><span>子站能力清单里电表各项都是「不具备」</span></div></section>
     <template v-else-if="tab === 'electric'">
       <p v-if="pendingCard('meter')" class="cap-pending-note">电表能力待定：以下数据仅供调试核对（子站确认后才上送）</p>
       <p v-if="!demo && (ratioOf(meter).ct !== 1 || ratioOf(meter).pt !== 1)" class="muted" style="margin:0 0 8px;font-size:12px">以下电压、电流、功率、电量为一次值：表计读数 × 变比（CT {{ ratioOf(meter).ct }} / PT {{ ratioOf(meter).pt }}，子站下发）；功率因数、频率、谐波不乘</p>
-      <div v-if="!demo && !meter" class="monitor-card"><div class="monitor-empty">本柜没有配置电表（eg.yaml 设备清单里没有 meter）</div></div>
+      <div v-if="!demo && !meter" class="monitor-card"><div class="monitor-empty">{{ here }}没有配置电表（eg.yaml 设备清单里没有 meter）</div></div>
       <template v-else>
       <div class="electric-grid"><section v-for="group in electric" :key="group.label" class="monitor-card"><div class="monitor-card-heading"><b>{{ group.label }}</b><span class="grow"/><span class="muted">{{ group.unit }}</span></div><div v-for="item in group.items" :key="item[0]" class="electric-row"><span>{{ item[0] }}</span><b>{{ item[1] }}</b></div></section></div>
       <section class="monitor-card electric-chart"><div class="monitor-card-heading"><b>三相电流趋势</b><span class="grow"/><span class="muted">近 24h{{ demo ? ' · 模拟数据' : ' · 5 min 平均' }}</span></div><MultiUnitTrend v-if="demo || current.some(s => s.data.length)" :series="current" :height="320" /><div v-else class="monitor-empty">等待电表数据</div></section>
@@ -339,7 +341,7 @@ async function download(id: string, label: string) {
     </template>
 
     <template v-else>
-      <section class="monitor-card"><div class="monitor-card-heading"><b>本地事件记录</b><span v-if="!demo" class="muted">EG 本地 TB 告警 · 事件库</span><span class="grow"/><select v-model="eventFilter" aria-label="事件类型"><option>全部</option><option v-for="t in eventTypes" :key="t">{{ t }}</option></select></div><p class="events-note">只含本柜 EG 本地判出的告警；全站告警请到子站查看</p><div class="table-scroll" :class="{ 'events-scroll': !demo }"><table class="event-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>描述</th><th>状态</th><th>关联录像</th></tr></thead><tbody><tr v-for="e in events" :key="e.id"><td>{{ time(e.time) }}</td><td :style="{ color: e.color }">{{ e.level }}</td><td>{{ e.type }}</td><td>{{ e.detail }}</td><td>{{ e.state }}</td><td><template v-if="demo"><span class="muted">演示事件 · 无录像文件</span></template><button v-else-if="e.ev.length" class="text-link" @click="openEvidence(e)">{{ evText(e.ev) }} ›</button><span v-else class="muted">—</span></td></tr><tr v-if="!events.length"><td colspan="6" class="monitor-empty">{{ demo || m.alarms.length ? '没有匹配的事件' : '本机还没有告警事件' }}</td></tr></tbody></table></div></section>
+      <section class="monitor-card"><div class="monitor-card-heading"><b>本地事件记录</b><span v-if="!demo" class="muted">EG 本地 TB 告警 · 事件库</span><span class="grow"/><select v-model="eventFilter" aria-label="事件类型"><option>全部</option><option v-for="t in eventTypes" :key="t">{{ t }}</option></select></div><p class="events-note">只含{{ here }} EG 本地判出的告警；全站告警请到子站查看</p><div class="table-scroll" :class="{ 'events-scroll': !demo }"><table class="event-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>描述</th><th>状态</th><th>关联录像</th></tr></thead><tbody><tr v-for="e in events" :key="e.id"><td>{{ time(e.time) }}</td><td :style="{ color: e.color }">{{ e.level }}</td><td>{{ e.type }}</td><td>{{ e.detail }}</td><td>{{ e.state }}</td><td><template v-if="demo"><span class="muted">演示事件 · 无录像文件</span></template><button v-else-if="e.ev.length" class="text-link" @click="openEvidence(e)">{{ evText(e.ev) }} ›</button><span v-else class="muted">—</span></td></tr><tr v-if="!events.length"><td colspan="6" class="monitor-empty">{{ demo || m.alarms.length ? '没有匹配的事件' : '本机还没有告警事件' }}</td></tr></tbody></table></div></section>
       <section class="monitor-card recording-card"><div class="monitor-card-heading"><b>双光录像</b><span v-if="play" class="muted">{{ play.title }}</span><span class="grow"/><span class="pending">{{ demo ? '待接入' : '告警证据 · 前 30 s / 后 60 s' }}</span></div>
         <div v-if="play" class="evidence-play">
           <div v-for="it in play.items" :key="it.id" class="ev-item" :class="it.kind">

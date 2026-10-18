@@ -28,7 +28,7 @@ import { EG_CONFIG } from '../config.js'
 import { AuditService } from '../audit/audit.service.js'
 import { BusService } from '../bus/bus.service.js'
 import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
-import { parseCaps, type CapsConfig } from '../caps/caps.js'
+import { offCabsKey, parseCaps, type CapsConfig } from '../caps/caps.js'
 import { CapsService, type DevCommParams } from '../caps/caps.service.js'
 import { MetersService, parseMeters, type Ratio } from '../meters/meters.service.js'
 import { parseGas, type GasParams } from '../warmup/warmup.js'
@@ -431,6 +431,8 @@ export class ApplyService {
     if (!Array.isArray(rawRules)) throw new Invalid('rules 要是数组')
     const rules: { id: string; on: boolean }[] = []
     const ignored: string[] = []
+    // offCabs 按哪个键看：caps 里有本单元号的键就只看单元号，没有才看柜号（见 offCabsKey）
+    const offKey = offCabsKey(b, this.cfg.unit.code, this.cfg.cabinet.code)
     for (const r of rawRules) {
       if (!isObj(r) || typeof r['id'] !== 'string' || typeof r['on'] !== 'boolean') throw new Invalid('rules 每项要是 { id: 字符串, on: 布尔, offCabs?: [柜号] }')
       // v1.2 补：规则全站一份、能力按柜 —— offCabs 里有本柜号就算本柜停用（子站按能力算：能力不是 confirmed 的柜放进来）
@@ -444,7 +446,7 @@ export class ApplyService {
         continue
       }
       // 存与算哈希的都是本柜生效后的 { id, on }：别的柜进出 offCabs 对本柜不算新内容；不带 offCabs 与老哈希一致
-      rules.push({ id: r['id'], on: r['on'] && !offCabs.includes(this.cfg.cabinet.code) })
+      rules.push({ id: r['id'], on: r['on'] && !offCabs.includes(offKey) })
     }
 
     let extras = this.applied?.extras ?? DEFAULT_EXTRAS
@@ -476,7 +478,7 @@ export class ApplyService {
     // 阶段 A：能力清单（本柜那一份）与下挂设备离线判据
     let caps: CapsConfig | null
     try {
-      caps = parseCaps(b, this.cfg.cabinet.code)
+      caps = parseCaps(b, [this.cfg.unit.code, this.cfg.cabinet.code])
     } catch (e) {
       throw new Invalid((e as Error).message)
     }
@@ -493,7 +495,7 @@ export class ApplyService {
     }
     let meters: Record<string, Partial<Ratio>> | null
     try {
-      meters = parseMeters(b['meters'], this.cfg.cabinet.code, this.meters.names)
+      meters = parseMeters(b['meters'], [this.cfg.unit.code, this.cfg.cabinet.code], this.meters.names)
     } catch (e) {
       throw new Invalid((e as Error).message)
     }

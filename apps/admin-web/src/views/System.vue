@@ -81,6 +81,7 @@ onMounted(async () => {
           <dl class="kv">
             <dt>网关</dt><dd>{{ cfg.eg.eg.name }} · SN {{ cfg.eg.eg.attrs['sn'] ?? '—' }}</dd>
             <dt>所在柜</dt><dd>{{ cfg.eg.cabinet.code }} {{ cfg.eg.cabinet.name }}（{{ cfg.eg.cabinet.kind }}，额定 {{ cfg.eg.cabinet.rated }} A）</dd>
+            <template v-if="cfg.eg.unit?.at"><dt>舱室单元</dt><dd>{{ cfg.eg.unit.code }} · {{ cfg.eg.unit.at }}（eg.yaml schema {{ cfg.eg.schema ?? 2 }}）</dd></template>
             <dt>配电室</dt><dd>{{ cfg.eg.station.label }}</dd>
             <dt>子站主机</dt><dd>{{ cfg.eg.sp.host }}</dd>
             <dt>设备网 / 上行网</dt><dd>{{ cfg.eg.eg.attrs['ip'] ?? '—' }} / {{ cfg.eg.eg.attrs['ipUp'] ?? '—' }}</dd>

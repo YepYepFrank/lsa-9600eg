@@ -30,7 +30,7 @@ const n = (v: unknown) => (typeof v === 'number' ? v : Number(v))
 async function main() {
   console.log('G4 自检：视频按需拉（EG 这一级）与摄像机区域测温\n')
   const cfg = loadConfig()
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const camDev = cfg.devices.find(d => d.kind === 'camera')!.name
   const sams = cfg.devices.filter(d => d.kind === 'sam').map(d => d.name)
   // R1 的温升对哪台 SAM 的 env.t（eg.yaml CAM 的 regions.R<n>.env；没配时对第一台）

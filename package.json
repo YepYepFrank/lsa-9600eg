@@ -25,6 +25,7 @@
     "devcomm:verify": "pnpm -F @lsa-eg/agent verify:devcomm",
     "conv-expect:verify": "pnpm -F @lsa-eg/agent verify:conv-expect",
     "conv-bus:verify": "pnpm -F @lsa-eg/agent verify:conv-bus",
+    "unit:verify": "pnpm -F @lsa-eg/agent verify:unit",
     "mqtt-keep:verify": "pnpm -F @lsa-eg/agent verify:mqtt-keep",
     "pulse:verify": "pnpm -F @lsa-eg/agent verify:pulse",
     "warmup:verify": "pnpm -F @lsa-eg/agent verify:warmup",

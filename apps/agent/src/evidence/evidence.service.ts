@@ -94,7 +94,7 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
   }
 
   private get base(): string {
-    return `${this.cfg.conn.stationHttp}/ext/eg/${this.cfg.cabinet.code}/evidence`
+    return `${this.cfg.conn.stationHttp}/ext/eg/${this.cfg.unit.code}/evidence`
   }
 
   onModuleInit(): void {
@@ -162,12 +162,14 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
     const groupId = randomBytes(6).toString('hex')
     const ring = await this.video.recording()
     const oldest = ring?.paths.length ? Math.max(...ring.paths.map(p => p.oldest ?? now)) : null
+    // 证据 ID 按本 EG（单元号）唯一；cabinetId 仍是真实的柜（子站按柜核对），gatewayId = 本 EG
+    const unit = this.cfg.unit.code
     const cab = this.cfg.cabinet.code
     const ids: string[] = []
     let expired = 0
     let partial = false
     const add = (kind: EvKind, channelId: EvChannel, start: number, end: number, dueAt: number, pre?: { status: EvidenceRow['status']; missingReason: string }) => {
-      const id = `EV-${cab}-${stamp(start)}-${kind}-${channelId}-${randomBytes(2).toString('hex')}`
+      const id = `EV-${unit}-${stamp(start)}-${kind}-${channelId}-${randomBytes(2).toString('hex')}`
       const row: EvidenceRow = {
         evidenceId: id,
         revision: 1,

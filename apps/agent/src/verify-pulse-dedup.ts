@@ -30,6 +30,7 @@ async function main() {
   const cfg = {
     dir,
     cabinet: { code: 'AH99', group: 'mv' },
+    unit: { id: '', code: 'AH99', at: '', index: 1 },
     eg: { name: 'EG-AH99', token: 'x', attrs: {} },
     station: { mqtt: 'mqtt://127.0.0.1:9', token: 'x' },
     conn: { bus: 'mqtt://127.0.0.1:9' },

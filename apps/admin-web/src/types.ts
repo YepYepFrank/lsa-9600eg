@@ -28,6 +28,8 @@ export interface Status {
   eg: string
   version: string
   cabinet: { code: string; name: string; group: string; kind: string; rated: number; rooms: string[] }
+  /** 0.18.0：本 EG 是哪个舱室单元（照旧一柜一台的 code = 柜号、at 为空） */
+  unit?: { id: string; code: string; at: string; index: number }
   station: { name: string; label: string }
   sp: { host: string }
   uptimeSec: number
@@ -158,6 +160,9 @@ export interface Config {
     station: { name: string; label: string }
     sp: { host: string }
     cabinet: { code: string; name: string; group: string; kind: string; rated: number; riseLimit: number; rooms: string[]; index: number }
+    /** 0.18.0：舱室单元（eg.yaml schema 2；schema 1 时 code = 柜号、at 为空） */
+    unit?: { id: string; code: string; at: string; index: number }
+    schema?: number
     eg: { name: string; token: string; attrs: Record<string, unknown> }
     devices: DeviceConf[]
     stationUplink: { mqtt: string | null; token: string }

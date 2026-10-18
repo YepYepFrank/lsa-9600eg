@@ -63,8 +63,10 @@ export class WarmupService implements OnModuleInit {
     }
     const p = this.caps.gas
     const cab = this.cfg.cabinet.code
+    const unit = this.cfg.unit.code
     const boot = bootTrigger({ uptimeS: this.uptimeS(), warmupS: p.warmupS, hostBootId: this.hostBootId, lastHostBootId: last?.hostBootId ?? null })
-    if (boot && p.bootOffCabs.includes(cab)) this.log.log(`EG 主机刚开机，但本柜 ${cab} 在 gasBootWarmupOffCabs 里（传感器与 EG 不同一路电），不进预热`)
+    // gasBootWarmupOffCabs 按柜号（子站按柜给）；单元号也认
+    if (boot && (p.bootOffCabs.includes(cab) || p.bootOffCabs.includes(unit))) this.log.log(`EG 主机刚开机，但本柜 ${cab} 在 gasBootWarmupOffCabs 里（传感器与 EG 不同一路电），不进预热`)
     else if (boot) {
       for (const d of this.devs.values()) d.t.bootArmed = true
       this.log.log(`EG 主机刚开机（开机 ${Math.round(this.uptimeS())} s）：${[...this.devs.keys()].join('、')} 读到数后预热 ${p.warmupS} s`)

@@ -11,7 +11,7 @@ import { Logger, ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import express from 'express'
-import { repoRoot } from '@lsa-eg/config'
+import { repoRoot, unitWarnings } from '@lsa-eg/config'
 import { AppModule } from './app.module.js'
 import { egConfig } from './config.js'
 import { renderGatewayConfig } from './gateway/render.js'
@@ -50,7 +50,9 @@ async function bootstrap() {
     if (process.env['NODE_ENV'] === 'production') for (let k = 0; k < 3; k++) log.error(msg)
     else log.warn(msg)
   }
-  log.log(`${cfg.eg.name}（${cfg.cabinet.name}）已启动：http://localhost:${port}/`)
+  log.log(`${cfg.eg.name}（${cfg.cabinet.name}${cfg.unit.at ? ` · ${cfg.unit.at}` : ''}，单元 ${cfg.unit.code}，eg.yaml schema ${cfg.schema}）已启动：http://localhost:${port}/`)
+  // eg.attrs.unit / devices[].attrs.unit 只当属性上报、不解析；和身份 unit.code 不一致只提醒（舱室 EG 方案 §8.1）
+  for (const w of unitWarnings(cfg)) log.warn(w)
   log.log(`IoT Gateway 配置 → ${gw.dir}`)
   if (!existsSync(web)) log.warn(`没有管理页构建产物 ${web}（开发时用 pnpm web）`)
 }

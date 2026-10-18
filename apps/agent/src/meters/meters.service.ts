@@ -87,17 +87,25 @@ export class MetersService {
   }
 }
 
-/** 校验配置体里的 meters（ApplyService 用）：按柜号分组，只看本柜那一块（别的柜的条目不管）；
- *  本柜块里的表名必须是本机电表，ct / pt 要是正数；出错抛 Error（调用方转 BAD_REQUEST）。没带 meters 或没有本柜块返回 null（用 eg.yaml 初值） */
-export function parseMeters(raw: unknown, cabinet: string, meters: string[]): Record<string, Partial<Ratio>> | null {
+/** 校验配置体里的 meters（ApplyService 用）：按键分组，只看本 EG 那一块（别的键的条目不管）；
+ *  key：按顺序找的键 —— 0.18.0 起先找单元号（unit.code），没有再找柜号（子站过渡期给拆了的柜也发整柜的柜号键）。
+ *  找到的是第一个键（本 EG 自己的）：块里的表名必须是本机电表；找到的是后面的柜号键：整柜的表都在里面，不是本机的跳过。
+ *  ct / pt 要是正数；出错抛 Error（调用方转 BAD_REQUEST）。没带 meters 或没有本 EG 的块返回 null（用 eg.yaml 初值） */
+export function parseMeters(raw: unknown, key: string | readonly string[], meters: string[]): Record<string, Partial<Ratio>> | null {
+  const keys = typeof key === 'string' ? [key] : [...new Set(key)]
   if (raw === undefined) return null
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('meters 要是对象 { "<柜号>": { "<电表设备名>": { "ct": 正数, "pt": 正数 } } }')
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('meters 要是对象 { "<单元号或柜号>": { "<电表设备名>": { "ct": 正数, "pt": 正数 } } }')
+  const cabinet = keys.find(k => (raw as Record<string, unknown>)[k] !== undefined)
+  if (cabinet === undefined) return null
+  const strict = cabinet === keys[0]
   const mine = (raw as Record<string, unknown>)[cabinet]
-  if (mine === undefined) return null
   if (!mine || typeof mine !== 'object' || Array.isArray(mine)) throw new Error(`meters.${cabinet} 要是对象 { "<电表设备名>": { ct, pt } }`)
   const out: Record<string, Partial<Ratio>> = {}
   for (const [name, v] of Object.entries(mine as Record<string, unknown>)) {
-    if (!meters.includes(name)) throw new Error(`meters.${cabinet}.${name}：本机 eg.yaml 里没有这台电表（本机电表：${meters.join('、') || '无'}）`)
+    if (!meters.includes(name)) {
+      if (!strict) continue
+      throw new Error(`meters.${cabinet}.${name}：本机 eg.yaml 里没有这台电表（本机电表：${meters.join('、') || '无'}）`)
+    }
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(`meters.${cabinet}.${name} 要是 { ct, pt }`)
     const r: Partial<Ratio> = {}
     for (const k of ['ct', 'pt'] as const) {

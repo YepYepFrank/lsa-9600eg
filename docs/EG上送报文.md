@@ -1,5 +1,7 @@
 # EG → 子站报文（样例 + 字段表）
 
+> **0.18.0 舱室 EG（EG 0.7.0，舱室 EG 方案 v0.5 §8.1）**：一面柜按电气舱室分几台 EG。下文的 `<单元号>` = 本 EG 的身份 eg.yaml `unit.code`（如 `AH01-A`）；照旧一柜一台的（eg.yaml schema 1）单元号就是柜号，路径、clientId 与以前一字不差。
+
 版本 v1.1（2026-10-09，EG 0.4 / 子站 0.13：电表上送一次值与回执 meters、局放 tev.amp / uhf.amp、us.cnt 单位、uv.int 改 %；事件样例里的弧光数值已按 % 改写，属示意）。v1.0（2026-10-08，阶段 A13）适用 EG 0.3.0 起；老 EG 少的字段已逐项注明。
 
 用途：子站后端据此生成 JSON Schema，并用文中样例做校验。
@@ -16,9 +18,9 @@
 | # | 报文 | 方向与地址 | 鉴权 | 送达语义 |
 |---|---|---|---|---|
 | 1 | 遥测 / 属性 | EG → 子站 TB，MQTT（现场 mqtts 8883）。主题：子设备用 `v1/gateway/*`，EG 自身用 `v1/devices/me/*` | MQTT 用户名 = 子站上 EG-<柜号> 网关设备的令牌 | QoS 1，PUBACK 后才从 outbox 删（至少一次）。子站 TB 按「设备 + key + 源时间戳」覆盖写，重发无害 |
-| 2 | 告警事件 | EG → 子站 `POST /ext/eg/<柜号>/events` | 头 `X-EG-Token` | 回执逐条 accepted / duplicate 才删；按 eventId + revision 去重 |
-| 3 | 证据索引 | EG → 子站 `POST /ext/eg/<柜号>/evidence` | 头 `X-EG-Token` | 同事件，按 evidenceId + revision |
-| 4 | 证据文件 | EG → 子站 `PUT /ext/eg/<柜号>/evidence/<evidenceId>/file` | `X-EG-Token`，另带头 `X-Sha256` | 子站回 stored 且 sha256 一致才算 UPLOADED；失败整份重传（不分段续传，已定：用户 2026-10-08 拍板） |
+| 2 | 告警事件 | EG → 子站 `POST /ext/eg/<单元号>/events` | 头 `X-EG-Token` | 回执逐条 accepted / duplicate 才删；按 eventId + revision 去重 |
+| 3 | 证据索引 | EG → 子站 `POST /ext/eg/<单元号>/evidence` | 头 `X-EG-Token` | 同事件，按 evidenceId + revision |
+| 4 | 证据文件 | EG → 子站 `PUT /ext/eg/<单元号>/evidence/<evidenceId>/file` | `X-EG-Token`，另带头 `X-Sha256` | 子站回 stored 且 sha256 一致才算 UPLOADED；失败整份重传（不分段续传，已定：用户 2026-10-08 拍板） |
 | 5 | 配置回执 | 子站 `PUT <EG>/api/config` 的响应体 | 子站带 `X-EG-Ticket`（服务票据） | 200：APPLIED / FAILED / PENDING；票据不对：401 |
 | 6 | 证据锁定回执 | 子站 `PUT <EG>/api/evidence/lock` 的响应体 | 同上 | 见 G5 证据约定 §8.7，本文不重复 |
 
@@ -136,7 +138,7 @@
 | EG | `hostBootId`、`agentBootId` | 重启识别：每次连上子站发一次 |
 | EG | `caps.actual` | 串（JSON 对象 `{"<能力>":"ok"|"nodata"|"absent"}`）。阶段 A，只在下发过能力后才有；变化时 / 连上时 / 每小时发 |
 
-## 2. 告警事件 `POST /ext/eg/<柜号>/events`
+## 2. 告警事件 `POST /ext/eg/<单元号>/events`
 
 请求体：
 
@@ -186,7 +188,7 @@
 
 ## 3. 证据
 
-### 3.1 索引 `POST /ext/eg/<柜号>/evidence`
+### 3.1 索引 `POST /ext/eg/<单元号>/evidence`
 
 ```json
 {
@@ -224,7 +226,7 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `evidenceId` | 串 | `EV-<柜号>-<窗口起点，北京时间 yyyyMMddHHmmss>-<kind>-<channel>-<4 位十六进制>` |
+| `evidenceId` | 串 | `EV-<单元号>-<窗口起点，北京时间 yyyyMMddHHmmss>-<kind>-<channel>-<4 位十六进制>` |
 | `revision` | 整数 | 状态变一次 + 1；子站取大的 |
 | `eventId` / `requestId` | 串或 null | 告警触发的带 eventId；子站锁定请求来的带 requestId；两者都可能有 |
 | `groupId` | 串 | 同一次触发的一组（视频×2、抓图×2、录波） |
@@ -243,7 +245,7 @@
 
 时间字段一律是整数（子站按 bigint 入库）。回执形状同事件：`{"results":[{"evidenceId","revision","status","reason?","retryable?"}]}`。
 
-### 3.2 文件 `PUT /ext/eg/<柜号>/evidence/<evidenceId>/file`
+### 3.2 文件 `PUT /ext/eg/<单元号>/evidence/<evidenceId>/file`
 
 - 头：`Content-Type: video/mp4 | image/jpeg | application/json`（录波是 JSON），`X-EG-Token`，`X-Sha256: <64 位十六进制>`。
 - 体：文件全文。不分段，失败后整份重发（已定，不做断点续传）。

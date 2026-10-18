@@ -48,15 +48,27 @@ export function keyMatch(pattern: string, key: string): boolean {
   return pattern === key
 }
 
-/** 校验并取出本柜的一份（下发体里的 caps、capKeys）；没带 caps 返回 null（= 不过滤） */
-export function parseCaps(body: Record<string, unknown>, cabinet: string): CapsConfig | null {
+/** 规则 offCabs 按哪个键看（0.18.0 舱室 EG，同 caps / meters 的取键）：下发体的 caps 里有本单元号的键 → 只看单元号；
+ *  没有（老子站，或照旧一柜一台：单元号 = 柜号）→ 看柜号。
+ *  不能两个都看：能力按单元记以后，AH01-A 已确认、AH01-B 没确认时，子站过渡期给拆了的柜发的柜号键 AH01 按整柜算、多半在 offCabs 里，
+ *  两个都看会把 EG-AH01-A 的规则误关 */
+export function offCabsKey(body: Record<string, unknown>, unit: string, cabinet: string): string {
+  const caps = body['caps']
+  return isObj(caps) && caps[unit] !== undefined ? unit : cabinet
+}
+
+/** 校验并取出本 EG 的一份（下发体里的 caps、capKeys）；没带 caps 返回 null（= 不过滤）。
+ *  key：按顺序找的键 —— 0.18.0 起先找单元号（unit.code），没有再找柜号（子站过渡期两种键都发；老子站只有柜号键） */
+export function parseCaps(body: Record<string, unknown>, key: string | readonly string[]): CapsConfig | null {
+  const keys = typeof key === 'string' ? [key] : [...new Set(key)]
   const rawCaps = body['caps']
   const rawKeys = body['capKeys']
   if (rawCaps === undefined && rawKeys === undefined) return null
-  if (!isObj(rawCaps)) throw new Error('caps 要是对象 { "<柜号>": { "<能力>": 状态 } }')
+  if (!isObj(rawCaps)) throw new Error('caps 要是对象 { "<单元号或柜号>": { "<能力>": 状态 } }')
   if (!isObj(rawKeys)) throw new Error('capKeys 要是对象 { "<能力>": ["前缀:key", …] }')
+  const cabinet = keys.find(k => rawCaps[k] !== undefined)
+  if (cabinet === undefined) throw new Error(`caps 里没有本 EG（${keys.join(' / ')}）`)
   const mine = rawCaps[cabinet]
-  if (mine === undefined) throw new Error(`caps 里没有本柜 ${cabinet}`)
   if (!isObj(mine)) throw new Error(`caps.${cabinet} 要是对象`)
   const caps: Record<string, CapState> = {}
   for (const [k, v] of Object.entries(mine)) {

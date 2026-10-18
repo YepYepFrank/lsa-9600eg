@@ -48,10 +48,10 @@ export class Recording {
   }
 
   async ring(): Promise<RingState[]> {
-    const cab = this.cfg().cabinet.code
+    const unit = this.cfg().unit.code
     const out: RingState[] = []
     for (const [channel, key] of Object.entries(RECORDED) as ['visible' | 'ir', never][]) {
-      const path = pathOf(cab, key)
+      const path = pathOf(unit, key)
       let starts: number[] = []
       try {
         const r = await fetch(`${this.api}/v3/recordings/get/${path}`, { signal: AbortSignal.timeout(3000) })
@@ -79,7 +79,7 @@ export class Recording {
 
   /** 窗口里有哪些段（回放服务 /list） */
   async segments(channel: 'visible' | 'ir', start: number, end: number): Promise<Segment[]> {
-    const path = pathOf(this.cfg().cabinet.code, RECORDED[channel])
+    const path = pathOf(this.cfg().unit.code, RECORDED[channel])
     const r = await fetch(`${this.playback}/list?path=${encodeURIComponent(path)}&start=${encodeURIComponent(iso(start))}&end=${encodeURIComponent(iso(end))}`, {
       signal: AbortSignal.timeout(5000),
     })
@@ -98,7 +98,7 @@ export class Recording {
     const actualEnd = Math.min(end, last.start + last.duration)
     let gap = actualStart - start > 2000 || end - actualEnd > 2000
     for (let i = 1; i < segs.length; i++) if (segs[i]!.start - (segs[i - 1]!.start + segs[i - 1]!.duration) > 2000) gap = true
-    const path = pathOf(this.cfg().cabinet.code, RECORDED[channel])
+    const path = pathOf(this.cfg().unit.code, RECORDED[channel])
     const dur = Math.max(1, (actualEnd - actualStart) / 1000)
     const r = await fetch(`${this.playback}/get?path=${encodeURIComponent(path)}&start=${encodeURIComponent(iso(actualStart))}&duration=${dur}&format=mp4`, {
       signal: AbortSignal.timeout(60_000),

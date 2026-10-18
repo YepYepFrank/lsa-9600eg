@@ -2,7 +2,7 @@
  * 浏览器带着它打开 EG 页面，EG 验过后给本地会话 —— 不用再登录一次。
  *
  *   v1.<载荷 base64url>.<签名 base64url>
- *   载荷 { c 柜号, u 子站用户名, n 显示名, r 'maint' | 'view' | 'station', iat, exp（毫秒）, j 随机串 }
+ *   载荷 { c 单元号（0.18.0 舱室 EG 起 = eg.yaml unit.code；照旧一柜一台的 = 柜号）, u 子站用户名, n 显示名, r 'maint' | 'view' | 'station', iat, exp（毫秒）, j 随机串 }
  *   r = station 是**服务票据**（I4）：子站扩展服务下发配置时自己签给自己用（请求头 X-EG-Ticket），只能调 PUT /api/config，换不了浏览器会话
  *   签名 HMAC-SHA256(key, "v1." + 载荷)，key = HMAC-SHA256(这台 EG 的访问令牌, "lsa-eg-sso")
  *
@@ -39,8 +39,8 @@ export type TicketErrorCode = 'TICKET_TIME' | 'TICKET_INVALID'
 export type TicketError = { error: string; code: TicketErrorCode }
 const invalid = (error: string): TicketError => ({ error, code: 'TICKET_INVALID' })
 
-/** 验票：签名、柜号、时效（容两边时钟差 60 s）。返回载荷或出错原因 */
-export function verifyTicket(egToken: string, ticket: string, cabinet: string, now = Date.now()): TicketClaims | TicketError {
+/** 验票：签名、单元号（本 EG 的身份 unit.code）、时效（容两边时钟差 60 s）。返回载荷或出错原因 */
+export function verifyTicket(egToken: string, ticket: string, unit: string, now = Date.now()): TicketClaims | TicketError {
   const parts = ticket.split('.')
   if (parts.length !== 3 || parts[0] !== 'v1') return invalid('票据格式不对')
   const want = createHmac('sha256', keyOf(egToken)).update(`v1.${parts[1]}`).digest()
@@ -52,7 +52,7 @@ export function verifyTicket(egToken: string, ticket: string, cabinet: string, n
   } catch {
     return invalid('票据内容不对')
   }
-  if (c.c !== cabinet) return invalid(`票据是给 ${c.c} 的，这台是 ${cabinet}`)
+  if (c.c !== unit) return invalid(`票据是给 ${c.c} 的，这台是 ${unit}`)
   const skew = 60_000
   if (now > c.exp + skew) return { error: '票据已过期，请回子站重新打开', code: 'TICKET_TIME' }
   if (c.iat > now + skew) return { error: '票据时间在未来（两边时钟差太大？）', code: 'TICKET_TIME' }

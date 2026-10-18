@@ -27,7 +27,7 @@ type Alarm = { alarmType: string; createRules: Record<string, { condition: { con
 async function main() {
   console.log('I4 自检（EG 侧）：配置下发与回执\n')
   const cfg = loadConfig()
-  const code = cfg.cabinet.code
+  const code = cfg.unit.code // 本 EG 的身份（单元号；照旧一柜一台的 = 柜号）
   const token = stationToken(cfg)
   const model = loadModel(MODEL)
   const base: ThresholdRow[] = model.thresholds
