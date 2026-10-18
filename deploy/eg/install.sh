@@ -367,6 +367,18 @@ eg_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'
 # 0.18.0 舱室 EG：eg.yaml 顶层 unit 段（schema 2）的某一项；照旧一柜一台的（schema 1）没有这段
 eg_unit_get() { awk -v k="$1:" '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1==k{sub(/^[^:]*: */,"");gsub(/["'\'']/,"");print;exit}' config/eg.yaml 2>/dev/null || true; }
 eg_name() { awk '/^eg:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="name:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true; }
+# 回退前看 eg.yaml 的格式（0.18.0 舱室 EG）：本机已接成舱室单元（schema 2），要回到的版本早于 EG 0.7.0 就读不了 ——
+# 回退后 agent 起不来；拆柜后原来照旧一柜一台的令牌也作废了，回不去。rollback_schema_guard <要回到的版本>：能回返回 0，不能就说清并返回 1
+rollback_schema_guard() {
+  local to="${1%%-*}" schema
+  schema="$(sed -n 's/^schema: *//p' config/eg.yaml 2>/dev/null | head -1 || true)"
+  [ "${schema:-1}" -ge 2 ] 2>/dev/null || return 0
+  [ "$(printf '%s\n%s\n' "$to" 0.7.0 | sort -V | head -1)" = 0.7.0 ] && return 0
+  echo "✗ 本机已接成舱室单元（$(eg_name)，eg.yaml schema $schema），要回到的 $1 读不了 schema 2（EG 0.7.0 起才认）：回退后 agent 起不来。" >&2
+  echo "  拆柜后这面柜原来的令牌已作废，回到照旧一柜一台也连不上子站。要回退：先在子站把这面柜恢复成照旧一柜一台（子站部署手册 §5b），" >&2
+  echo "  再按老办法给本机发照旧一柜一台的 eg.yaml，然后再回退；或者就留在当前版本，用 install.sh --status 看问题" >&2
+  return 1
+}
 # 接入状态（0.17.4 一键加柜；0.18.0 显示单元）：待接入 / 已接入子站 X（EG-AH07-A · 柜 AH07 断路器室）
 join_status() {
   local sp cab at
@@ -616,6 +628,7 @@ conv_setup() {
 if [ "$MODE" = 'rollback' ]; then
   [ -f .previous/VERSION ] || { echo '没有上一个版本可回退（.previous/ 不存在）' >&2; exit 1; }
   prev="$(cat .previous/VERSION)"
+  rollback_schema_guard "$prev" || exit 1
   docker image inspect "lsa-eg-app:$prev" >/dev/null 2>&1 || { echo "本机没有镜像 lsa-eg-app:$prev（被清掉了？）" >&2; exit 1; }
   # 本地 TB 版本不同（0.17 起同一补丁线可以升）：看库里记的版本 ——
   #   库 = 要回到的版本（新版 TB 没起来过 / 没补库）：直接回；
