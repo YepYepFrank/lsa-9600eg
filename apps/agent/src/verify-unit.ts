@@ -5,7 +5,8 @@
  *   1. 读配置：schema 2 取 unit；schema 1 按 unit.code = 柜号；schema 2 没有 unit.code、不认的 schema 都拒绝
  *   2. eg.attrs.unit、devices[].attrs.unit 不解析，和 unit.code 不一致只给提示
  *   3. 票据 c 比 unit.code：给单元号的票据过，给柜号的（拆柜前的老票据）不过
- *   4. caps / meters 取键：先单元号、再柜号；柜号键（拆了的柜过渡期发整柜）里别的单元的电表跳过，单元号键里不是本机的电表报错
+ *   4. caps / meters 取键：先单元号、再柜号；柜号键（拆了的柜过渡期发整柜）里别的单元的电表跳过，单元号键里不是本机的电表报错；
+ *      规则 offCabs：caps 里有本单元号的键只看单元号（柜号键按整柜算，不能拿来关本单元的规则），没有才看柜号
  *   5. IoT Gateway clientId = tb-gateway-<单元号> */
 import 'reflect-metadata'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -13,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, unitWarnings, type EgConfig } from '@lsa-eg/config'
 import { signTicket, verifyTicket } from './auth/ticket.js'
-import { parseCaps } from './caps/caps.js'
+import { offCabsKey, parseCaps } from './caps/caps.js'
 import { parseMeters } from './meters/meters.service.js'
 import { renderGatewayConfig } from './gateway/render.js'
 
@@ -108,6 +109,12 @@ check(throws(() => parseMeters({ 'AH01-A': { 'PM2-AH01': { ct: 40 } } }, keys, [
 const mCab = parseMeters({ AH01: { 'PM-AH01': { ct: 40 }, 'PM2-AH01': { ct: 80 } } }, keys, ['PM-AH01'])
 check(mCab?.['PM-AH01']?.ct === 40 && !('PM2-AH01' in (mCab ?? {})), 'meters 只有柜号键（整柜）：只取本机的，别的单元的电表跳过')
 check(parseMeters({ AH02: {} }, keys, ['PM-AH01']) === null, 'meters 两个键都没有：用 eg.yaml 初值（null）')
+const offOn = (body: Record<string, unknown>, offCabs: string[], unit: string, cab: string) => !offCabs.includes(offCabsKey(body, unit, cab))
+check(offOn({ caps: { 'AH01-A': {}, 'AH01-B': {}, AH01: {} } }, ['AH01', 'AH01-B'], 'AH01-A', 'AH01'), "offCabs = ['AH01', 'AH01-B']、caps 里有 AH01-A：EG-AH01-A 的规则保持开")
+check(!offOn({ caps: { 'AH01-A': {}, 'AH01-B': {}, AH01: {} } }, ['AH01', 'AH01-B'], 'AH01-B', 'AH01'), '同一份：EG-AH01-B 的规则关')
+check(!offOn({ caps: { AH01: {} } }, ['AH01'], 'AH01-A', 'AH01'), 'caps 里没有本单元号（老子站）：按柜号 AH01 关')
+check(!offOn({ caps: { AH09: {} } }, ['AH09'], 'AH09', 'AH09') && offOn({ caps: { AH09: {} } }, ['AH08'], 'AH09', 'AH09'), '照旧一柜一台（单元号 = 柜号）：与以前一样')
+check(!offOn({}, ['AH01'], 'AH01-A', 'AH01'), '没带 caps：按柜号')
 
 console.log('\n5. IoT Gateway clientId')
 const gw = mkdtempSync(join(tmpdir(), 'lsa-unit-gw-'))
