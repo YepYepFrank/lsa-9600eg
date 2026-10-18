@@ -1,0 +1,42 @@
+From c006d4e6337c37e295531042313cb79a6042d937 Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Sun, 18 Oct 2026 07:41:34 -0400
+Subject: [PATCH] =?UTF-8?q?MQTT=20clientId=20=E5=85=88=E5=8F=96=20eg.yaml?=
+ =?UTF-8?q?=20=E7=9A=84=20unit.code=EF=BC=88=E8=88=B1=E5=AE=A4=E5=8D=95?=
+ =?UTF-8?q?=E5=85=83=EF=BC=8C=E5=A6=82=20lsa-conv-AH01-A=EF=BC=89=EF=BC=8C?=
+ =?UTF-8?q?=E6=B2=A1=E6=9C=89=E5=86=8D=E5=8F=96=20cabinet.code?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+0.18.0 起一个电气舱室一台 EG：同一面柜的两台 EG 各跑一个转换程序，各连自己本机的总线。
+clientId 按单元号区分，日志里一眼看出是哪个舱室；照旧一柜一台的 eg.yaml 没有 unit 段，仍是 lsa-conv-<柜号>，与以前一样。
+---
+ src/north/mqtt_client.py | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/north/mqtt_client.py b/src/north/mqtt_client.py
+index 20a4e56..595a0f9 100644
+--- a/src/north/mqtt_client.py
++++ b/src/north/mqtt_client.py
+@@ -15,13 +15,15 @@ logger = setup_logger("mqtt_client")
+ 
+ 
+ def _client_id_from_eg_yaml() -> Optional[str]:
+-    """clientId 用 lsa-conv-<柜号>：柜号取 EG 只读挂进来的 eg.yaml 的 cabinet.code（LSA_EG_YAML，缺省 /eg/eg.yaml）。
++    """clientId 用 lsa-conv-<单元号>：取 EG 只读挂进来的 eg.yaml（LSA_EG_YAML，缺省 /eg/eg.yaml）。
++    单元号先取顶层 unit.code（一个电气舱室一台 EG，如 AH01-A），没有（照旧一柜一台）取 cabinet.code（如 AH03）。
+     取不到返回 None，由调用方用配置里的 client_id。一台总线上 clientId 重复会互相踢下线"""
+     path = os.environ.get("LSA_EG_YAML", "/eg/eg.yaml")
+     try:
+         import yaml
+         with open(path, encoding="utf-8") as f:
+-            code = ((yaml.safe_load(f) or {}).get("cabinet") or {}).get("code")
++            doc = yaml.safe_load(f) or {}
++        code = (doc.get("unit") or {}).get("code") or (doc.get("cabinet") or {}).get("code")
+         return f"lsa-conv-{code}" if code else None
+     except Exception:
+         return None
+-- 
+2.54.0.windows.1
+
