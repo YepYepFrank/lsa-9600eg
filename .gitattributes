@@ -13,3 +13,5 @@ Dockerfile text eol=lf
 # 没有扩展名、但要在 EG 上执行的脚本（0.17.2 批量升级入口）
 deploy/eg/lsa-eg-upgrade text eol=lf
 deploy/eg/lsa-eg-upgrade-job text eol=lf
+# 0.18.0 join-egs 编排测试的假 ssh / docker（没有扩展名）
+deploy/test/join-egs/bin/* text eol=lf

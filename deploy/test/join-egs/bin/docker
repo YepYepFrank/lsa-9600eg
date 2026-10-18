@@ -1,0 +1,5 @@
+#!/bin/bash
+# 假 docker：只认 join-egs.sh 用到的两种 docker exec
+if [ "$1 $2 $3" = "exec lsa-ext node" ] && [ "$4" = bin/eg-list.mjs ]; then exec node "$(dirname "$0")/../eglist.mjs"; fi
+if [ "$1 $2 $3 $4" = "exec -i lsa-ext node" ]; then shift 4; exec node "$@"; fi
+echo "假 docker 不认：$*" >&2; exit 1

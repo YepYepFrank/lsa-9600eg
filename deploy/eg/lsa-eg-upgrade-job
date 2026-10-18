@@ -39,7 +39,7 @@ SHA="$(sget sha)"; TO="$(sget to)"; FROM="$(sget from)"
 if [ "$(sget kind)" = config ]; then
   D="$ST/config-new/$SHA"
   B="$EG/config/.join-backup-$JOB"
-  echo "== $(date '+%F %T') 换配置 $JOB：柜 ${FROM:-（待接入）} → $TO（$SHA）"
+  echo "== $(date '+%F %T') 换配置 $JOB：单元 ${FROM:-（待接入）} → $TO（$SHA）"
   had=0
   restore() {  # 换回旧配置再跑一次 install.sh
     sset reason "$1"
@@ -47,7 +47,7 @@ if [ "$(sget kind)" = config ]; then
     if [ "$had" = 1 ]; then cp -p "$B/eg.yaml" "$EG/config/eg.yaml"; [ -f "$B/sp-ca.pem" ] && cp -p "$B/sp-ca.pem" "$EG/config/sp-ca.pem"
     else rm -f "$EG/config/eg.yaml" "$EG/config/sp-ca.pem"; [ -f "$B/sp-ca.pem" ] && cp -p "$B/sp-ca.pem" "$EG/config/sp-ca.pem"; fi
     if (cd "$EG" && timeout "$INSTALL_TIMEOUT" bash install.sh < /dev/null); then
-      phase rolled-back "已换回$([ "$had" = 1 ] && echo "旧配置（柜 $FROM）" || echo '待接入')"
+      phase rolled-back "已换回$([ "$had" = 1 ] && echo "旧配置（单元 $FROM）" || echo '待接入')"
     else
       sset reason "$1；换回以后 install.sh 也没成功：sudo bash $EG/install.sh"
       phase rollback-failed
@@ -60,7 +60,7 @@ if [ "$(sget kind)" = config ]; then
   mkdir -p "$B" && chmod 700 "$B"
   [ -f "$EG/config/eg.yaml" ] && { cp -p "$EG/config/eg.yaml" "$B/"; had=1; }
   [ -f "$EG/config/sp-ca.pem" ] && cp -p "$EG/config/sp-ca.pem" "$B/"
-  echo "旧配置备份在 $B（$([ "$had" = 1 ] && echo "柜 $FROM" || echo '原来待接入')）"
+  echo "旧配置备份在 $B（$([ "$had" = 1 ] && echo "单元 $FROM" || echo '原来待接入')）"
   # 备份里有令牌：只留最近 3 份
   ls -1dt "$EG"/config/.join-backup-* 2>/dev/null | tail -n +4 | xargs -r rm -rf
   phase apply
@@ -93,7 +93,7 @@ if [ "$(sget kind)" = config ]; then
   fi
   rm -rf "$D" "$ST/config-in/$SHA.tgz"
   sset reason ''
-  phase done "柜 $TO，agent 连上子站"
+  phase done "单元 $TO，agent 连上子站"
   exit 0
 fi
 

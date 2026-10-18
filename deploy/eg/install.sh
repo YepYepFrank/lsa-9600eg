@@ -364,15 +364,18 @@ key_fp() { echo "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' || true; 
 join_get() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" config/join.json 2>/dev/null | head -1 || true; }
 eg_sp_host() { sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' config/eg.yaml 2>/dev/null | head -1 || true; }
 eg_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true; }
-# 接入状态（0.17.4 一键加柜）：待接入 / 已接入子站 X
+# 0.18.0 舱室 EG：eg.yaml 顶层 unit 段（schema 2）的某一项；照旧一柜一台的（schema 1）没有这段
+eg_unit_get() { awk -v k="$1:" '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1==k{sub(/^[^:]*: */,"");gsub(/["'\'']/,"");print;exit}' config/eg.yaml 2>/dev/null || true; }
+eg_name() { awk '/^eg:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="name:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml 2>/dev/null || true; }
+# 接入状态（0.17.4 一键加柜；0.18.0 显示单元）：待接入 / 已接入子站 X（EG-AH07-A · 柜 AH07 断路器室）
 join_status() {
-  local sp cab
+  local sp cab at
   sp="$(join_get sp)"
   if [ -f config/eg.yaml ]; then
-    cab="$(eg_cab)"
-    echo "接入：已接入子站 $(eg_sp_host)（柜号 ${cab:-?}）$([ -n "$sp" ] && echo "，授权的子站 $sp")"
+    cab="$(eg_cab)"; at="$(eg_unit_get at)"
+    echo "接入：已接入子站 $(eg_sp_host)（$(eg_name) · 柜 ${cab:-?}${at:+ $at}）$([ -n "$sp" ] && echo "，授权的子站 $sp")"
   elif [ -n "$sp" ]; then
-    echo "接入：待接入 —— 已授权子站 $sp（$(join_get at)），等子站 join-egs.sh --cabinet <柜号> --eg <本机地址>；本机待接入页 http://<本机地址>/"
+    echo "接入：待接入 —— 已授权子站 $sp（$(join_get at)），等子站 join-egs.sh --unit <单元号> --eg <本机地址>；本机待接入页 http://<本机地址>/"
   else
     echo '接入：待接入 —— 还没给子站授权（--join-key，或老办法 --sp-key + 手工拷 eg.yaml）'
   fi
@@ -683,7 +686,7 @@ if [ -n "$JOINKEY" ]; then
   # 已接入 / 已授权别的子站：要 --force 才换（老办法接入的没有 join.json，看 eg.yaml 里的子站）
   cur_sp="$(join_get sp)"; [ -f config/eg.yaml ] && [ -z "$cur_sp" ] && cur_sp="$(eg_sp_host)"
   if [ -n "$cur_sp" ] && [ "$cur_sp" != "$jsp" ] && [ "$FORCE" != 1 ]; then
-    if [ -f config/eg.yaml ]; then echo "!! 这台 EG 已接入子站 $cur_sp（柜号 $(eg_cab)），--join-key 是给子站 $jsp 的：要换子站加 --force" >&2
+    if [ -f config/eg.yaml ]; then echo "!! 这台 EG 已接入子站 $cur_sp（$(eg_name) · 柜 $(eg_cab)），--join-key 是给子站 $jsp 的：要换子站加 --force" >&2
     else echo "!! 这台 EG 已授权给子站 $cur_sp（待接入），--join-key 是给子站 $jsp 的：要换子站加 --force" >&2; fi
     exit 1
   fi
@@ -876,7 +879,7 @@ if [ ! -f config/eg.yaml ] || ! grep -q '^tb:' config/eg.yaml; then
 
 本地 TB 已起。这台 EG 待接入：已授权子站 $(join_get sp)。
   现场：笔记本接到 LAN2 的交换机上，浏览器打开 http://<这台 EG 的 LAN2 地址>/ 能看到「待接入」和各网口的 IP / MAC。
-  子站主机上：sudo bash /opt/lsa9600sp/join-egs.sh --cabinet <柜号> --eg <这台 EG 的 LAN2 地址>（见 EG 部署手册 §4a「一键加柜」）
+  子站主机上：sudo bash /opt/lsa9600sp/join-egs.sh --unit <单元号，如 AH07-A> --eg <这台 EG 的 LAN2 地址>（见 EG 部署手册 §4a「一键加柜」；照旧一柜一台的单元号 = 柜号）
   老办法（手工 provision-eg.sh、pack-eg.sh、拷配置）照旧能用，见手册 §4。
 EOF
     exit 0
@@ -887,7 +890,7 @@ EOF
   1. 给子站授权开隧道（没给过的话）：把子站主机的 SSH 公钥拷过来，sudo bash install.sh --sp-key <公钥文件>
      （建只能转发到本机 18080 的账号 lsa-sp，没有 shell）
   2. 在子站主机上（/opt/lsa9600sp/lsa9600sp-backend）：
-       scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<这台 EG 的 LAN2 地址> [--ssh-key <私钥>] --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
+       scripts/provision-eg.sh --unit <单元号> --ssh lsa-sp@<这台 EG 的 LAN2 地址> [--ssh-key <私钥>] --hook http://host.docker.internal/hooks/alarm --sp <子站地址>
      可先加 --plan 只读核对一遍。它在容器里开隧道连这台 EG 的 127.0.0.1:18080，子站主机不用装 Node
   3. 在子站主机上出这台的配置包：scripts/pack-eg.sh --sp <子站地址> --only <柜号>
      → dist/eg/<柜号>/eg.yaml 与 sp-ca.pem（上送走 mqtts 8883）

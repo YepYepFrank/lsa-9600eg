@@ -1,0 +1,29 @@
+#!/bin/bash
+# 假 ssh：按 user@host 与最后一个参数（命令）仿 EG 的升级入口 / 隧道账号。EG 的状态在 /fake/eg/<host>/
+for a in "$@"; do case "$a" in *@*) uh="$a" ;; esac; done
+cmd="${!#}"; user="${uh%@*}"; host="${uh#*@}"; D="/fake/eg/$host"
+[ -d "$D" ] || { echo "ssh: connect to host $host port 22: No route to host" >&2; exit 255; }
+echo "$(date +%s) $user@$host $cmd" >> /fake/calls
+if [ "$user" = lsa-sp ]; then [ -f "$D/tunnel" ] && { echo 'This account is currently not available.'; exit 1; }; echo 'lsa-sp@host: Permission denied (publickey).' >&2; exit 255; fi
+[ -f "$D/auth" ] || { echo "lsa-upg@$host: Permission denied (publickey)." >&2; exit 255; }
+read -r verb a1 a2 <<< "$cmd"
+case "$verb" in
+  hello) cat "$D/hello" ;;
+  put-config) cat > "$D/pkg.tgz"; echo "OK put-config $a1" ;;
+  apply-config)
+    u="$(tar -xzOf "$D/pkg.tgz" eg.yaml | awk '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{print $2;exit}')"
+    [ -n "$u" ] || u="$(tar -xzOf "$D/pkg.tgz" eg.yaml | awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{print $2;exit}')"
+    cur="$(sed -n 's/^unit=//p' "$D/hello")"; [ -n "$cur" ] || cur="$(sed -n 's/^cabinet=//p' "$D/hello")"
+    joined="$(sed -n 's/^joined=//p' "$D/hello")"
+    # 仿入口的「已接入的单元不能改」：例外 拆柜（cur = 新包的柜号）、force
+    cab="$(tar -xzOf "$D/pkg.tgz" eg.yaml | awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{print $2;exit}')"
+    if [ "$joined" = 1 ] && [ "$u" != "$cur" ] && [ "$cur" != "$cab" ] && [ "$a2" != force ]; then echo "ERR 这台 EG 已接入单元 $cur，配置包是单元 $u 的"; exit 2; fi
+    if [ "$joined" = 1 ] && [ "$u" = "$cur" ] && [ -f "$D/same" ]; then echo "OK apply-config same $u"; exit 0; fi
+    sed -i "s/^joined=.*/joined=1/; s/^unit=.*/unit=$u/; s/^cabinet=.*/cabinet=$cab/" "$D/hello"; grep -q '^unit=' "$D/hello" || true
+    touch "/fake/applied/$u"; echo "OK apply-config 20261018-000001 $u" ;;
+  status) printf 'job=20261018-000001\nkind=config\nphase=done\ninstall_s=20\ncheck_s=11\nreason=\n' ;;
+  log) echo '（假）任务日志' ;;
+  drop-tunnel) if [ -f "$D/tunnel" ]; then rm -f "$D/tunnel"; echo '已删除隧道账号 lsa-sp（以后要让子站再建本地实体：…）'; else echo '没有隧道账号 lsa-sp，不用删'; fi ;;
+  conv) echo '→ 通了：30 s 内采集成功 30 次' ;;
+  *) echo "ERR 不认识的命令「$verb」"; exit 2 ;;
+esac

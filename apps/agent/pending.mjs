@@ -91,7 +91,7 @@ ${j.upgradeFp ? `<tr><th>升级 key 指纹</th><td><code>${esc(j.upgradeFp)}</co
 <h3>本机网口</h3><table><tr><th>网口</th><th>IPv4</th><th>MAC</th></tr>${rows}</table>
 <div class="next">${
     j.sp
-      ? `下一步在子站主机（${esc(j.sp)}）上执行：<br><code>sudo bash /opt/lsa9600sp/join-egs.sh --cabinet &lt;柜号&gt; --eg ${esc(lan2)}</code>`
+      ? `下一步在子站主机（${esc(j.sp)}）上执行：<br><code>sudo bash /opt/lsa9600sp/join-egs.sh --unit &lt;单元号，如 AH07-A&gt; --eg ${esc(lan2)}</code>`
       : '这台 EG 还没给子站授权：用子站 <code>join-egs.sh --keygen</code> 打印的那一行重装：<code>--role eg --join-key \'…\'</code>'
   }</div>
 </div></body></html>`

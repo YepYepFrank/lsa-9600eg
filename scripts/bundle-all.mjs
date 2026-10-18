@@ -182,7 +182,7 @@ ${KIOSK ? `            连机柜双屏一起装：sudo bash ${NAME}.run --role s
 ` : `            （这个安装文件不带机柜双屏组件，--kiosk 会报错停下）
 `}  EG：      sudo bash ${NAME}.run --role eg --lan1 <摄像机网口>（单网口不给）
             → 给子站授权开隧道：sudo bash ${NAME}.run --role eg --sp-key <子站公钥>
-            → 子站主机上 scripts/provision-eg.sh --cabinet <柜号> --ssh lsa-sp@<EG> …、scripts/pack-eg.sh --sp <子站> --only <柜号>，拿到 eg.yaml 与 sp-ca.pem 后：
+            → 子站主机上 scripts/provision-eg.sh --unit <单元号> --ssh lsa-sp@<EG> …、scripts/pack-eg.sh --sp <子站> --only <单元号>，拿到 eg.yaml 与 sp-ca.pem 后：
             sudo bash ${NAME}.run --role eg --eg-config <放 eg.yaml 的目录>
   只解包：  bash ${NAME}.run --extract <目录>
 
