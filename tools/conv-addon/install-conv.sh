@@ -7,7 +7,8 @@
 #                                                有多个就列出来让选；一个都没有就用 /dev/ttyS1（X26A 的 COM2）
 #   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared；缺省前四个，红外关）
 #   --addr pd=2,gas=3,temperature=4,arc=5       从站地址（缺省用同事的：红外 1、局放 2、气体 3、温湿度 4、弧光 5）
-#   --dev temperature=SAM-AH07-A,pd=SAM-AH07-B  这一路挂到哪台设备（缺省：温湿度挂第一台 SAM，其余挂第二台；只有一台 SAM 就都挂它）
+#   --dev temperature=SAM-AH07-A,pd=SAM-AH07-B  这一路挂到哪台设备（缺省：温湿度挂第一台 SAM，其余挂第二台；只有一台 SAM 就都挂它 ——
+#                                                0.18.0 舱室 EG 一台 EG 只有本舱室一台 SAM，全都挂它）
 #   --baud 9600                                 波特率
 #   --regen                                     按模板重新生成 config/conv（旧的备份成 config/conv.bak-<时间>）
 #   --src <目录>                                现场改了同事的源码：把这个目录（同事仓库里的 src/）挂进容器顶替镜像里的，不用重打镜像
@@ -141,7 +142,9 @@ gen_config() {
   mkdir -p config/conv config/conv-data
   [ -f config/conv/gateway.yaml ] && return 1
   docker run --rm --network none --entrypoint tar "$IMG" -C /app/config.default -cf - . | tar -x -C config/conv
-  code="$(awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
+  # 本 EG 的单元号：eg.yaml 顶层 unit.code（0.18.0 舱室 EG），没有就是柜号（照旧一柜一台）
+  code="$(awk '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
+  [ -n "$code" ] || code="$(awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
   mapfile -t S < <(sams)
   [ ${#S[@]} -gt 0 ] || { echo "!! eg.yaml 里没有 SAM 设备，转换程序的数据没有地方挂" >&2; exit 1; }
   a="${S[0]}"; b="${S[1]:-${S[0]}}"
@@ -153,7 +156,7 @@ gen_config() {
     if [ "$n" = temperature ]; then yset "$f" device "$a"; else yset "$f" device "$b"; fi
     case "$n" in infrared) yset "$f" enabled false ;; *) yset "$f" enabled true ;; esac
   done
-  echo "转换程序配置：从镜像模板生成 config/conv/（柜号 ${code:-?}；温湿度 → $a，其余 → $b；局放、气体、温湿度、弧光打开，红外关；从站地址用同事的缺省）"
+  echo "转换程序配置：从镜像模板生成 config/conv/（单元 ${code:-?}；温湿度 → $a，其余 → $b；局放、气体、温湿度、弧光打开，红外关；从站地址用同事的缺省）"
   return 0
 }
 apply_params() {  # 只改给了的项；有改动返回 0

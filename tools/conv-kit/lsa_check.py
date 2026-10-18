@@ -225,8 +225,9 @@ NAME_RE = [
     (re.compile(r'^SAM-([A-Za-z0-9]+)-([A-Z])$'), 'sam'),
     (re.compile(r'^PM6-([A-Za-z0-9]+)$'), 'pm'),
     (re.compile(r'^PM2?-([A-Za-z0-9]+)$'), 'meter'),
-    (re.compile(r'^EG-([A-Za-z0-9]+)$'), 'eg'),
-    (re.compile(r'^CAM-([A-Za-z0-9]+)$'), 'camera'),
+    # 0.18.0 舱室 EG：EG / 摄像机按单元，名字带舱室字母（EG-AH01-A、CAM-AH01-A）；照旧一柜一台的 EG-AH03
+    (re.compile(r'^EG-([A-Za-z0-9]+(?:-[A-Z])?)$'), 'eg'),
+    (re.compile(r'^CAM-([A-Za-z0-9]+(?:-[A-Z])?)$'), 'camera'),
 ]
 
 
@@ -266,17 +267,31 @@ def retired(kind, key):
 
 
 def read_eg_yaml(path):
-    """只认 devices: 下的 `- name:` / `kind:` 两行（eg.yaml 由子站生成，格式固定），不依赖 PyYAML。"""
-    devs, cab, cur, in_devs = {}, None, None, False
+    """eg.yaml 由子站生成，格式固定，不依赖 PyYAML：只认顶层段下的几行 ——
+    devices: 下的 `- name:` / `kind:`；unit: / cabinet: 下的 `code:`；eg: 下的 `name:`。
+    返回 (本 EG 的单元号, 设备)：单元号先取 unit.code（0.18.0 舱室 EG，如 AH01-A），没有取 cabinet.code（照旧一柜一台）。
+    EG 自己的设备名取 eg.name（EG-AH01-A），没有再拼 EG-<单元号>。"""
+    devs, cur, sec = {}, None, ''
+    code = {'unit': None, 'cabinet': None}
+    eg_name = None
     with open(path, encoding='utf-8') as f:
         for line in f:
             s = line.rstrip('\n')
-            if re.match(r'^\S', s):
-                in_devs = s.startswith('devices:')
-            m = re.match(r'^\s+code:\s*"?([A-Za-z0-9]+)"?', s)
-            if m and not cab:
-                cab = m.group(1)
-            if not in_devs:
+            m = re.match(r'^([A-Za-z_]\w*):', s)
+            if m:
+                sec = m.group(1)
+                continue
+            if sec in code:
+                m = re.match(r'^  code:\s*"?([A-Za-z0-9-]+)"?\s*$', s)
+                if m and not code[sec]:
+                    code[sec] = m.group(1)
+                continue
+            if sec == 'eg':
+                m = re.match(r'^  name:\s*"?([A-Za-z0-9-]+)"?\s*$', s)
+                if m and not eg_name:
+                    eg_name = m.group(1)
+                continue
+            if sec != 'devices':
                 continue
             m = re.match(r'^\s*-\s*name:\s*"?([^"\s]+)"?', s)
             if m:
@@ -285,9 +300,10 @@ def read_eg_yaml(path):
             m = re.match(r'^\s+kind:\s*"?(\w+)"?', s)
             if m and cur and cur not in devs:
                 devs[cur] = m.group(1)
-    if cab:
-        devs['EG-' + cab] = 'eg'
-    return cab, devs
+    ident = code['unit'] or code['cabinet']
+    if eg_name or ident:
+        devs[eg_name or ('EG-' + ident)] = 'eg'
+    return ident, devs
 
 
 def devices_for(cab, group, pm2=False):
@@ -393,7 +409,7 @@ class Checker:
         if not dev:
             kind, _cab = kind_of_name(name)
             if kind is None:
-                self.issue('ERROR', name, 'name', '设备名「%s」不合规则（§3：SAM-<柜号>-<隔室字母> / PM-<柜号> / PM2-<柜号> / PM6-<柜号> / EG-<柜号>），不会上送' % name, name, payload)
+                self.issue('ERROR', name, 'name', '设备名「%s」不合规则（§3：SAM-<柜号>-<隔室字母> / PM-<柜号> / PM2-<柜号> / PM6-<柜号> / EG-<单元号>，单元号 = 柜号或 柜号-舱室字母），不会上送' % name, name, payload)
                 return
             if kind == 'camera':
                 self.issue('ERROR', name, 'camera', '摄像机数据由 eg-video 发，转换程序不要发 CAM-*（§6）', name, payload)
