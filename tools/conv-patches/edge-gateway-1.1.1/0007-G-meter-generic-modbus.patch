@@ -1,0 +1,248 @@
+From f0c3e2644938734c9855eb91b0d095b68d1b444a Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Mon, 19 Oct 2026 05:47:41 -0400
+Subject: [PATCH] =?UTF-8?q?=E5=A4=9A=E5=8A=9F=E8=83=BD=E7=94=B5=E8=A1=A8?=
+ =?UTF-8?q?=E4=B8=80=E8=B7=AF=EF=BC=9A=E9=80=9A=E7=94=A8=20Modbus=20?=
+ =?UTF-8?q?=E5=AF=84=E5=AD=98=E5=99=A8=E8=A1=A8=E9=A9=B1=E5=8A=A8=EF=BC=88?=
+ =?UTF-8?q?meter.yaml=20=E9=85=8D=E5=9C=B0=E5=9D=80=20/=20=E7=B1=BB?=
+ =?UTF-8?q?=E5=9E=8B=20/=20=E5=AD=97=E5=BA=8F=20/=20=E5=80=8D=E7=8E=87=20/?=
+ =?UTF-8?q?=20=E5=8F=98=E6=AF=94=EF=BC=8C=E5=9E=8B=E5=8F=B7=E5=AE=9A?=
+ =?UTF-8?q?=E4=BA=86=E5=8F=AA=E6=8D=A2=E8=A1=A8=EF=BC=89=EF=BC=8C=E4=B8=8E?=
+ =?UTF-8?q?=20SAM=205=20=E8=B7=AF=E5=90=8C=E4=B8=80=E6=9D=A1=E6=80=BB?=
+ =?UTF-8?q?=E7=BA=BF=E3=80=81=E5=90=8C=E4=B8=80=E4=B8=AA=E8=BD=AE=E8=AF=A2?=
+ =?UTF-8?q?=E5=BE=AA=E7=8E=AF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ config/sensors/meter.yaml |  55 ++++++++++++++++
+ src/core/app.py           |   2 +
+ src/drivers/meter.py      | 133 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 190 insertions(+)
+ create mode 100644 config/sensors/meter.yaml
+ create mode 100644 src/drivers/meter.py
+
+diff --git a/config/sensors/meter.yaml b/config/sensors/meter.yaml
+new file mode 100644
+index 0000000..f55836b
+--- /dev/null
++++ b/config/sensors/meter.yaml
+@@ -0,0 +1,55 @@
++# 多功能电表配置（通用 Modbus 寄存器表驱动 src/drivers/meter.py，LSA 补丁 0007-G）
++# 对应 EG内部MQTT格式 §5.2：发 el.*，一律二次值 —— 表计读多少发多少，不乘 PT / CT（EG 上送前按子站下发的变比换成一次值）
++#
++# !! 下面的寄存器表是「占位」：S19 电表型号 / 点表还没定（2026-10-19）。先按一种常见布局写好，让框架和模拟器自检跑起来；
++#    型号定了照表计手册改 function / word_order / blocks / registers 这几段，程序不用改。
++#
++# 跟 SAM 的 5 路传感器同一条 485 总线（COM2，9600 8N1）、同一个轮询循环；从站地址 6（S19 约定）。
++# 只在 eg.yaml 里有这面柜电表（PM-<柜号>）的那台 EG 上打开 —— EG 的 install-conv.sh 按 eg.yaml 自动开关、填设备名。
++
++sensor:
++  name: "meter"
++  type: "modbus_meter"
++  device: "PM-AH03"            # 设备名 (与 eg.yaml 一致)
++  slave_id: 6                  # Modbus 从站地址
++  priority: "fast"             # 电量走快档（EG内部MQTT格式 §5.2「快」）
++  enabled: false
++
++# ── 读法 ──────────────────────────────────────────────────
++function: 3                    # 03 = 读保持寄存器，04 = 读输入寄存器（看表计手册）
++word_order: "big"              # 32 位数两个字的顺序：big = 高字在前（ABCD），little = 低字在前（CDAB）
++ratio:                         # 表计内部设了变比、读出来已是一次值时才填（程序按 registers 里的 ratio 除回二次值）；读出来就是二次值保持 1
++  pt: 1
++  ct: 1
++
++# ── 寄存器段：一次读一段连续寄存器（每段 ≤ 125 个）──────────
++# every = 这段多久读一次（秒）；不写 = 每次轮询都读
++blocks:
++  - { address: 0x0000, count: 28 }               # 电压、电流、功率、功率因数、频率、THD、电能
++  - { address: 0x0100, count: 90, every: 60 }    # 电压谐波含有率 A/B/C 各 2–31 次（分钟档）
++  - { address: 0x0200, count: 90, every: 60 }    # 电流谐波含有率 A/B/C 各 2–31 次（分钟档）
++
++# ── 寄存器表：key 照点目录 el.* ─────────────────────────────
++# type：uint16 / int16 / uint32 / int32 / float32；scale：原始值 × scale；count + json：连读几个、发成 JSON 字符串数组
++# ratio：pt / ct / ptct —— 只在上面 ratio 不是 1 时起作用
++registers:
++  el.Ua:   { address: 0x0000, type: float32, ratio: pt }      # 相电压 V
++  el.Ub:   { address: 0x0002, type: float32, ratio: pt }
++  el.Uc:   { address: 0x0004, type: float32, ratio: pt }
++  el.Ia:   { address: 0x0006, type: float32, ratio: ct }      # 相电流 A
++  el.Ib:   { address: 0x0008, type: float32, ratio: ct }
++  el.Ic:   { address: 0x000A, type: float32, ratio: ct }
++  el.P:    { address: 0x000C, type: float32, ratio: ptct }    # 有功功率 kW
++  el.Q:    { address: 0x000E, type: float32, ratio: ptct }    # 无功功率 kvar
++  el.S:    { address: 0x0010, type: float32, ratio: ptct }    # 视在功率 kVA
++  el.PF:   { address: 0x0012, type: float32 }                 # 功率因数
++  el.F:    { address: 0x0014, type: float32 }                 # 频率 Hz
++  el.THDu: { address: 0x0016, type: float32 }                 # 电压总谐波畸变率 %
++  el.THDi: { address: 0x0018, type: float32 }                 # 电流总谐波畸变率 %
++  el.Ep:   { address: 0x001A, type: uint32, scale: 0.01, ratio: ptct }   # 正向有功电能 kWh（累计，必须单调不减）
++  el.hu.A: { address: 0x0100, type: uint16, count: 30, scale: 0.01, json: true }   # 电压 2–31 次谐波含有率 %
++  el.hu.B: { address: 0x011E, type: uint16, count: 30, scale: 0.01, json: true }
++  el.hu.C: { address: 0x013C, type: uint16, count: 30, scale: 0.01, json: true }
++  el.hi.A: { address: 0x0200, type: uint16, count: 30, scale: 0.01, json: true }   # 电流 2–31 次谐波含有率 %
++  el.hi.B: { address: 0x021E, type: uint16, count: 30, scale: 0.01, json: true }
++  el.hi.C: { address: 0x023C, type: uint16, count: 30, scale: 0.01, json: true }
+diff --git a/src/core/app.py b/src/core/app.py
+index ccd2b51..bd026de 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -24,6 +24,7 @@ from src.drivers.gas import SmokeSensorDriver
+ from src.drivers.pd import PartialDischargeDriver
+ from src.drivers.arc_light import ArcLightDriver
+ from src.drivers.infrared import InfraredDriver
++from src.drivers.meter import ModbusMeterDriver
+ from src.acquisition.scheduler import AcquisitionScheduler
+ from src.acquisition.data_normalizer import DataNormalizer
+ from src.analysis.engine import AnalysisEngine
+@@ -153,6 +154,7 @@ class Application:
+             "partial_discharge": PartialDischargeDriver,
+             "arc_light": ArcLightDriver,
+             "infrared": InfraredDriver,
++            "meter": ModbusMeterDriver,    # 多功能电表（通用寄存器表，LSA 0007-G）
+         }
+         logger.info("驱动映射表: %s", list(driver_map.keys()))
+ 
+diff --git a/src/drivers/meter.py b/src/drivers/meter.py
+new file mode 100644
+index 0000000..6311173
+--- /dev/null
++++ b/src/drivers/meter.py
+@@ -0,0 +1,133 @@
++"""
++多功能电表驱动（通用 Modbus 寄存器表，LSA 补丁 0007-G）
++对应 EG内部MQTT格式 §5.2：发 el.*，一律二次值 —— 表计读多少发多少，不乘 PT / CT（EG 上送前按子站下发的变比换成一次值）。
++
++不写死型号：读哪几段寄存器（blocks）、每个量在哪个地址、什么数据类型、字序、倍率，全在 config/sensors/meter.yaml。
++型号定了只换那张表，不改程序。
++  - blocks：一次读一段连续寄存器（≤ 125 个）；every 秒数 = 这段多久读一次（谐波这类分钟档的量），0 / 不写 = 每次轮询都读
++  - registers：key（照点目录 el.*）→ { address, type, scale, count, json, ratio }
++      type   uint16 / int16 / uint32 / int32 / float32（32 位按 word_order 拼：big = 高字在前，little = 低字在前）
++      scale  倍率（原始值 × scale），缺省 1
++      count  连读几个同类型的值（谐波含有率 30 个），json: true 时发成 JSON 字符串数组
++      ratio  pt / ct / ptct：表计内部设了变比、读出来已是一次值时，按配置里 ratio.pt / ratio.ct 除回二次值
++  - 一段读失败：这一轮整台电表算失败（dev.fails 往上数），不发半截数
++和 SAM 的 5 路共用同一个 ModbusRTUClient（同一条总线、同一把锁、同一个轮询循环），不另开串口。
++"""
++
++import json
++import struct
++import time
++from typing import Any, Dict, List, Optional, Tuple
++
++from src.core.logger import setup_logger
++from src.drivers.base import SensorDriver
++from src.drivers.modbus_rtu import ModbusRTUClient
++
++logger = setup_logger("driver.meter")
++
++WORDS = {"uint16": 1, "int16": 1, "uint32": 2, "int32": 2, "float32": 2}
++MAX_BLOCK = 125  # Modbus 一次最多读 125 个寄存器
++
++
++class ModbusMeterDriver(SensorDriver):
++    """通用 Modbus 多功能电表（按寄存器表读）"""
++
++    def __init__(self, modbus_client: ModbusRTUClient, config: Dict[str, Any]):
++        super().__init__(modbus_client, config)
++        self._fc = int(config.get("function", 3))
++        self._big = str(config.get("word_order", "big")).lower() != "little"
++        ratio = config.get("ratio") or {}
++        self._pt = float(ratio.get("pt", 1) or 1)
++        self._ct = float(ratio.get("ct", 1) or 1)
++        self._blocks: List[Dict[str, int]] = []
++        for b in config.get("blocks") or []:
++            addr, cnt = int(b.get("address", 0)), int(b.get("count", 0))
++            if cnt < 1 or cnt > MAX_BLOCK:
++                logger.error("电表寄存器段 0x%04X 长度 %d 不对（1–%d），跳过", addr, cnt, MAX_BLOCK)
++                continue
++            self._blocks.append({"address": addr, "count": cnt, "every": int(b.get("every", 0) or 0)})
++        self._regs: Dict[str, Dict[str, Any]] = {}
++        for key, spec in (config.get("registers") or {}).items():
++            err = self._check(key, spec or {})
++            if err:
++                logger.error("电表寄存器 %s：%s，跳过", key, err)
++                continue
++            self._regs[key] = spec
++        self._last_read: Dict[int, float] = {}
++        if self._fc not in (3, 4):
++            logger.error("电表功能码 %s 不对（只认 3 / 4），按 3 读", self._fc)
++            self._fc = 3
++        logger.info("电表：从站 %d，FC%02d，%d 段寄存器、%d 个量，字序 %s，表内变比 PT %g / CT %g",
++                    self._slave_id, self._fc, len(self._blocks), len(self._regs),
++                    "高字在前" if self._big else "低字在前", self._pt, self._ct)
++
++    def _span(self, spec: Dict[str, Any]) -> Tuple[int, int]:
++        """寄存器占的地址范围 [起, 止)"""
++        start = int(spec.get("address", -1))
++        return start, start + WORDS.get(str(spec.get("type", "")), 0) * int(spec.get("count", 1) or 1)
++
++    def _check(self, key: str, spec: Dict[str, Any]) -> str:
++        if str(spec.get("type", "")) not in WORDS:
++            return "type「%s」不认识（可用：%s）" % (spec.get("type"), " / ".join(WORDS))
++        if spec.get("ratio") not in (None, "", "pt", "ct", "ptct"):
++            return "ratio「%s」不认识（pt / ct / ptct）" % spec.get("ratio")
++        start, end = self._span(spec)
++        if start < 0:
++            return "没有 address"
++        if not any(b["address"] <= start and end <= b["address"] + b["count"] for b in self._blocks):
++            return "地址 0x%04X–0x%04X 不在任何一段 blocks 里" % (start, end - 1)
++        return ""
++
++    async def read_raw(self) -> Optional[Dict[str, Any]]:
++        now = time.monotonic()
++        words: Dict[int, int] = {}
++        for i, b in enumerate(self._blocks):
++            if b["every"] and now - self._last_read.get(i, -1e12) < b["every"]:
++                continue  # 慢档的这一段还没到时候
++            read = self._client.read_input_registers if self._fc == 4 else self._client.read_holding_registers
++            regs = await read(slave_id=self._slave_id, address=b["address"], count=b["count"])
++            if regs is None or len(regs) < b["count"]:
++                logger.warning("读电表失败: slave=%d, 段 0x%04X×%d", self._slave_id, b["address"], b["count"])
++                return None
++            self._last_read[i] = now
++            for j, v in enumerate(regs):
++                words[b["address"] + j] = v
++        return {"words": words}
++
++    def _value(self, words: Dict[int, int], addr: int, typ: str) -> Optional[float]:
++        if WORDS[typ] == 1:
++            w = words.get(addr)
++            if w is None:
++                return None
++            return w - 0x10000 if typ == "int16" and w > 0x7FFF else w
++        hi, lo = words.get(addr), words.get(addr + 1)
++        if hi is None or lo is None:
++            return None
++        if not self._big:
++            hi, lo = lo, hi
++        raw = struct.pack(">HH", hi & 0xFFFF, lo & 0xFFFF)
++        return struct.unpack(">f" if typ == "float32" else (">i" if typ == "int32" else ">I"), raw)[0]
++
++    def _div(self, spec: Dict[str, Any]) -> float:
++        r = spec.get("ratio")
++        return {"pt": self._pt, "ct": self._ct, "ptct": self._pt * self._ct}.get(r, 1.0) if r else 1.0
++
++    def parse(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
++        words = raw_data.get("words") or {}
++        out: Dict[str, Any] = {}
++        for key, spec in self._regs.items():
++            typ = str(spec["type"])
++            start, _ = self._span(spec)
++            if start not in words:
++                continue  # 这一段这轮没读（慢档）
++            scale = float(spec.get("scale", 1) or 1) / self._div(spec)
++            n = int(spec.get("count", 1) or 1)
++            vals = [self._value(words, start + i * WORDS[typ], typ) for i in range(n)]
++            if any(v is None for v in vals):
++                continue
++            nums = [round(v * scale, 4) for v in vals]  # type: ignore[operator]
++            if any(x != x or x in (float("inf"), float("-inf")) for x in nums):
++                logger.warning("电表 %s 读出非数（NaN / Inf），这一轮不发", key)
++                continue
++            out[key] = json.dumps(nums) if spec.get("json") or n > 1 else nums[0]
++        return out
+-- 
+2.54.0.windows.1
+

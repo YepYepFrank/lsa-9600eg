@@ -5,7 +5,9 @@
 #   sudo bash install-conv.sh                    启用：导入镜像 → 生成 config/conv（已有就不动）→ 选串口 → 起 conv
 #   sudo bash install-conv.sh --serial <设备>     指定串口。不给时：/dev/serial/by-id/ 下只有一个（USB 转 485）就用它；
 #                                                有多个就列出来让选；一个都没有就用 /dev/ttyS1（X26A 的 COM2）
-#   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared；缺省前四个，红外关）
+#   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared meter；缺省前四个，红外关；
+#                                                电表 meter 按 eg.yaml 自动：有这面柜电表（kind: meter，PM-<柜号>）的那台 EG 才打开、设备名和
+#                                                从站号（attrs.slave 或 proto 里的「从站 N」，缺省 6）照 eg.yaml 填；寄存器表在 config/conv/sensors/meter.yaml）
 #   --addr pd=2,gas=3,temperature=4,arc=5       从站地址（缺省用同事的：红外 1、局放 2、气体 3、温湿度 4、弧光 5）
 #   --dev temperature=SAM-AH07-A,pd=SAM-AH07-B  这一路挂到哪台设备（缺省：温湿度挂第一台 SAM，其余挂第二台；只有一台 SAM 就都挂它 ——
 #                                                0.18.0 舱室 EG 一台 EG 只有本舱室一台 SAM，全都挂它）
@@ -80,11 +82,20 @@ conv_cid() {
 file_of() {
   case "$1" in
     pd) echo pd.yaml ;; gas) echo gas.yaml ;; temperature) echo temperature.yaml ;; arc) echo arc_light.yaml ;; infrared) echo infrared.yaml ;;
-    *) echo "不认识的传感器「$1」（可用：pd gas temperature arc infrared）" >&2; return 1 ;;
+    meter) echo meter.yaml ;;
+    *) echo "不认识的传感器「$1」（可用：pd gas temperature arc infrared meter）" >&2; return 1 ;;
   esac
 }
-NAMES='pd gas temperature arc infrared'
-declare -A CN=([pd]=局放 [gas]=气体 [temperature]=温湿度 [arc]=弧光 [infrared]=红外)
+NAMES='pd gas temperature arc infrared meter'
+declare -A CN=([pd]=局放 [gas]=气体 [temperature]=温湿度 [arc]=弧光 [infrared]=红外 [meter]=电表)
+# 本单元的电表（eg.yaml 里 kind: meter 的第一台，PM-<柜号>；转换程序补丁 0007 起读它）：没有为空
+meter_dev() { awk '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{gsub(/"/,"",$3);n=$3} f&&/^    kind: *meter *$/{print n;exit}' config/eg.yaml; }
+# 电表的从站号：attrs.slave，没有就取 attrs.proto 里的「从站 N」，都没有 = 6（S19 约定）
+meter_slave() {
+  local s
+  s="$(awk -v d="$1" '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{gsub(/"/,"",$3);on=($3==d)} on&&/^      slave:/{print $2;exit} on&&/^      proto:/{if(match($0,/从站 *[0-9]+/)){t=substr($0,RSTART,RLENGTH);gsub(/[^0-9]/,"",t);p=t}} END{if(p!="")print p}' config/eg.yaml | head -1 || true)"
+  echo "${s:-6}"
+}
 yget() { awk -v k="$2" '$1==k":"{v=$2;gsub(/"/,"",v);print v;exit}' "$1"; }  # 传感器 yaml 顶层字段（第一处）
 yset() {  # $1 文件 $2 字段 $3 值（带引号的照样带引号）：只改第一处，行尾注释保留
   local q=''
@@ -154,7 +165,7 @@ pick_serial() {
 
 # ---------- 配置 ----------
 gen_config() {
-  local code a b n f
+  local code a b n f m
   if [ -n "$REGEN" ] && [ -d config/conv ] && [ -n "$(ls -A config/conv 2>/dev/null)" ]; then
     mv config/conv "config/conv.bak-$(date +%Y%m%d-%H%M%S)"; echo "旧配置备份到 $(ls -d config/conv.bak-* | tail -1)"
   fi
@@ -167,13 +178,22 @@ gen_config() {
   a="${S[0]}"; b="${S[1]:-${S[0]}}"
   sed -i '/^serial:/,/^[a-z]/s#^\(  port: *\)"[^"]*"#\1"/dev/ttyS1"#' config/conv/gateway.yaml
   sed -i -E "/^device:/,/^[a-z]/s#^(  name: *)\"[^\"]*\"#\1\"$b\"#" config/conv/gateway.yaml
+  m="$(meter_dev)"
   for n in $NAMES; do
     f="config/conv/sensors/$(file_of "$n")"
     [ -f "$f" ] || continue
+    if [ "$n" = meter ]; then
+      # 电表：本单元有才开（该柜第一个单元的那台），设备名、从站号照 eg.yaml
+      if [ -n "$m" ]; then yset "$f" device "$m"; yset "$f" slave_id "$(meter_slave "$m")"; yset "$f" enabled true; else yset "$f" enabled false; fi
+      continue
+    fi
     if [ "$n" = temperature ]; then yset "$f" device "$a"; else yset "$f" device "$b"; fi
     case "$n" in infrared) yset "$f" enabled false ;; *) yset "$f" enabled true ;; esac
   done
   echo "转换程序配置：从镜像模板生成 config/conv/（单元 ${code:-?}；温湿度 → $a，其余 → $b；局放、气体、温湿度、弧光打开，红外关；从站地址用同事的缺省）"
+  if [ -f config/conv/sensors/meter.yaml ]; then
+    if [ -n "$m" ]; then echo "  电表：打开，$m（从站 $(meter_slave "$m")；寄存器表 config/conv/sensors/meter.yaml）"; else echo "  电表：本单元没有（eg.yaml 里没有 kind: meter），关"; fi
+  fi
   return 0
 }
 apply_params() {  # 只改给了的项；有改动返回 0
@@ -218,14 +238,24 @@ check_devices() {  # 打开的各路 device 都要在 eg.yaml 里
 # 单元换了（--rebind）：eg.yaml 里已经没有的设备名改挂到本单元的 SAM（温湿度 → 第一台，其余 → 第二台；只有一台就都挂它），
 # 别的（开关、从站地址、波特率、串口）是现场接线，不动。改了返回 0，没什么可改返回 1
 rebind() {
-  local n f dev new names a b g changed=1
+  local n f dev new names a b g m changed=1
   mapfile -t S < <(sams)
   [ ${#S[@]} -gt 0 ] || { echo "!! eg.yaml 里没有 SAM 设备，转换程序的数据没有地方挂" >&2; exit 1; }
   a="${S[0]}"; b="${S[1]:-${S[0]}}"
   names=" $(alldevs | tr '\n' ' ') "
+  m="$(meter_dev)"
   for n in $NAMES; do
     f="config/conv/sensors/$(file_of "$n")"; [ -f "$f" ] || continue
     dev="$(yget "$f" device)"
+    if [ "$n" = meter ]; then
+      # 电表跟着单元走：本单元有就改挂到它，没有（电表归了别的单元）就关掉这一路
+      if [ -n "$m" ]; then
+        case "$names" in *" $dev "*) ;; *) yset "$f" device "$m"; changed=0; echo "  电表（meter.yaml）：${dev:-空} → $m" ;; esac
+      elif [ "$(yget "$f" enabled)" = true ]; then
+        yset "$f" enabled false; changed=0; echo "  电表（meter.yaml）：本单元没有电表（eg.yaml 里没有 kind: meter），关掉这一路"
+      fi
+      continue
+    fi
     case "$names" in *" $dev "*) continue ;; esac
     if [ "$n" = temperature ]; then new="$a"; else new="$b"; fi
     yset "$f" device "$new"; changed=0
