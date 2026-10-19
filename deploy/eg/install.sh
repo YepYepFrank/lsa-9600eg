@@ -66,9 +66,9 @@ while [ $# -gt 0 ]; do
     --watchdog-off) MODE='wd-off' ;;
     --watchdog-on) MODE='wd-on' ;;
     # 0.6.2：转换程序只走 install-conv.sh
-    --conv-serial) exec bash "$(dirname "$0")/install-conv.sh" --serial "${2:?--conv-serial 后面给串口设备，如 /dev/ttyUSB0}" ;;
-    --conv-off) exec bash "$(dirname "$0")/install-conv.sh" --off ;;
-    --conv-on) exec bash "$(dirname "$0")/install-conv.sh" ;;
+    --conv-serial) exec bash ./install-conv.sh --serial "${2:?--conv-serial 后面给串口设备，如 /dev/ttyUSB0}" ;;
+    --conv-off) exec bash ./install-conv.sh --off ;;
+    --conv-on) exec bash ./install-conv.sh ;;
     --restore-tb) RESTORE_TB=1 ;;
     --no-tb-backup) TB_BACKUP=0 ;;
     *) echo "不认识的参数：$1" >&2; exit 2 ;;
