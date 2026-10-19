@@ -1,0 +1,476 @@
+# LSA-9600EG 边缘网关 厂家出厂预装手册
+
+| 项 | 内容 |
+|---|---|
+| 文档版本 | v1.0（2026-10-19） |
+| 适用硬件 | 新创云 XCY-X26A 工控机（x86_64，8 GB 内存，mSATA 256 GB，2 个千兆网口，COM2 可做 RS-485，12 V 供电） |
+| 预装软件 | LSA-9600EG 网关软件 **0.6.3-5dc5b5e**（安装包 `LSA-9600EG-0.6.3-5dc5b5e.tar`） |
+| 操作系统 | Ubuntu Server 24.04.5 LTS（amd64） |
+| 出厂目标状态 | **「待接入」**：系统、驱动、网关软件全部装好，本地数据库已起；不含任何现场配置，到现场由我方接入子站 |
+
+---
+
+## 0. 先看这一页
+
+**贵司要做的（每台）**：
+
+1. 设 BIOS（COM2 设为 RS-485、来电自启）；
+2. 把出厂系统改装成 Ubuntu Server 24.04.5；
+3. 做系统基础设置（网口、时区、关自动更新）；
+4. 装网关软件到「待接入」；
+5. 出厂自检，填《出厂记录表》，贴标签，正常关机装箱。
+
+**贵司不用做的**（由我方或其他厂家负责，请不要自行处理）：
+
+- 子站主机、子站软件、路段平台的安装与配置；
+- 传感器（SAM 感知模块、局放、气体、温湿度、弧光、红外）的接线、地址设置与调试；
+- 485 隔离中继器、12 V 电源的柜内安装与接线；
+- 摄像机；
+- 网关接入子站（授权、下发配置、启用转换程序）、现场 IP 地址的最终设置。
+
+**时间估计**：每台约 40–60 分钟，其中装系统约 15 分钟、装网关软件约 10 分钟（大部分在等待）。可以多台并行。批量做法见第 9 节。
+
+**先做首台**：第一台做完第 7 节后，把 `cat /opt/lsa-eg/VERSION` 和 `sudo bash /opt/lsa-eg/install.sh --status` 的完整输出（拍照或拷文本）连同《出厂记录表》第一行发给我方，**我方确认后再批量做**。
+
+**有问题先停下来**：任何一步的结果和本手册写的不一样，**不要自己改脚本、不要上网找办法**，记下现象（拍屏幕或拷出输出），联系我方（第 11 节）。
+
+---
+
+## 1. 交付物清单
+
+| 文件 | 大小 | 用途 |
+|---|---|---|
+| `LSA-9600EG_厂家出厂预装手册_v1.0`（本文件，`.html` 与 `.md` 内容相同） | — | 操作步骤 |
+| `LSA-9600EG_出厂记录表.xlsx` | — | 每台一行，随货交回我方 |
+| `01_EG安装包/LSA-9600EG-0.6.3-5dc5b5e.tar` | 1.71 GB | 网关软件（离线安装，**不需要联网**） |
+| `02_系统安装盘/ubuntu-24.04.5-live-server-amd64.iso` | 2.77 GB | Ubuntu 官方安装盘（与我方验证用的是同一个文件） |
+| `SHA256SUMS.txt` | — | 以上文件的校验值 |
+
+**收到后先核对校验值**（任何一个对不上就不要用，重新传）：
+
+- Windows（在文件所在目录打开 PowerShell）：
+  ```powershell
+  Get-FileHash .\01_EG安装包\LSA-9600EG-0.6.3-5dc5b5e.tar -Algorithm SHA256
+  Get-FileHash .\02_系统安装盘\ubuntu-24.04.5-live-server-amd64.iso -Algorithm SHA256
+  ```
+- Linux：在交付目录里 `sha256sum -c SHA256SUMS.txt`，每行都要是 `OK`。
+
+应得到的值：
+
+```
+LSA-9600EG-0.6.3-5dc5b5e.tar          8554a338abb8f170daca2e0e2d8f174aeaa7cd44411a4677b399ef664daa604b
+ubuntu-24.04.5-live-server-amd64.iso  97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8
+```
+
+**保密**：安装包是我方软件，只用于本批网关的预装，不得外传、不得用于其他设备。本手册中没有任何口令；维护账号的口令由我方另行发给贵司指定的负责人。
+
+---
+
+## 2. 准备
+
+### 2.1 工具
+
+| 工具 | 数量 | 说明 |
+|---|---|---|
+| U 盘 A（系统盘） | 每个工位 1 个 | ≥ 8 GB，写入 Ubuntu 安装盘（会被清空） |
+| U 盘 B（软件盘） | 每个工位 1 个 | ≥ 4 GB，**FAT32 或 exFAT** 格式，拷入网关安装包（1.71 GB） |
+| 显示器（HDMI / VGA）、USB 键盘 | 每个工位 1 套 | 装系统、看结果 |
+| 12 V 直流电源 | 每个工位 1 个 | X26A 只能接 12 V，整机 20–25 W |
+| 网线、一台测试笔记本 | 每个工位 1 套 | 用来确认网口、可选用 SSH 操作 |
+| COM2 RS-485 测试工装 | 贵司自备 | 按贵司出厂测试方法测 COM2 的 485 收发（第 7 节第 9 项） |
+
+写系统盘：Windows 用 Rufus（选 ISO、分区类型按主板选 GPT / MBR，其余默认），Linux 用 `dd`。
+
+### 2.2 每台的硬件要求（不符合就不要装，联系我方）
+
+| 项 | 要求 |
+|---|---|
+| CPU | x86_64（64 位） |
+| 内存 | 8 GB |
+| 硬盘 | mSATA 256 GB（工业级） |
+| 网口 | 2 个千兆口（Intel i211），**两个口都要能用** |
+| 串口 | COM2 能在 BIOS 里设为 RS-485（系统里是 `/dev/ttyS1`） |
+| RTC 电池 | 有 |
+
+### 2.3 网口叫法（本手册统一这样叫，请在机壳上贴标签区分）
+
+| 本手册的叫法 | 用途（到现场） | 出厂时设置 |
+|---|---|---|
+| **LAN1** | 只接摄像机（设备网） | 不配地址；网关软件会给它加防火墙（只出不进） |
+| **LAN2** | 接子站交换机（上行网） | 临时地址 **192.168.1.250/24**，不设网关（现场由我方改成正式地址） |
+
+请贵司**固定**机壳上哪个口是 LAN1、哪个是 LAN2（建议面板丝印靠左 / 上面的为 LAN1，以贵司实际为准），整批一致，并在《出厂记录表》第一行的备注里写明对应关系。
+
+---
+
+## 3. 步骤 A：设 BIOS
+
+开机按 BIOS 热键（X26A 一般是 `Del` 或 `F2`，以贵司为准）进入 BIOS：
+
+| 项 | 设成 | 说明 |
+|---|---|---|
+| COM2 模式 | **RS-485** | 批量机只有 COM2 能做 485；必须设 |
+| AC Power Loss（来电自启） | **Power On** | 柜内断电后恢复要自己开机（出厂默认一般已开，请确认） |
+| 启动顺序 | 装系统时 U 盘 A 在前；**装完改回 mSATA 在前** | |
+| 其余 | 保持出厂默认 | 不要关 USB、不要关网卡 |
+
+保存退出（一般 `F10`）。在《出厂记录表》里记下 BIOS 版本。
+
+---
+
+## 4. 步骤 B：改装 Ubuntu Server 24.04.5
+
+> 改装会清空整块 mSATA，出厂预装的 Ubuntu 22.04 桌面版不保留。**只支持 Ubuntu Server 24.04**；装成别的版本（22.04、桌面版、Debian、麒麟等），网关软件会直接报错拒绝安装。
+
+插 U 盘 A 开机，从 U 盘启动，选 **Try or Install Ubuntu Server**。安装程序里逐页这样选：
+
+| 页面 | 选择 |
+|---|---|
+| Language | English（安装界面用英文，避免终端中文乱码） |
+| Keyboard | English (US) |
+| Choose type of install | **Ubuntu Server (minimized)**；**不勾** "Search for third-party drivers" |
+| Network configuration | 先不管（不插网线也可以）：两个口都显示 DHCP 或 disabled 都行，第 5 节会统一改 |
+| Proxy | 留空 |
+| Ubuntu archive mirror | 默认；**没联网时会提示离线安装，选继续** |
+| Guided storage configuration | **Use an entire disk**，选 mSATA（约 238 GiB）；**取消勾选** "Set up this disk as an LVM group"（默认是勾着的，**必须去掉**：勾着时系统分区只分约 100 GB，剩下的空着，网关录像和数据不够放）；**不要**加密 |
+| Storage configuration 确认 | 核对：只有一个 `/` 分区约 236 GB（另有一个约 1 GB 的 `/boot/efi`）→ Done → Continue（会清空硬盘） |
+| Profile setup | Your name：`LSA Admin`；Your server's name：`lsaeg-<整机SN>`（只用字母、数字和 `-`，例 `lsaeg-X26A2410001`）；**Pick a username：`lsaadmin`**；Password：用我方另发的维护口令（两次一致） |
+| Upgrade to Ubuntu Pro | **Skip for now** |
+| SSH Setup | **勾选 Install OpenSSH server**（现场维护、子站接入都要用）；Import SSH identity：No |
+| Featured Server Snaps | **一个都不选** |
+
+等安装完成，出现 **Reboot Now** 后拔掉 U 盘 A 再回车重启。重启后用 `lsaadmin` 和维护口令在本机登录。
+
+> 维护账号名**必须是 `lsaadmin`**，口令**必须是我方另发的那个**，不要另建账号、不要改口令。口令不要写在机器、标签、记录表或任何文件里。
+
+---
+
+## 5. 步骤 C：系统基础设置
+
+以下命令都在 X26A 本机终端里，用 `lsaadmin` 登录后逐条输入（`sudo` 会要维护口令）。也可以在 5.2 配好 LAN2 后用测试笔记本 `ssh lsaadmin@192.168.1.250` 远程操作（笔记本设 192.168.1.x 同网段地址）。
+
+### 5.1 认网口
+
+```bash
+ip -br link
+```
+
+会看到两个以 `en` 开头的网口（例如 `enp1s0`、`enp2s0`，名字以实际为准）。**只把网线插在机壳上的 LAN2 口**（另一头接测试笔记本或交换机），几秒后再执行一次 `ip -br link`：状态里出现 `UP`（或 `LOWER_UP`）的那个就是 LAN2，另一个就是 LAN1。
+
+把两个名字记下来，下面的命令要用。同一型号同一批机器，名字一般相同；但**每台都要这样确认一次**，并把名字和 MAC 地址填进记录表：
+
+```bash
+ip -br link        # 第 3 列就是 MAC 地址
+```
+
+### 5.2 配网口地址
+
+把下面第一行的两个名字改成 5.1 认出来的，然后整段复制执行：
+
+```bash
+LAN1=enp1s0; LAN2=enp2s0        # ← 改成本机实际的名字
+sudo rm -f /etc/netplan/*.yaml
+echo 'network: {config: disabled}' | sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg >/dev/null
+sudo tee /etc/netplan/50-lsa-eg.yaml >/dev/null <<EOF
+network:
+  version: 2
+  ethernets:
+    $LAN2:
+      dhcp4: false
+      addresses: [192.168.1.250/24]
+      optional: true
+    $LAN1:
+      dhcp4: false
+      optional: true
+EOF
+sudo chmod 600 /etc/netplan/50-lsa-eg.yaml
+sudo netplan apply
+ip -br addr
+```
+
+最后一条的结果里：LAN2 那一行有 `192.168.1.250/24`，LAN1 那一行没有 IPv4 地址。这就对了。
+
+- 出厂**所有机器都用同一个临时地址 192.168.1.250**，到现场由我方逐台改。因此出厂测试时**一次只把一台**接到测试网络里，否则地址冲突。
+- `optional: true` 是为了不插网线时开机不卡在等网络上，不要删。
+- 不要装 NetworkManager，不要再改别的网络配置。
+
+### 5.3 时区、时间
+
+```bash
+sudo timedatectl set-timezone Asia/Shanghai
+timedatectl
+```
+
+看 `Local time` 是不是现在的北京时间（误差 1 分钟以内）。不对就手工设（把时间改成当前时间）：
+
+```bash
+sudo timedatectl set-ntp false
+sudo timedatectl set-time '2026-10-19 15:30:00'
+timedatectl
+```
+
+到现场后网关会自动跟子站对时，这里只要大致准。
+
+### 5.4 关掉自动更新
+
+Ubuntu 默认会在后台自动装更新，可能把 Docker 等升到与网关软件不一致的版本，必须关掉：
+
+```bash
+sudo systemctl disable --now unattended-upgrades
+sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'EOF'
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+EOF
+systemctl is-enabled unattended-upgrades
+```
+
+最后一条要显示 `disabled`。
+
+**以后也不要**执行 `apt upgrade`、`apt dist-upgrade`、`do-release-upgrade`，不要装桌面环境或其他软件。
+
+### 5.5 确认 COM2、SSH、硬盘、内存
+
+```bash
+ls -l /dev/ttyS1                 # 要有，属 dialout 组
+sudo dmesg | grep -i ttyS1       # 能看到 ttyS1（COM2）
+systemctl is-active ssh          # 要显示 active
+df -h /                          # 可用空间 ≥ 200G
+free -g                          # total 约 7（8 GB）
+lscpu | grep 'Model name'        # 记进记录表
+```
+
+---
+
+## 6. 步骤 D：装网关软件（到「待接入」）
+
+### 6.1 把安装包拷进来
+
+二选一：
+
+**用 U 盘 B**（安装包 `LSA-9600EG-0.6.3-5dc5b5e.tar` 已拷在 U 盘根目录）：
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,LABEL      # 找到 U 盘的分区，一般是 sdb1
+sudo mkdir -p /mnt/usb
+sudo mount /dev/sdb1 /mnt/usb        # ← sdb1 改成实际的
+cp /mnt/usb/LSA-9600EG-0.6.3-5dc5b5e.tar ~/
+sudo umount /mnt/usb
+```
+
+**或用测试笔记本经 LAN2 拷**（笔记本上，在安装包所在目录）：
+
+```
+scp .\LSA-9600EG-0.6.3-5dc5b5e.tar lsaadmin@192.168.1.250:~/
+```
+
+### 6.2 放到安装目录并校验
+
+```bash
+sudo mkdir -p /opt/lsa-eg
+sudo tar -xf ~/LSA-9600EG-0.6.3-5dc5b5e.tar -C /opt/lsa-eg
+cd /opt/lsa-eg
+sudo sha256sum -c --quiet 出厂校验SHA256SUMS.txt && echo 校验通过
+```
+
+最后要显示 **`校验通过`**。如果出现 `FAILED` 或 `校验通过` 没出来：删掉重来（`sudo rm -rf /opt/lsa-eg`，重新拷安装包），仍不行就停下联系我方。
+
+> 安装目录**必须是 `/opt/lsa-eg`**，不要放别处、不要改名。
+
+### 6.3 安装
+
+把 `enp1s0` 改成 5.1 认出来的 **LAN1** 名字：
+
+```bash
+cd /opt/lsa-eg
+sudo bash install.sh --lan1 enp1s0
+```
+
+- 全程离线，大约 5–15 分钟（导入镜像、等本地数据库起来，屏幕可能有一两分钟不动，正常）。
+- 它会自动：装 Docker 与对时程序（chrony）的离线包、导入网关软件镜像、开软件看门狗、给 LAN1 加防火墙、起本地数据库。
+- 中途**不要断电、不要按 Ctrl+C**。万一中断了，重新执行同一条命令即可（可以反复执行）。
+
+**成功的标志**：最后几行是
+
+```
+本地 TB 已起。下一步（手册 §4；0.17.4 起也可以一键加柜：……
+  1. 给子站授权开隧道……
+  ……
+```
+
+这几行说的「下一步」是**我方到现场做的**，贵司**不要**照着做。
+
+**常见报错**：
+
+| 报错（大意） | 原因 | 怎么办 |
+|---|---|---|
+| 只支持 Ubuntu 24.04 / 不是 Ubuntu 24.04 | 系统装错了 | 回第 4 节重装系统 |
+| 没有网口 enp1s0 | `--lan1` 后面的名字写错 | 用 `ip -br link` 核对后重跑 |
+| 本机只有 1 个物理网口 | 有一个网口没被系统认出 | 检查硬件 / BIOS 里网卡是否被关，**不要加 --force** |
+| 已装在别处 | 在 `/opt/lsa-eg` 以外的目录执行了 | `cd /opt/lsa-eg` 后再执行 |
+| 空间不够 | 硬盘不是 256 GB 或分区不对 | 回第 4 节重装系统 |
+
+### 6.4 删掉安装包
+
+```bash
+rm -f ~/LSA-9600EG-0.6.3-5dc5b5e.tar
+```
+
+---
+
+## 7. 步骤 E：出厂自检
+
+每一项都要做，结果填进《出厂记录表》。
+
+### 7.1 软件状态
+
+```bash
+cat /opt/lsa-eg/VERSION
+sudo bash /opt/lsa-eg/install.sh --status
+```
+
+第一条要显示 `0.6.3-5dc5b5e`。第二条的输出大致是这样（括号里的数字、网口名以实际为准）：
+
+```
+NAME               STATUS
+lsa-eg-mosquitto   Up 2 minutes
+lsa-eg-postgres    Up 3 minutes (healthy)
+lsa-eg-tb          Up 2 minutes (healthy)
+本地 TB：4.2.2.6
+LAN1 防火墙：开（enp1s0 只出不进；开机自起 enabled；已丢弃入站 0 个包）
+看门狗：开（Software Watchdog；systemd 每 1min 内没喂就重启）
+转换程序：没启用（启用：sudo bash install-conv.sh）；串口 /dev/ttyS1
+  ……
+接入：待接入 —— 还没给子站授权（--join-key，或老办法 --sp-key + 手工拷 eg.yaml）
+子站批量升级：没授权（要用时 sudo bash install.sh --upgrade-key <子站升级公钥>）
+
+安全提醒：
+  - SSH 允许口令登录：……
+```
+
+逐项核对：
+
+| # | 应有的内容 | 说明 |
+|---|---|---|
+| 1 | `VERSION` 是 `0.6.3-5dc5b5e` | 出厂时 `--status` 里**没有**「已装版本」这一行，是正常的（现场接入后才有） |
+| 2 | 三个容器 `lsa-eg-mosquitto`、`lsa-eg-postgres`、`lsa-eg-tb` 都是 `Up`，后两个带 `(healthy)` | 出厂只起这三个，其余到现场接入后才起。刚装完或刚开机时 `lsa-eg-tb` 可能是 `(health: starting)`，等 2 分钟再看 |
+| 3 | `本地 TB：4.2.2.6` | |
+| 4 | `LAN1 防火墙：开（<LAN1 名字> 只出不进；开机自起 enabled；……）` | 括号里的网口名必须是 LAN1 |
+| 5 | `看门狗：开（……）` | X26A 没有硬件看门狗，用软件看门狗 |
+| 6 | `接入：待接入 —— 还没给子站授权……` | 出厂就应该是这个状态 |
+| 7 | `子站批量升级：没授权……` | 同上，到现场授权 |
+
+- 「转换程序：没启用」「可选串口」几行是**正常的**，到现场接好传感器后由我方启用。
+- `安全提醒` 里出现「SSH 允许口令登录……」是**正常的**（现场还要用口令登录），不用处理。
+- 如果出现「LAN1 防火墙：没开」「看门狗：没开」或任何以 `!!` 开头的行，就是不合格，见 7.3。
+
+### 7.2 自检清单
+
+| # | 项目 | 怎么做 | 合格标准 |
+|---|---|---|---|
+| 1 | 软件状态 | 7.1 | 7 项全部符合，没有 `!!` 开头的行 |
+| 2 | 重启 | `sudo reboot`，等 3 分钟后登录，再跑 7.1 | 7 项仍全部符合；三个容器自己起来了 |
+| 3 | 断电来电 | 运行中直接拔 12 V 电源，10 秒后插回，**不按电源键** | 自己开机；3 分钟后 7.1 全部符合 |
+| 4 | LAN2 | 测试笔记本（192.168.1.x）`ping 192.168.1.250`、`ssh lsaadmin@192.168.1.250` | 通、能登录 |
+| 5 | LAN1 防火墙 | `sudo nft list table inet lsa_eg` | 有输出，里面的 `iifname "…"` 是 LAN1 的名字 |
+| 6 | 自动更新已关 | `systemctl is-enabled unattended-upgrades` | `disabled` |
+| 7 | 时区时间 | `timedatectl` | `Asia/Shanghai`，时间误差 < 1 分钟 |
+| 8 | COM2 设备 | `ls -l /dev/ttyS1` | 存在 |
+| 9 | COM2 RS-485 收发 | 按贵司出厂测试方法（工装接 COM2 的 A / B / GND） | 双向收发正常、无误码；在记录表里写测试方法 |
+| 10 | 硬件 | `free -g`、`df -h /`、`lscpu` | 内存约 8 GB、可用盘 ≥ 200 GB |
+
+> 第 5 项说明：LAN1 防火墙只放网关主动向外的连接，外面主动连进来的一律丢弃（到现场摄像机网上的设备连不进网关）。
+> 第 9 项：出厂状态下没有任何程序占用 COM2，可以直接测，不用停网关程序。
+
+### 7.3 自检不合格
+
+- 软件类（1、2、3、5、6、7 项）：先重跑 `sudo bash /opt/lsa-eg/install.sh --lan1 <LAN1>`，再自检；仍不合格，把 `sudo bash /opt/lsa-eg/install.sh --status` 的完整输出拍照 / 拷出，联系我方。
+- 硬件类（4、8、9、10 项和开不了机）：按贵司返修流程处理，修好后**从第 3 节重新做**。
+
+---
+
+## 8. 步骤 F：记录、贴标、装箱
+
+### 8.1 填《出厂记录表》
+
+每台一行，随货把电子版交回我方。**表里不填任何口令**。列的说明见表里第一行的批注。必填：整机 SN、LAN1 / LAN2 的网口名与 MAC、BIOS 版本、软件版本、各自检项结果、测试人、日期。
+
+### 8.2 贴标签
+
+机身贴一张标签（不干胶，耐温），内容：
+
+```
+LSA-9600EG   SN：<整机 SN>
+LAN2 MAC：<xx:xx:xx:xx:xx:xx>
+出厂：EG 0.6.3 待接入   LAN2 临时 IP 192.168.1.250
+```
+
+网口旁贴 `LAN1 摄像机` / `LAN2 上行` 小标签。COM2 旁贴 `COM2 RS-485`。
+
+### 8.3 关机装箱
+
+```bash
+sudo poweroff
+```
+
+等电源灯熄灭再断电装箱。**装箱前不要再改任何设置。**
+
+---
+
+## 9. 批量做法（可选）
+
+为了节省时间，可以先做好一台「母盘」，再用硬盘复制机或克隆软件复制 mSATA。**只允许复制到第 5 节做完为止**（系统和基础设置），**第 6 节网关软件必须每台单独装**（每台的本地数据库口令是安装时随机生成的，不能复制）。
+
+做法：
+
+1. 母盘做完第 3、4、5 节，**不要做第 6 节**，`sudo poweroff`；
+2. 复制到其他 mSATA；
+3. 每台复制出来的机器，开机后**先**执行下面这段（换掉复制来的机器标识和 SSH 主机密钥、改主机名），然后从第 5.1 节「认网口」开始做（网口名字、MAC 每台要重新确认，netplan 里的名字一般不用改）：
+
+```bash
+sudo rm -f /etc/machine-id /var/lib/dbus/machine-id
+sudo systemd-machine-id-setup
+sudo rm -f /etc/ssh/ssh_host_*
+sudo dpkg-reconfigure openssh-server
+sudo hostnamectl set-hostname lsaeg-<本机整机SN>
+sudo reboot
+```
+
+4. 每台照常做第 6、7、8 节。
+
+---
+
+## 10. 不要做的事（汇总）
+
+- 不要装别的操作系统版本；不要装桌面环境；不要 `apt upgrade`；不要开自动更新。
+- 不要另建 Linux 账号，不要改 `lsaadmin` 的口令，不要把口令写下来贴在机器上。
+- 不要改 `/opt/lsa-eg` 里的任何文件；不要在别的目录装网关软件。
+- 不要执行 `install.sh` 的其他参数（`--join-key`、`--sp-key`、`--upgrade-key`、`--eg-config`、`--watchdog-off`、`--fw-off`、`--rollback` 等），不要执行 `install-conv.sh`。这些都是我方现场用的。
+- 不要连接传感器做联调，不要设置传感器地址。
+- 不要用 `--force`。
+- 出厂测试时同一网络里一次只接一台（临时地址都一样）。
+
+---
+
+## 11. 联系我方
+
+| 事项 | 联系人 | 电话 |
+|---|---|---|
+| 软件安装、自检不合格、首台确认 | 周华文 | 18551649246 |
+| 维护口令（我方另行发送） | 周华文 | 18551649246 |
+| 商务、交货 | 周华文 | 18551649246 |
+
+联系时请提供：整机 SN、在哪一步、屏幕照片或 `sudo bash /opt/lsa-eg/install.sh --status` 的完整输出。
+
+---
+
+## 附录 A：到现场后我方做什么（供了解，贵司不用做）
+
+1. 按站点分配表把 LAN2 改成正式地址，上架、接线（485 经隔离中继器接 COM2，摄像机接 LAN1）；
+2. 在网关上执行一次子站给的授权命令（`--join-key`），网关进入「已授权、待接入」，浏览器打开 `http://<LAN2 地址>/` 能看到待接入页；
+3. 把网关软件升级到工程版本（0.18.x / EG 0.7.x）；
+4. 子站一条命令完成接入：建设备、下发配置、启用传感器转换程序、核对数据上送；
+5. 以后的版本升级由子站远程批量完成，不需要再到每台网关上操作。
+
+## 附录 B：后续版本
+
+本批预装用 EG 0.6.3。我方出新的工程版本后，如还有未预装的机器，会发新的安装包与本手册的更新页：**步骤不变，只换第 6 节的文件名和 7.1 的版本号**。已经按 0.6.3 预装好的机器**不用返工**，到现场由我方升级。
