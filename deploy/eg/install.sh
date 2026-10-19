@@ -23,6 +23,8 @@
 #   已接入别的子站时拒绝，要加 --force 才换。格式：LSAJOIN1 <子站地址> <隧道公钥> <升级公钥> <校验（前面内容 sha256 的前 8 位）>
 # 给过 --lan1 时同时加 LAN1 防火墙（nftables 表 inet lsa_eg：摄像机网只出不进，22 / 80 / 8554 都连不上，开机自起）；
 #   --fw-off 关掉并记住，--fw-on 重新打开；--status 显示它；回退到不管它的老版本时自动清掉。
+# 摄像机对时（0.7.x，S19）：缺省给 LAN1 上的摄像机当 NTP 服务器 —— chrony allow LAN1 网段，防火墙只对 local.yaml 里的摄像机地址放行 UDP 123；
+#   --cam-ntp-off 关掉并记住，--cam-ntp-on 重新打开（改了摄像机地址也用它重新放行）；--status 显示它。摄像机那边把 NTP 服务器设成 EG 的 LAN1 地址
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
 #   --watchdog-off 关掉并记住，--watchdog-on 重新打开；--status 显示它。本机有硬件看门狗时直接用它、不加载 softdog。
 # 转换程序（EG 0.6.2 起只走 install-conv.sh 这一套）：发布件带它的镜像（CONV_IMAGE.txt、images-conv.tar.gz），install.sh 只负责导入，缺省不启用；
@@ -63,6 +65,8 @@ while [ $# -gt 0 ]; do
     --join-key) JOINKEY="${2:?--join-key 后面给子站 join-egs.sh --keygen 打印的那一行}"; shift ;;
     --fw-off) MODE='fw-off' ;;
     --fw-on) MODE='fw-on' ;;
+    --cam-ntp-off) MODE='cam-ntp-off' ;;
+    --cam-ntp-on) MODE='cam-ntp-on' ;;
     --watchdog-off) MODE='wd-off' ;;
     --watchdog-on) MODE='wd-on' ;;
     # 0.6.2：转换程序只走 install-conv.sh
@@ -98,19 +102,23 @@ fw_status() {
   fi
 }
 fw_apply() {
-  local nic="$1"
+  local nic="$1" ntp='' h
   command -v nft >/dev/null 2>&1 || { echo "!! 没有 nft 命令：摄像机网 $nic 上只有管理页 403 这一道（装 nftables 后重跑）" >&2; return 0; }
   mkdir -p "$(dirname "$FW_NFT")"
+  # 摄像机对时：只放行摄像机地址到本机 UDP 123（chronyd 在宿主机上，走 input）
+  if cam_ntp_on; then
+    for h in $(cam_hosts); do ntp+="    iifname \"$nic\" ip saddr $h udp dport 123 accept comment \"摄像机对时\""$'\n'; done
+  fi
   cat > "$FW_NFT" <<EOF
 #!/usr/sbin/nft -f
-# LSA-9600EG（install.sh --lan1 写）：摄像机网 $nic 只出不进。不要手改，重跑 install.sh 会重写；关掉用 install.sh --fw-off
+# LSA-9600EG（install.sh --lan1 写）：摄像机网 $nic 只出不进（摄像机对时的 UDP 123 例外）。不要手改，重跑 install.sh 会重写；关掉用 install.sh --fw-off
 table inet lsa_eg
 delete table inet lsa_eg
 table inet lsa_eg {
   chain input {
     type filter hook input priority filter - 10; policy accept;
     iifname "$nic" ct state established,related accept
-    iifname "$nic" counter drop comment "LAN1 新入站一律丢（22 / 80 / 8554 …）"
+${ntp}    iifname "$nic" counter drop comment "LAN1 新入站一律丢（22 / 80 / 8554 …）"
   }
   chain forward {
     type filter hook forward priority filter - 10; policy accept;
@@ -139,6 +147,56 @@ EOF
   systemctl restart lsa-eg-fw.service
   nft list table inet lsa_eg >/dev/null 2>&1 && echo "LAN1 防火墙已开：摄像机网 $nic 只出不进（22 / 80 / 8554 从 $nic 都连不上；EG 主动拉摄像机照常）" ||
     echo "!! LAN1 防火墙没加载上（systemctl status lsa-eg-fw）" >&2
+}
+# ---------- 摄像机对时（0.7.x，S19）：EG 在 LAN1 上给摄像机当 NTP 服务器 ----------
+# 录像、抓拍画面上叠的 OSD 时间是摄像机自己的钟（出厂 1970 年）。EG 上送的测温、报警、录像分段、证据都用 EG 的钟，不受它影响 ——
+# 对时只为证据画面上的时间跟子站一致。缺省开（.env EG_CAM_NTP=off 才关）：
+#   chrony 对 LAN1 网段 allow，加 local stratum 12（EG 一时没对上子站也照常给时间：摄像机始终跟 EG 一致，EG 的钟才是证据的准）；
+#   LAN1 防火墙只对摄像机地址（local.yaml camera 段里 restv1 / onvif / rtsp 的主机）放行 UDP 123
+CAM_NTP_CONF=/etc/chrony/conf.d/lsa-eg-cam.conf
+cam_ntp_on() { ! grep -q '^EG_CAM_NTP=off' .env 2>/dev/null; }
+cam_hosts() {  # local.yaml camera 段里各地址的主机（只认 IPv4 字面地址），去重
+  [ -f config/local.yaml ] || return 0
+  awk '/^camera:/{f=1;next} f&&/^[^ ]/{f=0} f' config/local.yaml |
+    grep -oE '(https?|rtsp)://([^/@ "]*@)?[0-9]{1,3}(\.[0-9]{1,3}){3}' | sed -E 's#^[a-z]+://([^@]*@)?##' | sort -u || true
+}
+lan1_cidr() {  # 网口的第一个 IPv4 → 网段（192.168.1.250/24 → 192.168.1.0/24）；没有地址为空
+  local a p i n=0 m; local -a o
+  a="$(ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4; exit}' || true)"
+  [ -n "$a" ] || return 0
+  p="${a#*/}"; a="${a%/*}"
+  IFS=. read -r -a o <<< "$a"
+  for i in 0 1 2 3; do n=$(( (n << 8) | o[i] )); done
+  m=$(( p == 0 ? 0 : (0xFFFFFFFF << (32 - p)) & 0xFFFFFFFF ))
+  n=$(( n & m ))
+  echo "$(( (n >> 24) & 255 )).$(( (n >> 16) & 255 )).$(( (n >> 8) & 255 )).$(( n & 255 ))/$p"
+}
+cam_ntp_apply() {  # $1 = LAN1 网口（空 = 没给过 --lan1）；改了 chrony 配置返回前不重启，调用方负责
+  local nic="$1" cidr
+  [ -d /etc/chrony ] || return 0
+  if ! cam_ntp_on || [ -z "$nic" ]; then rm -f "$CAM_NTP_CONF"; return 0; fi
+  cidr="$(lan1_cidr "$nic")"
+  if [ -z "$cidr" ]; then
+    rm -f "$CAM_NTP_CONF"; echo "（摄像机对时：LAN1 $nic 还没有 IPv4 地址，先不开；配好地址后重跑 sudo bash install.sh --cam-ntp-on）"; return 0
+  fi
+  mkdir -p /etc/chrony/conf.d
+  printf '# LSA-9600EG（install.sh 写）：给 LAN1 上的摄像机对时。关掉：sudo bash install.sh --cam-ntp-off\nallow %s\nlocal stratum 12\n' "$cidr" > "$CAM_NTP_CONF"
+}
+cam_ntp_status() {
+  local nic hosts
+  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
+  if ! cam_ntp_on; then echo '摄像机对时：关（sudo bash install.sh --cam-ntp-on 打开）'; return 0; fi
+  [ -n "$nic" ] || { echo '摄像机对时：没开（没给过 --lan1，不知道哪个是摄像机网口）'; return 0; }
+  hosts="$(cam_hosts | tr '\n' ' ')"
+  if [ ! -f "$CAM_NTP_CONF" ]; then echo "摄像机对时：没开（LAN1 $nic 没有 IPv4 地址？配好后 sudo bash install.sh --cam-ntp-on）"; return 0; fi
+  echo "摄像机对时：开（chrony $(sed -n 's/^allow //p' "$CAM_NTP_CONF")；摄像机 NTP 服务器填本机 LAN1 地址）"
+  if [ -z "$hosts" ]; then
+    echo '  ！ local.yaml 里还没有摄像机地址：防火墙没给它放行 UDP 123 —— 管理页「视频与测温」填好地址后 sudo bash install.sh --cam-ntp-on'
+  elif [ "$(id -u)" = 0 ] && nft list table inet lsa_eg >/dev/null 2>&1; then
+    local miss='' h
+    for h in $hosts; do nft list chain inet lsa_eg input 2>/dev/null | grep -q "ip saddr $h udp dport 123" || miss+="$h "; done
+    if [ -n "$miss" ]; then echo "  ！ 摄像机地址 ${miss% } 没放行（改过地址？）—— sudo bash install.sh --cam-ntp-on"; else echo "  防火墙放行：${hosts% } → UDP 123"; fi
+  fi
 }
 fw_remove() {
   if [ -f "$FW_UNIT" ]; then systemctl disable --now lsa-eg-fw.service >/dev/null 2>&1 || true; rm -f "$FW_UNIT"; systemctl daemon-reload; fi
@@ -348,6 +406,7 @@ status() {
   bk="$(ls -1t "$TB_BACKUPS"/tb-*.dump 2>/dev/null | head -1 || true)"
   [ -n "$bk" ] && echo "本地库备份（补丁升级前）：$bk —— 回到旧版 TB 用 --rollback --restore-tb"
   fw_status
+  cam_ntp_status
   wd_status
   conv_status
   uplink_status
@@ -601,6 +660,16 @@ if [ "$MODE" = 'fw-on' ]; then
   [ -n "$nic" ] || { echo '没给过 --lan1，不知道哪个是摄像机网口：sudo bash install.sh --lan1 <网口>' >&2; exit 1; }
   env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
 fi
+if [ "$MODE" = 'cam-ntp-off' ] || [ "$MODE" = 'cam-ntp-on' ]; then
+  env_set EG_CAM_NTP "${MODE#cam-ntp-}"
+  nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
+  cam_ntp_apply "$nic"
+  systemctl restart chrony >/dev/null 2>&1 || true
+  # 防火墙规则跟着重写（开：按 local.yaml 现在的摄像机地址放行；关：去掉）
+  if [ -n "$nic" ] && ! grep -q '^EG_LAN1_FW=off' .env; then fw_apply "$nic" >/dev/null; fi
+  cam_ntp_status
+  exit 0
+fi
 # 部署文件（升级时整个发布件覆盖过来的那些）
 DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt install-conv.sh conv-kit lsa-eg-upgrade lsa-eg-upgrade-job'
 
@@ -692,6 +761,10 @@ if [ "$MODE" = 'rollback' ]; then
   # 回到的版本不管 LAN1 防火墙（早于它）：把规则清掉，与那个版本一致；它也管的话留着
   grep -q 'lsa-eg-fw' install.sh || { fw_remove; echo '（回到的版本不管 LAN1 防火墙，规则已清掉）'; }
   grep -q 'lsa-eg-watchdog' install.sh || { wd_remove; echo '（回到的版本不管看门狗，已关掉）'; }
+  # 回到的版本不给摄像机对时（早于 0.7.x）：chrony 的 allow 撤掉（防火墙里那条放行没有 chrony 听也就不起作用，下次那个版本重写规则时去掉）
+  if ! grep -q 'lsa-eg-cam.conf' install.sh && [ -f "$CAM_NTP_CONF" ]; then
+    rm -f "$CAM_NTP_CONF"; systemctl restart chrony >/dev/null 2>&1 || true; echo '（回到的版本不给摄像机对时，已撤掉）'
+  fi
   echo; status
   exit 0
 fi
@@ -937,6 +1010,7 @@ if [ -n "$sp_host" ] && [ -d /etc/chrony ]; then
   fi
   grep -q '^# LSA-9600EG makestep' /etc/chrony/chrony.conf ||
     sed -i '/^makestep /i # LSA-9600EG makestep：install.sh 改为 1 -1（没有 RTC 电池，差 > 1 s 随时跳到子站时间）' /etc/chrony/chrony.conf
+  cam_ntp_apply "$lan1_now"
   systemctl enable chrony >/dev/null 2>&1 || true
   systemctl restart chrony >/dev/null 2>&1 || true
   if ! systemctl is-active --quiet chrony; then
