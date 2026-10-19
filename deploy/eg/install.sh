@@ -412,6 +412,15 @@ upg_status() {
       else more="（升级 $(upg_st job)，$(upg_st from) → $(upg_st to)）"; fi
     fi
     echo "子站批量升级：已授权（lsa-upg，只认 $(upg_from_now)）；最近一次任务：${ph:-没有}${ph:+$more}"
+    # 0.18.2 发布签名：子站传来的安装文件用本机 release-signers 验签（lsa-eg-upgrade 开头）
+    local nk fp
+    nk="$(awk '!/^[[:space:]]*(#|$)/ { n++ } END { print n + 0 }' release-signers 2>/dev/null || echo 0)"
+    if [ "$nk" -gt 0 ] 2>/dev/null; then
+      fp="$(grep -v '^[[:space:]]*#' release-signers | awk 'NF { $1 = ""; $2 = ""; print }' | ssh-keygen -lf - 2>/dev/null | awk '{ printf "%s%s", s, $2; s = "、" }' || true)"
+      echo "  升级验签：发布公钥 $nk 把（${fp:-?}）；最近一次任务的签名：$( [ -f "$st" ] && upg_st sig | sed 's/^$/（老入口，没记）/' || echo 没有)"
+    else
+      echo '  升级验签：本机没有发布公钥 release-signers（老发布件装的）—— 子站传来的安装文件验不了签'
+    fi
   else
     echo '子站批量升级：没授权（要用时 sudo bash install.sh --upgrade-key <子站升级公钥>）'
   fi
@@ -602,7 +611,7 @@ if [ "$MODE" = 'fw-on' ]; then
   env_set EG_LAN1_FW on; fw_apply "$nic"; exit 0
 fi
 # 部署文件（升级时整个发布件覆盖过来的那些）
-DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt install-conv.sh conv-kit lsa-eg-upgrade lsa-eg-upgrade-job'
+DEPLOY_FILES='compose.yaml mosquitto.conf install.sh diskcheck.sh VERSION IMAGES.txt extensions CONV_IMAGE.txt install-conv.sh conv-kit lsa-eg-upgrade lsa-eg-upgrade-job release-signers'
 
 # ---------- 转换程序（0.6.2）：发布件带镜像、缺省不启用；install-conv.sh 启用过的接着跑（换成本发布件的镜像） ----------
 conv_setup() {

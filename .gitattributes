@@ -15,3 +15,6 @@ deploy/eg/lsa-eg-upgrade text eol=lf
 deploy/eg/lsa-eg-upgrade-job text eol=lf
 # 0.18.0 join-egs 编排测试的假 ssh / docker（没有扩展名）
 deploy/test/join-egs/bin/* text eol=lf
+release-signers text eol=lf
+lsa-eg-upgrade text eol=lf
+lsa-eg-upgrade-job text eol=lf

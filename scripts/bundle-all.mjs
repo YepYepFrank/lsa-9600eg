@@ -6,6 +6,8 @@
 //   --eg   本库 pnpm pack:eg -- --images --debs 的产物；不给就现打一份（当前提交）
 //   --out  缺省 dist/bundle/
 //   --tag  版本号后缀（同一天重打用，如 r2 → 0.9.3-20261008-r2）
+//   --sign-key <发布私钥>  0.18.2：出完 .run 签名成 <run>.sig（scripts/sign-release.mjs；缺省 LSA_RELEASE_SIGN_KEY 或 ~/.lsa9600/release-sign/…）
+//   --no-sign  不签（只给沙箱 / 测试包用；发布件一律要签，没有私钥就失败）
 //   子站离线包带 kiosk/（--with-kiosk）时文件名是 LSA-9600SP-<版本>-kiosk-offline.run
 //
 // 负载 lsa9600sp-bundle/：setup.sh（安装入口）、sp/、eg/、debs/（Docker、compose 插件、chrony；两种角色共用）、docs/、
@@ -16,6 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { defaultKey, signRun } from './sign-release.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const argv = process.argv.slice(2)
@@ -24,6 +27,8 @@ const opt = name => {
   return i >= 0 ? argv[i + 1] : undefined
 }
 const run = (cmd, args, o = {}) => execFileSync(cmd, args, { stdio: 'inherit', cwd: ROOT, ...o })
+const NO_SIGN = argv.includes('--no-sign')
+const SIGN_KEY = opt('sign-key') ?? defaultKey()
 const out = (cmd, args, o = {}) => execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', ...o }).trim()
 
 /** 负载里不许出现的（协调会话定的清单）：私钥、.env、各柜 eg.yaml、TB 系统管理员口令、SSH 密钥、provision 产物、证书目录、VM 凭据 */
@@ -34,6 +39,7 @@ const FORBIDDEN = [
   [/(^|\/)eg\.ya?ml$/i, 'eg.yaml'],
   [/tb-sysadmin/i, 'tb-sysadmin'],
   [/id_(ed25519|rsa|ecdsa)/i, 'SSH 密钥'],
+  [/_(ed25519|rsa|ecdsa)$/i, '私钥（发布私钥 lsa9600-release_ed25519 等）'],
   [/(^|\/)tb\/provision\/out\/./, 'tb/provision/out/ 下的文件'],
   [/(^|\/)dist\/eg\//, 'dist/eg/'],
   [/(^|\/)docker\/tls\/./, 'docker/tls/ 下的文件'],
@@ -155,6 +161,8 @@ writeFileSync(join(B, 'setup.sh'), readFileSync(resolve(ROOT, 'deploy/bundle/set
 writeFileSync(join(B, 'upgrade-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/upgrade-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
 // 0.17.4：子站一条命令加柜（--role sp 时装到 /opt/lsa9600sp/join-egs.sh）
 writeFileSync(join(B, 'join-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/join-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
+// 0.18.2：发布公钥（子站 --role sp 时装到 /opt/lsa9600sp/release-signers，upgrade-egs.sh 先在子站验一遍签名；EG 那份在 eg/ 里）
+writeFileSync(join(B, 'release-signers'), readFileSync(resolve(ROOT, 'deploy/eg/release-signers'), 'utf8').replace(/\r\n/g, '\n'))
 writeFileSync(join(B, 'VERSION'), VERSION + '\n')
 const egImages = readFileSync(join(EG, 'IMAGES.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => `    ${l.split(' ')[0]}  ${l.split(' ')[1]}`)
 const spEnv = readFileSync(join(SP, 'lsa9600sp-backend/docker/.env.prod.example'), 'utf8')
@@ -226,9 +234,21 @@ if (!scan(listed, 'tar 清单')) {
   rmSync(join(OUT, `${RUN}.sha256`), { force: true })
   process.exit(1)
 }
+// 签名（0.18.2）：<run>.sig，签完用 deploy/eg/release-signers 验一遍
+rmSync(join(OUT, `${RUN}.sig`), { force: true })
+let signNote = '没签（--no-sign：只给测试用，EG 升级时记「未验签」）'
+if (!NO_SIGN) {
+  console.log('\n3. 签名')
+  try {
+    signNote = `${basename(RUN)}.sig（${signRun(join(OUT, RUN), { key: SIGN_KEY })}）`
+  } catch (e) {
+    console.error(`签名失败：${e.message}`)
+    process.exit(1)
+  }
+}
 // 重打到同一目录时先删旧的（Windows 上直接覆盖会 unlink 失败）
 rmSync(join(OUT, `${NAME}-安装说明.txt`), { force: true })
 cpSync(join(B, '安装说明.txt'), join(OUT, `${NAME}-安装说明.txt`))
 const size = statSync(join(OUT, RUN)).size
 console.log(`\n完成：${join(OUT, RUN)}（${(size / 1024 ** 3).toFixed(2)} GB）`)
-console.log(`  校验：${basename(RUN)}.sha256；说明：${NAME}-安装说明.txt`)
+console.log(`  校验：${basename(RUN)}.sha256；签名：${signNote}；说明：${NAME}-安装说明.txt`)
