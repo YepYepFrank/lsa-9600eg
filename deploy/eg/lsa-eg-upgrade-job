@@ -1,7 +1,7 @@
 #!/bin/bash
 # LSA-9600EG 升级任务（0.17.2）：由 lsa-eg-upgrade start 在后台起（systemd-run 或 setsid nohup），脱离 SSH 会话 ——
 # 子站断开、网络断了，这里照样做完；安装失败就自己回退，不会停在半路。不经 sudoers，子站调不到它。
-#   验签（0.18.2 起）：入口 lsa-eg-upgrade start 在起任务前就验了（签名不对直接拒绝、不起任务），结果写在 state 的 sig= / sig_note=；
+#   验签（0.18.1 起）：入口 lsa-eg-upgrade start 在起任务前就验了（签名不对直接拒绝、不起任务），结果写在 state 的 sig= / sig_note=；
 #   这里 verify 阶段只核对 sha256、把验签结果记进任务日志。
 #   阶段（/var/lib/lsa-upg/state 的 phase）：
 #     verify → install → check → done
@@ -116,7 +116,7 @@ sig="$(sget sig)"
 case "$sig" in
   ok) echo "已验签：发布方签名（$(sget sig_note)）" ;;
   nokey) echo "未验签：有签名文件，但$(sget sig_note)（下一版起这样会被拒绝）" ;;
-  *) sset sig unsigned; echo '未验签：这个安装文件没有签名（0.18.2 过渡期照装；下一版起要求发布件签名）' ;;
+  *) sset sig unsigned; echo '未验签：这个安装文件没有签名（0.18.1 过渡期照装；下一版起要求发布件签名）' ;;
 esac
 
 phase install

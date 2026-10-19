@@ -6,7 +6,7 @@
 #     沙箱里先从原镜像派生一个只改了版本号的镜像（docker build --network none），各 EG 上 docker save / load 同一个，ID 一致；
 #   - --break：把 IMAGES.txt 里 mosquitto 的镜像 ID 改错 —— install.sh 在第 3 步（已经把旧版挪成 .previous 之后）核对失败退出，测自动回退。
 #   - 顶层 setup.sh、join-egs.sh、upgrade-egs.sh 也换成本分支的（一键加柜测试：--join-key 要新 setup.sh 转给 install.sh）。
-#   - 发布公钥 release-signers（0.18.2）：eg/ 和顶层各一份，取本分支的；SIGNERS=<allowed_signers 文件> 换成测试公钥
+#   - 发布公钥 release-signers（0.18.1）：eg/ 和顶层各一份，取本分支的；SIGNERS=<allowed_signers 文件> 换成测试公钥
 #     （验签测试：测试包用测试私钥签，不用发布私钥 —— scripts/sign-release.mjs --key <测试私钥> --signers <同一个文件>）。
 #     出来的 .run 不带 .sig（旧的 .sig 删掉）：要签自己签。
 #   - KEEP_IMAGES=1：sp/ 和 eg/ 的镜像包都留着（给裸沙箱从头装子站、EG）；APPTAR=<docker save 的 .tar.gz>：放成 eg/images-it.tar.gz，

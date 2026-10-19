@@ -6,7 +6,7 @@
 //   --eg   本库 pnpm pack:eg -- --images --debs 的产物；不给就现打一份（当前提交）
 //   --out  缺省 dist/bundle/
 //   --tag  版本号后缀（同一天重打用，如 r2 → 0.9.3-20261008-r2）
-//   --sign-key <发布私钥>  0.18.2：出完 .run 签名成 <run>.sig（scripts/sign-release.mjs；缺省 LSA_RELEASE_SIGN_KEY 或 ~/.lsa9600/release-sign/…）
+//   --sign-key <发布私钥>  0.18.1：出完 .run 签名成 <run>.sig（scripts/sign-release.mjs；缺省 LSA_RELEASE_SIGN_KEY 或 ~/.lsa9600/release-sign/…）
 //   --no-sign  不签（只给沙箱 / 测试包用；发布件一律要签，没有私钥就失败）
 //   子站离线包带 kiosk/（--with-kiosk）时文件名是 LSA-9600SP-<版本>-kiosk-offline.run
 //
@@ -161,7 +161,7 @@ writeFileSync(join(B, 'setup.sh'), readFileSync(resolve(ROOT, 'deploy/bundle/set
 writeFileSync(join(B, 'upgrade-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/upgrade-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
 // 0.17.4：子站一条命令加柜（--role sp 时装到 /opt/lsa9600sp/join-egs.sh）
 writeFileSync(join(B, 'join-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/join-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
-// 0.18.2：发布公钥（子站 --role sp 时装到 /opt/lsa9600sp/release-signers，upgrade-egs.sh 先在子站验一遍签名；EG 那份在 eg/ 里）
+// 0.18.1：发布公钥（子站 --role sp 时装到 /opt/lsa9600sp/release-signers，upgrade-egs.sh 先在子站验一遍签名；EG 那份在 eg/ 里）
 writeFileSync(join(B, 'release-signers'), readFileSync(resolve(ROOT, 'deploy/eg/release-signers'), 'utf8').replace(/\r\n/g, '\n'))
 writeFileSync(join(B, 'VERSION'), VERSION + '\n')
 const egImages = readFileSync(join(EG, 'IMAGES.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => `    ${l.split(' ')[0]}  ${l.split(' ')[1]}`)
@@ -234,7 +234,7 @@ if (!scan(listed, 'tar 清单')) {
   rmSync(join(OUT, `${RUN}.sha256`), { force: true })
   process.exit(1)
 }
-// 签名（0.18.2）：<run>.sig，签完用 deploy/eg/release-signers 验一遍
+// 签名（0.18.1）：<run>.sig，签完用 deploy/eg/release-signers 验一遍
 rmSync(join(OUT, `${RUN}.sig`), { force: true })
 let signNote = '没签（--no-sign：只给测试用，EG 升级时记「未验签」）'
 if (!NO_SIGN) {

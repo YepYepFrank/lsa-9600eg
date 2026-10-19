@@ -1,9 +1,9 @@
-// 给一键安装文件签名（0.18.2）：在 <run> 旁边出分离签名 <run>.sig（ssh-keygen -Y sign，ed25519），签完马上用仓库里的发布公钥验一遍。
+// 给一键安装文件签名（0.18.1）：在 <run> 旁边出分离签名 <run>.sig（ssh-keygen -Y sign，ed25519），签完马上用仓库里的发布公钥验一遍。
 //
 //   node scripts/sign-release.mjs <LSA-9600SP-…-offline.run> [--key <私钥>] [--signers <allowed_signers>]
 //
 //   --key      发布私钥；缺省环境变量 LSA_RELEASE_SIGN_KEY，再缺省 ~/.lsa9600/release-sign/lsa9600-release_ed25519
-//              私钥只在打包机：不进仓库、不进包（bundle-all 的违禁扫描也拦 id_ed25519 / .key）。丢了或换人打包：见 docs/子站批量升级EG.md §6
+//              私钥只在打包机：不进仓库、不进包（bundle-all 的违禁扫描也拦 id_ed25519 / .key）。丢了或换人打包：见 docs/子站批量升级EG.md §7
 //   --signers  验签用的公钥表，缺省 deploy/eg/release-signers（随 EG 发布件装到 /opt/lsa-eg/、随一键安装文件装到子站 /opt/lsa9600sp/）
 //              签完验不过（私钥和仓库里的公钥不是一对）就删掉 .sig、退出 1
 // bundle-all.mjs 出完 .run 自动调这里；老的 .run 补签也直接用。

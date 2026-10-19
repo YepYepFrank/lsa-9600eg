@@ -1,7 +1,7 @@
 #!/bin/bash
-# 批量升级验签验收（0.18.2）：两台一次性特权 ubuntu:24.04（sigsp = 子站主机、sigeg = EG，网络 lsa-sig；名字和 it-lib.sh 的 itsp / iteg 错开），
+# 批量升级验签验收（0.18.1）：两台一次性特权 ubuntu:24.04（sigsp = 子站主机、sigeg = EG，网络 lsa-sig；名字和 it-lib.sh 的 itsp / iteg 错开），
 # 都用【上一版正式一键安装文件】从头装、一键加柜接好，然后：
-#   子站换上本分支的 upgrade-egs.sh + 测试发布公钥（= 子站先升到 0.18.2 的样子），用本分支 EG 脚本做的测试包（it-mkrun.sh，测试私钥签名）：
+#   子站换上本分支的 upgrade-egs.sh + 测试发布公钥（= 子站先升到 0.18.1 的样子），用本分支 EG 脚本做的测试包（it-mkrun.sh，测试私钥签名）：
 #   A  --plan sig1（EG 还是老入口 4）：签名「已验」、验签列「子站验」
 #   B  升到 sig1：成功，汇总「子站已验签，EG 是老入口没验」
 #   C  --plan sig2（EG 已是入口 5）：验签列「EG 验」
@@ -113,7 +113,7 @@ cp "$W/runs/$R2" "$W/runs/d/$R2" && printf 'x' >> "$W/runs/d/$R2" && cp "$W/runs
 cp "$W/runs/$R2" "$W/runs/e/$R2" && ssh-keygen -Y sign -q -f "$W/evilkey" -n lsa9600-release "$W/runs/e/$R2" 2>/dev/null
 cp "$W/runs/$R2" "$W/runs/g/$R2"
 ok '篡改件：d（.run 多 1 字节）、e（别人签的）、g（没签名）'
-# 子站换上本分支的 upgrade-egs.sh、测试发布公钥（= 子站先升到 0.18.2）
+# 子站换上本分支的 upgrade-egs.sh、测试发布公钥（= 子站先升到 0.18.1）
 sed 's/\r$//' "$ROOT/deploy/sp/upgrade-egs.sh" | docker exec -i "$SPC" sh -c 'cat > /opt/lsa9600sp/upgrade-egs.sh && chmod 755 /opt/lsa9600sp/upgrade-egs.sh'
 docker exec -i "$SPC" sh -c 'cat > /opt/lsa9600sp/release-signers' < "$W/test-signers"
 

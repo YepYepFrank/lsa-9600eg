@@ -8,14 +8,14 @@
 # 不管子站发什么，sshd 都只运行上面的 command=；子站发的命令行整句作为第 1 个参数传进来，这里自己解析，只认：
 #   hello                       入口版本、EG 版本、可用空间、当前任务、正在做的别的维护（预检用）
 #   put <sha256> <字节数>        从 stdin 收安装文件到 /var/lib/lsa-upg/incoming/<sha256>.run：先查空间，收完核对字节数与 sha256，不对就删
-#   put-sig <sha256> <字节数>    （0.18.2）从 stdin 收那个安装文件的分离签名（ssh-keygen -Y sign 出的 <run>.sig，≤ 16 KB）到 incoming/<sha256>.run.sig；
+#   put-sig <sha256> <字节数>    （0.18.1）从 stdin 收那个安装文件的分离签名（ssh-keygen -Y sign 出的 <run>.sig，≤ 16 KB）到 incoming/<sha256>.run.sig；
 #                               先 put 再 put-sig（put 会清掉 incoming 里的旧文件）
 #   start <sha256>              核对后开始升级（后台任务，SSH 断了照跑）：文件在、sha256 对、签名（见下）、是 LSA 的一键安装文件（带 EG 发布件）、
 #                               版本不比现在的低；同时只跑一个
-#     验签（0.18.2 起）：用本机发布件里的发布公钥 /opt/lsa-eg/release-signers（上一次安装带来的，不是这个新安装文件里的）
+#     验签（0.18.1 起）：用本机发布件里的发布公钥 /opt/lsa-eg/release-signers（上一次安装带来的，不是这个新安装文件里的）
 #     ssh-keygen -Y verify。结果写进 state 的 sig=：ok（验过）/ unsigned（没有 .sig）/ nokey（有 .sig 但本机没有发布公钥）；
 #     bad（签名不对：不是发布方签的或文件被改过）一律拒绝、删掉收到的文件。
-#     过渡期（0.18.2）：没有 .sig 照装、记 unsigned；下一版起 SIG_REQUIRED=1（没签名 / 没公钥也拒）。现场要提前强制：.env 里 EG_UPG_SIG_REQUIRED=1
+#     过渡期（0.18.1）：没有 .sig 照装、记 unsigned；下一版起 SIG_REQUIRED=1（没签名 / 没公钥也拒）。现场要提前强制：.env 里 EG_UPG_SIG_REQUIRED=1
 #   status                      当前 / 最近一次任务的状态（key=value）
 #   log [行数]                  任务日志最后几行（缺省 50，最多 500）
 #   drop <sha256>               删掉收到的安装文件（连同签名）
@@ -33,7 +33,7 @@
 set -euo pipefail
 umask 077
 # 4 = 0.18.0 舱室 EG（EG 0.7.0）：hello 报 unit=，apply-config 按单元、认 force
-# 5 = 0.18.2：put-sig、start 验签、hello 报 sig_keys / sig_required（子站 upgrade-egs.sh 看到 ≥ 5 才传 .sig）
+# 5 = 0.18.1：put-sig、start 验签、hello 报 sig_keys / sig_required（子站 upgrade-egs.sh 看到 ≥ 5 才传 .sig）
 ENTRY_VERSION=5
 EG=/opt/lsa-eg
 ST=/var/lib/lsa-upg
@@ -44,7 +44,7 @@ MAX_BYTES=$((8 * 1024 * 1024 * 1024))
 CFG_IN="$ST/config-in"
 CFG_NEW="$ST/config-new"
 MAX_CFG=$((1024 * 1024))
-# 发布签名（0.18.2）：公钥随 EG 发布件装在 $EG/release-signers；身份与命名空间和打包侧（scripts/sign-release.mjs）一致
+# 发布签名（0.18.1）：公钥随 EG 发布件装在 $EG/release-signers；身份与命名空间和打包侧（scripts/sign-release.mjs）一致
 SIGNERS="$EG/release-signers"
 SIG_ID=lsa9600-release
 SIG_NS=lsa9600-release

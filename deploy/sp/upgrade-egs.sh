@@ -16,10 +16,10 @@
 # 安全：EG 上的专用账号 lsa-upg 只认这台子站、只能进 EG 的升级入口（交安装文件、开始、查进度），不能执行别的命令；
 #   EG 上授权：sudo bash /opt/lsa-eg/install.sh --upgrade-key '<--keygen 打印的公钥>'，撤销 --drop-upgrade-key。
 #   key 在 /opt/lsa9600sp/keys/（root 600）：不要拷走。
-# 签名（0.18.2 起）：安装文件旁边的 <run>.sig（发布方 ssh-keygen -Y sign 出的）自动一起用：
+# 签名（0.18.1 起）：安装文件旁边的 <run>.sig（发布方 ssh-keygen -Y sign 出的）自动一起用：
 #   先在子站用 /opt/lsa9600sp/release-signers 验一遍 —— 签名不对整批不开始（--plan 也报 !!）；
-#   EG 入口是 0.18.2 起的（entry ≥ 5）就把 .sig 一起传过去，EG 用它自己装着的发布公钥再验，不对就拒绝、不装。
-#   过渡期：没有 .sig 照升，汇总写「未验签」；EG 是老入口（升到 0.18.2 的这一次）收不了 .sig，只有子站验过。下一版起没签名不升。
+#   EG 入口是 0.18.1 起的（entry ≥ 5）就把 .sig 一起传过去，EG 用它自己装着的发布公钥再验，不对就拒绝、不装。
+#   过渡期：没有 .sig 照升，汇总写「未验签」；EG 是老入口（升到 0.18.1 的这一次）收不了 .sig，只有子站验过。下一版起没签名不升。
 #   有了签名，持升级 key 的人也只能让 EG 装发布方签过的安装文件（仍然可以装旧一点的签名包，但不降级：版本不比现在的低）。
 # 每台的流程：拷安装文件（EG 上核对 sha256 与空间）→ 开始（EG 自己在后台做，失败自动回退）→ 每 10 s 查进度 →
 #   EG 自查（版本、7 个容器、本地 TB、连上子站）→ 子站核对（子站 TB 上 EG 报的版本、上送、配置版本没丢）→ 删掉 EG 上的拷贝。
@@ -77,7 +77,7 @@ local_sig() {
   SIGST=unsigned SIGMSG="旁边没有 $(basename "$f").sig"
   [ -f "$f.sig" ] || return 0
   if [ "$(awk '!/^[[:space:]]*(#|$)/ { n++ } END { print n + 0 }' "$SIGNERS" 2>/dev/null || echo 0)" = 0 ]; then
-    SIGST=nokey SIGMSG="子站没有发布公钥 $SIGNERS（子站先用 0.18.2 起的安装文件 --role sp 升级）"; return 0
+    SIGST=nokey SIGMSG="子站没有发布公钥 $SIGNERS（子站先用 0.18.1 起的安装文件 --role sp 升级）"; return 0
   fi
   if out="$(ssh-keygen -Y verify -f "$SIGNERS" -I "$SIG_ID" -n "$SIG_NS" -s "$f.sig" < "$f" 2>&1)"; then
     SIGST=ok SIGMSG="$(grep -o 'SHA256:[A-Za-z0-9+/=]*' <<< "$out" | head -1)"
@@ -187,7 +187,7 @@ if [ "$MODE" = resume ]; then
   [ -f "$BD/meta" ] || { echo "没有批次 $BATCH（--list 看有哪些）" >&2; exit 1; }
   RUN="$(sed -n 's/^run=//p' "$BD/meta")"; SHA="$(sed -n 's/^sha=//p' "$BD/meta")"; SIZE="$(sed -n 's/^size=//p' "$BD/meta")"  # sete-ok：上面已核对 meta 存在，本脚本不用 set -e
   TO="$(sed -n 's/^to=//p' "$BD/meta")"; PAR="$(sed -n 's/^parallel=//p' "$BD/meta")"; CANARY="$(sed -n 's/^canary=//p' "$BD/meta")"  # sete-ok
-  SIGST="$(sed -n 's/^sig=//p' "$BD/meta")"; SIGMSG="$(sed -n 's/^sig_note=//p' "$BD/meta")"; SIGST="${SIGST:-unsigned}"  # sete-ok（0.18.2 前的批次没有，当未签）
+  SIGST="$(sed -n 's/^sig=//p' "$BD/meta")"; SIGMSG="$(sed -n 's/^sig_note=//p' "$BD/meta")"; SIGST="${SIGST:-unsigned}"  # sete-ok（0.18.1 前的批次没有，当未签）
   rm -f "$BD/STOP.resume"
 else
   [ -f "$RUN" ] || { echo "没有安装文件：$RUN" >&2; exit 1; }
@@ -210,7 +210,7 @@ SIGSIZE=0; [ -f "$RUN.sig" ] && SIGSIZE="$(stat -c %s "$RUN.sig")"
 case "$SIGST" in
   ok) SIGLINE="已验（发布方 $SIGMSG）" ;;
   nokey) SIGLINE="!! 有 .sig 但子站验不了：$SIGMSG —— EG 上照样验" ;;
-  *) SIGLINE='没有签名（0.18.2 过渡期照升，汇总写「未验签」；下一版起没签名不升）' ;;
+  *) SIGLINE='没有签名（0.18.1 过渡期照升，汇总写「未验签」；下一版起没签名不升）' ;;
 esac
 
 # ---------- 清单 + 预检 ----------
@@ -287,7 +287,7 @@ for c in "${TARGETS[@]}"; do
   if [ "$sreq" = 1 ] && [ "$SIGST" != ok ]; then row "$c" "$on" "$cur" '!!' "这台 EG 要求发布件签名（EG_UPG_SIG_REQUIRED=1），安装文件$([ "$SIGST" = unsigned ] && echo '没有 .sig' || echo '的签名子站没验过')"; BAD=1; continue; fi
   note=''; [ "$(vrel "$cur" "$TO")" = eq ] && note='同版本号、不同构建（重打；构建号分不出新旧，确认是要装的那个）'
   case "$VS" in
-    子站验) note="${note:+$note；}EG 是老入口（升到 0.18.2 的这一次），收不了签名：只有子站验过" ;;
+    子站验) note="${note:+$note；}EG 是老入口（升到 0.18.1 的这一次），收不了签名：只有子站验过" ;;
     未验) note="${note:+$note；}子站和 EG 都验不了签名（$SIGMSG）" ;;
   esac
   [ "$MODE" = resume ] && note='续查 / 接着做'
@@ -381,10 +381,10 @@ up_one() {
     sleep 15
   done
   sshx "$h" "drop $SHA" >/dev/null 2>&1 || true
-  # 签名：EG 报的 sig（0.18.2 起的入口：ok / unsigned / nokey；老入口一律 unsigned）+ 子站自己验的结果
+  # 签名：EG 报的 sig（0.18.1 起的入口：ok / unsigned / nokey；老入口一律 unsigned）+ 子站自己验的结果
   case "$sig:$SIGST" in
     ok:*) signote='；已验签（EG）' ;;
-    *:ok) signote='；子站已验签，EG 是老入口没验（升到 0.18.2 以后的下一次起 EG 也验）' ;;
+    *:ok) signote='；子站已验签，EG 是老入口没验（升到 0.18.1 以后的下一次起 EG 也验）' ;;
     nokey:*) signote='；安装文件未验签（EG 和子站都没有发布公钥）' ;;
     *) signote='；安装文件未验签（没有 .sig；下一版起要求签名）' ;;
   esac

@@ -471,7 +471,7 @@ upg_status() {
       else more="（升级 $(upg_st job)，$(upg_st from) → $(upg_st to)）"; fi
     fi
     echo "子站批量升级：已授权（lsa-upg，只认 $(upg_from_now)）；最近一次任务：${ph:-没有}${ph:+$more}"
-    # 0.18.2 发布签名：子站传来的安装文件用本机 release-signers 验签（lsa-eg-upgrade 开头）
+    # 0.18.1 发布签名：子站传来的安装文件用本机 release-signers 验签（lsa-eg-upgrade 开头）
     local nk fp
     nk="$(awk '!/^[[:space:]]*(#|$)/ { n++ } END { print n + 0 }' release-signers 2>/dev/null || echo 0)"
     if [ "$nk" -gt 0 ] 2>/dev/null; then
