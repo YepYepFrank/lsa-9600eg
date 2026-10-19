@@ -233,7 +233,7 @@ sudo bash /opt/lsa-eg/install.sh --join-key '<那一行>'        # 已经装好�
 | 动作 | 做什么 | 校验 |
 |---|---|---|
 | `put-config <sha256> <字节>` | 收配置包（tar.gz） | ≤ 1 MB、sha256 对；包里只许 `eg.yaml`（必须有）、`sp-ca.pem`、`conv.args` 三个普通文件 |
-| `apply-config <sha256> [force]` | 后台任务换配置：备份 → 换上 → install.sh 起全部 → 自查（7 个容器、agent 连上子站，最多 240 s）→ 包里带 conv.args 就设转换程序 | eg.yaml 的子站地址要和 join.json 一致（老办法接入的认现在 eg.yaml 里的）；已接入的单元不能改（比 eg.yaml 的 `unit.code`，照旧一柜一台的比柜号；例外：拆柜 —— 本机照旧接在柜 X、配置包是 X 的某个单元，原来那台改作单元；子站 `join-egs.sh --force` 带 `force`）；和现在的配置一模一样就不换（不重启）。**失败自动换回**：原来待接入的回到待接入，已接入的回到旧配置（state 记 rolled-back） |
+| `apply-config <sha256> [force]` | 后台任务换配置：备份 → 换上 → install.sh 起全部 → 自查（7 个容器、agent 连上子站，最多 240 s）→ 单元变了（拆柜改作单元、force 改接）且转换程序配过：`install-conv.sh --rebind` 改挂设备名、重启转换程序（clientId 跟着换）→ 包里带 conv.args 就设转换程序 | eg.yaml 的子站地址要和 join.json 一致（老办法接入的认现在 eg.yaml 里的）；已接入的单元不能改（比 eg.yaml 的 `unit.code`，照旧一柜一台的比柜号；例外：拆柜 —— 本机照旧接在柜 X、配置包是 X 的某个单元，原来那台改作单元；子站 `join-egs.sh --force` 带 `force`）；和现在的配置一模一样就不换（不重启）。**失败自动换回**：原来待接入的回到待接入，已接入的回到旧配置（state 记 rolled-back） |
 | `conv <选项…>` | 调 install-conv.sh | 只认 `--serial`（`/dev/ttyS<n>`、`/dev/ttyUSB<n>`、`/dev/ttyACM<n>`、`/dev/serial/by-id/…`）、`--sensors`（pd / gas / temperature / arc / infrared）、`--addr`（名字=1–247）、`--dev`（设备名要在 eg.yaml 里）、`--baud`（标准波特率）、`--off`、`--status`；不认的整句拒绝，参数按数组传、不经 shell |
 | `drop-tunnel` | 撤隧道账号 lsa-sp（同 `--drop-sp-key`） | 升级授权留着 |
 

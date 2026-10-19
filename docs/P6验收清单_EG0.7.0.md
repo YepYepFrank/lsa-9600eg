@@ -52,7 +52,7 @@
 
 ## 5. 拆柜：`--split` 与断数窗口（两边）
 
-AH07 照旧一柜一台、0.6.3 EG 在线，拆成 AH07-A / AH07-B：原来那台先升到 0.7.0、在 EG 上补跑一次 `install.sh --join-key '<本子站那一行>'` 后改作 A；另一台裸 EG 装 0.7.0、待接入作 B。
+AH07 照旧一柜一台、0.6.3 EG 在线，拆成 AH07-A / AH07-B：原来那台先升到 0.7.0、在 EG 上补跑一次 `install.sh --join-key '<本子站那一行>'` 后改作 A；另一台裸 EG 装 0.7.0、待接入作 B。原来那台拆前启用转换程序（`install-conv.sh --sim`，整柜：温湿度 → SAM-AH07-A、其余 → SAM-AH07-B），看拆后自动改挂（6.3a）。
 **拆之前**：子站侧开探针每 1 s 记 AH07 的最新遥测时间戳；记下 AH07 旧 `eg.yaml` 的令牌（`tb/provision/out/eg/AH07/eg.yaml`）、子站 TB 上 `EG-AH07` 的设备 ID 和 SAM / 电表 / 颗粒物的设备 ID，供第 6 节对照。
 
 | # | 项 | 过的标准 |
@@ -76,6 +76,7 @@ AH07 照旧一柜一台、0.6.3 EG 在线，拆成 AH07-A / AH07-B：原来那�
 | 6.1 | `/opt/lsa-eg/config/eg.yaml` | `schema: 2`；`unit.code` = AH07-A / AH07-B，`unit.at` 是舱室名，`unit.index` 与子站 `unitIndex` 一致；`eg.name` = `EG-AH07-A` / `EG-AH07-B`；`cabinet.code` 仍是 AH07；`devices` 只有本单元的设备（两台合起来 = 原来 AH07 的全部，不重不漏）；与子站 `tb/provision/out/eg/AH07-A/eg.yaml` sha256 一致 |
 | 6.2 | 令牌 | A、B 的令牌各不相同，都不等于拆前记下的 AH07 旧令牌；原来那台（A）的 `config/.join-backup-*` 里留着旧 eg.yaml（schema 1）；eg.yaml 权限 / 属主同 0.17.4（不比原来宽） |
 | 6.3 | 身份都换成单元号 | `/api/status` 单元号 AH07-A；hello `unit=AH07-A cabinet=AH07 entry=4`；clientId `tb-gateway-` / `eg-uplink-` / `eg-agent-` / `eg-video-` / `lsa-conv-` 后面都是 AH07-A；mediamtx 路径 `AH07-A…`；新出的证据 `EV-AH07-A-…`、其 `cabinetId` 仍为 AH07；事件走 `/ext/eg/AH07-A/events` |
+| 6.3a | 原来那台的转换程序跟着换单元（摸底查出，进 0.7.0） | A 的换配置任务日志有 `conv-rebind：单元 AH07 → AH07-A`；各路传感器、gateway.yaml 都改挂 SAM-AH07-A，从站地址、开关、串口不变；转换程序重启过，日志 `client_id=lsa-conv-AH07-A`；`install.sh --status` 与 `install-conv.sh --status` 都不提示「还按旧单元跑」；子站 SAM-AH07-A 有局放 / 气体 / 弧光数据 |
 
 **子站侧**
 

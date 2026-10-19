@@ -84,6 +84,14 @@ if [ "$(sget kind)" = config ]; then
   done
   sset check_s "$(( $(date +%s) - t1 ))"
   [ -z "$problems" ] || restore "${problems%；}"
+  # 单元换了（拆柜：原来那台改作某个单元）：转换程序还按旧单元的设备名、旧 clientId 跑 —— 按新 eg.yaml 改挂并重启它。
+  # 现场接线（从站地址、开关、串口）不动；包里另带了 conv.argv 的，下面照常再按参数设
+  if [ -n "$FROM" ] && [ "$FROM" != "$TO" ] && [ -f "$EG/config/conv/gateway.yaml" ]; then
+    phase conv-rebind "单元 $FROM → $TO：转换程序按新 eg.yaml 改挂、重启"
+    bash "$EG/install-conv.sh" --rebind < /dev/null; rrc=$?
+    sset conv_rebind_rc "$rrc"
+    [ "$rrc" = 0 ] || echo "!! 转换程序没改挂好（退出码 $rrc）：配置已经换好，转换程序之后在 EG 上 sudo bash $EG/install-conv.sh --rebind"
+  fi
   if [ -f "$D/conv.argv" ]; then
     phase conv
     mapfile -t cargs < "$D/conv.argv"
