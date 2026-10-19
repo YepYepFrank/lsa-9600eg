@@ -11,10 +11,12 @@
 #   G  没有 .sig：--plan --force 验签列「未签名」，签名行写过渡期照升
 #   H  EG 上 EG_UPG_SIG_REQUIRED=1：没签名的 --plan 报 !!；EG 入口直接 start 也拒
 # 不下载：ubuntu:24.04 用本机的；openssh / sudo 的 deb 用 DEBS 目录（0.17.2 批准下载过的那批）；Docker 与镜像用安装文件里的。
-#   bash deploy/test/upgrade-sig-test.sh <上一版 .run> <工作目录> <放 openssh deb 的目录> [--keep]
+#   bash deploy/test/upgrade-sig-test.sh <子站用的上一版 .run> <EG 用的上一版 .run> <工作目录> <放 openssh deb 的目录> [--keep]
+# 子站和 EG 可以给不同的上一版（0.18.0 r1 的样板模型里 T1 三个单元、北向测点超过一个柜块，子站全新装时 lsa-ext 起不来 ——
+#   验签不管子站版本，子站可以用 0.17.4 r1；测试包按 EG 的那个做）。join-egs.sh 老的认 --cabinet、0.18.0 起认 --unit，自动选。
 set -uo pipefail
 export MSYS_NO_PATHCONV=1
-OLD="${1:?上一版 .run}"; W="${2:?工作目录}"; DEBS="${3:?openssh deb 目录}"
+SPOLD="${1:?子站用的上一版 .run}"; OLD="${2:?EG 用的上一版 .run}"; W="${3:?工作目录}"; DEBS="${4:?openssh deb 目录}"
 KEEP=0; for a in "$@"; do [ "$a" = --keep ] && KEEP=1; done
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"
 source "$HERE/it-lib.sh"
@@ -22,6 +24,7 @@ NET=lsa-sig; SPC=sigsp; EGC=sigeg; IT_NET=$NET   # ip_of（it-lib.sh）按 IT_NE
 mkdir -p "$W/runs" && W="$(cd "$W" && pwd)"
 wp() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
 OLDDIR="$(wp "$(dirname "$OLD")")"; OLDRUN="$(basename "$OLD")"
+SPDIR="$(wp "$(dirname "$SPOLD")")"; SPRUN="$(basename "$SPOLD")"
 LOG="$W/test.log"; : > "$LOG"
 fail=0 n_ok=0
 ok() { echo "  ✓ $*" | tee -a "$LOG"; n_ok=$((n_ok + 1)); }
@@ -36,36 +39,52 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-say "== 0. 沙箱 $SPC / $EGC（网络 $NET；上一版 $OLDRUN）"
+say "== 0. 沙箱 $SPC / $EGC（网络 $NET；子站 $SPRUN，EG $OLDRUN）"
+if [ -z "${REUSE:-}" ]; then
 docker rm -f -v "$SPC" "$EGC" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1
 docker network create "$NET" >/dev/null || exit 1
 for c in "$SPC" "$EGC"; do
   docker run -d --pull never --privileged --name "$c" --hostname "$c" --network "$NET" \
-    -v /var/lib/docker -v /var/lib/containerd -v "$OLDDIR:/rel:ro" -v "$(wp "$W"):/w" -v "$(wp "$DEBS"):/debs:ro" ubuntu:24.04 sleep infinity >/dev/null || exit 1
+    -v /var/lib/docker -v /var/lib/containerd -v "$OLDDIR:/rel:ro" -v "$SPDIR:/rel-sp:ro" -v "$(wp "$W"):/w" -v "$(wp "$DEBS"):/debs:ro" ubuntu:24.04 sleep infinity >/dev/null || exit 1
   it_shim "$c"
   docker exec "$c" sh -c 'dpkg -i /debs/*.deb >/var/log/debs.log 2>&1' || { bad "$c 装 openssh / sudo deb 失败"; exit 1; }
 done
 egx sh -c 'ssh-keygen -A >/dev/null && mkdir -p /run/sshd && /usr/sbin/sshd' || { bad 'EG 起不了 sshd'; exit 1; }
+# 精简 ubuntu 没有 openssl / curl（子站主机 Ubuntu Server 有）：替身用子站离线包里的镜像跑（镜像由安装导入，用到时已经在）
+docker exec -i "$SPC" sh -c 'cat > /usr/local/bin/openssl && chmod +x /usr/local/bin/openssl' <<'EOF'
+#!/bin/sh
+# 沙箱替身：子站离线包里 postgres:16 镜像的 openssl（upgrade-sig-test.sh）
+exec docker run --rm -i -v /opt:/opt -v /tmp:/tmp -v /root:/root -v /etc:/host-etc:ro -w "$PWD" postgres:16 openssl "$@"
+EOF
+docker exec -i "$SPC" sh -c 'cat > /usr/local/bin/curl && chmod +x /usr/local/bin/curl' <<'EOF'
+#!/bin/sh
+# 沙箱替身：子站离线包里 nginx:1.27-alpine 镜像的 curl（upgrade-sig-test.sh）
+exec docker run --rm -i --network host -v /opt:/opt -v /tmp:/tmp -w "$PWD" --entrypoint curl nginx:1.27-alpine "$@"
+EOF
+fi
 SPIP="$(ip_of "$SPC")"; EGIP="$(ip_of "$EGC")"
 [ -n "$SPIP" ] && [ -n "$EGIP" ] || { bad "取不到沙箱地址"; exit 1; }
 say "  子站 $SPIP，EG $EGIP；ssh $(spx ssh -V 2>&1)"
 
-say; say "== 1. 子站：$OLDRUN --role sp"
+if [ -z "${REUSE:-}" ]; then   # REUSE=1：沙箱已装好（上次 --keep 留下的），从接入往后做
+say; say "== 1. 子站：$SPRUN --role sp"
 t0=$(date +%s)
-spx bash "/rel/$OLDRUN" --role sp --yes --ip "$SPIP" > "$W/sp-install.log" 2>&1; rc=$?
+spx bash "/rel-sp/$SPRUN" --role sp --yes --ip "$SPIP" > "$W/sp-install.log" 2>&1; rc=$?
 [ "$rc" = 0 ] && ok "子站装好（$(( $(date +%s) - t0 )) s）" || { bad "子站安装 rc $rc（$W/sp-install.log）"; tail -20 "$W/sp-install.log"; exit 1; }
 
 say; say "== 2. EG：--role eg --join-key，子站 join-egs.sh 接入"
-JK="$(spx bash /opt/lsa9600sp/join-egs.sh --keygen --sp-addr "$SPIP" 2>&1 | grep -o -- "--join-key '[^']*'" | head -1 | sed "s/^--join-key '//; s/'\$//")"
+JK="$(spx bash /opt/lsa9600sp/join-egs.sh --keygen --sp-addr "$SPIP" 2>&1 | grep -o -- "--join-key '[^']*'" | head -1 | sed "s/^--join-key '//; s/'\$//" || true)"  # sete-ok
 [ -n "$JK" ] && ok 'join-key 拿到' || { bad '没拿到 join-key'; exit 1; }
 t0=$(date +%s)
 egx bash "/rel/$OLDRUN" --role eg --yes --join-key "$JK" > "$W/eg-install.log" 2>&1; rc=$?
 [ "$rc" = 0 ] && ok "EG 装好（$(( $(date +%s) - t0 )) s，$(egx cat /opt/lsa-eg/VERSION)）" || { bad "EG 安装 rc $rc"; tail -20 "$W/eg-install.log"; exit 1; }
-U="$(spx docker exec lsa-ext node bin/eg-list.mjs --json 2>/dev/null | spx docker exec -i lsa-ext node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);console.log((o.egs||[]).map(e=>e.code)[0]||"")})')"
+fi
+U="$(spx docker exec lsa-ext node bin/eg-list.mjs --json 2>/dev/null | docker exec -i "$SPC" docker exec -i lsa-ext node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);console.log((o.egs||[]).map(e=>e.code)[0]||"")})')"
 [ -n "$U" ] || { bad '子站 eg-list 里没有 EG'; exit 1; }
 t0=$(date +%s)
-spx bash /opt/lsa9600sp/join-egs.sh --unit "$U" --eg "$EGIP" > "$W/join.log" 2>&1; rc=$?
-[ "$rc" = 0 ] && ok "join-egs.sh --unit $U 接好（$(( $(date +%s) - t0 )) s）" || { bad "join-egs rc $rc"; tail -30 "$W/join.log"; exit 1; }
+JOPT=--cabinet; spx grep -q -- '--unit AH' /opt/lsa9600sp/join-egs.sh && JOPT=--unit
+spx bash /opt/lsa9600sp/join-egs.sh "$JOPT" "$U" --eg "$EGIP" > "$W/join.log" 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "join-egs.sh $JOPT $U 接好（$(( $(date +%s) - t0 )) s）" || { bad "join-egs rc $rc"; tail -30 "$W/join.log"; exit 1; }
 OLDV="$(egx cat /opt/lsa-eg/VERSION)"
 
 say; say "== 3. 测试包：派生应用镜像（只改版本号）+ it-mkrun.sh + 测试私钥签名"
@@ -86,6 +105,8 @@ V1="${OLDV%%-*}"; V1="${V1%.*}.$(( ${V1##*.} + 1 ))-sig1"; V2="${V1%-sig1}-sig2"
 R1=LSA-9600SP-sig1-offline.run; R2=LSA-9600SP-sig2-offline.run
 mkrun "$V1" "$R1" && sign "$W/runs/$R1" && ok "$R1（EG $V1）签好" || { bad "做 $R1 失败（$W/mkrun.log）"; exit 1; }
 mkrun "$V2" "$R2" && sign "$W/runs/$R2" && ok "$R2（EG $V2）签好" || { bad "做 $R2 失败"; exit 1; }
+# 升到 sig1 时 install.sh 会清掉没在用的应用镜像：sig2 的派生镜像先存一份，F 之前再导回（save / load 镜像 ID 不变）
+egx docker save -o /w/runs/app-sig2.tar "lsa-eg-app:$V2" || { bad "存不了 lsa-eg-app:$V2"; exit 1; }
 # 篡改件：D 末尾多 1 字节（.sig 用真的）；E 别人的 key 签；G 没签名
 mkdir -p "$W/runs/d" "$W/runs/e" "$W/runs/g"
 cp "$W/runs/$R2" "$W/runs/d/$R2" && printf 'x' >> "$W/runs/d/$R2" && cp "$W/runs/$R2.sig" "$W/runs/d/"
@@ -135,10 +156,11 @@ done
 egx tail -n 4 /var/log/lsa-upg.log | sed 's/^/    EG 审计：/' | tee -a "$LOG"
 
 say; say "== F. 升到 $V2（真签名）"
+egx docker image inspect "lsa-eg-app:$V2" >/dev/null 2>&1 || egx docker load -q -i /w/runs/app-sig2.tar >/dev/null
 out="$(UP --run "/w/runs/$R2" 2>&1)"; rc=$?; echo "$out" | tail -6 | tee -a "$LOG" | sed 's/^/    /'
 [ "$rc" = 0 ] && [ "$(egx cat /opt/lsa-eg/VERSION)" = "$V2" ] && ok "升级成功（$V2）" || bad "升级 rc $rc，EG $(egx cat /opt/lsa-eg/VERSION)"
 grep -q '已验签（EG）' <<< "$(summary_line)" && ok '汇总：已验签（EG）' || bad "汇总签名说明不对：$(summary_line)"
-[ "$(egx sed -n 's/^sig=//p' /var/lib/lsa-upg/state | tail -1)" = ok ] && ok "EG state sig=ok（$(egx sed -n 's/^sig_note=//p' /var/lib/lsa-upg/state | tail -1)）" || bad 'EG state sig 不是 ok'
+[ "$(egx sed -n 's/^sig=//p' /var/lib/lsa-upg/state | tail -1)" = ok ] && ok "EG state sig=ok（$(egx sed -n 's/^sig_note=//p' /var/lib/lsa-upg/state | tail -1)）" || bad 'EG state sig 不是 ok'  # sete-ok
 
 say; say "== G. 没有 .sig（过渡期）"
 out="$(UP --run "/w/runs/g/$R2" --plan --force 2>&1)"; rc=$?; echo "$out" | tee -a "$LOG" | sed 's/^/    /'
@@ -146,7 +168,7 @@ out="$(UP --run "/w/runs/g/$R2" --plan --force 2>&1)"; rc=$?; echo "$out" | tee 
 
 say; say "== H. EG 提前强制（.env EG_UPG_SIG_REQUIRED=1）"
 egx sh -c 'echo EG_UPG_SIG_REQUIRED=1 >> /opt/lsa-eg/.env'
-out="$(UP --run "/w/runs/g/$R2" --plan --force 2>&1)"; rc=$?; echo "$out" | grep -E "^$U " | tee -a "$LOG" | sed 's/^/    /'
+out="$(UP --run "/w/runs/g/$R2" --plan --force 2>&1)"; rc=$?; echo "$out" | grep -E "^$U " | tee -a "$LOG" | sed 's/^/    /'  # sete-ok（脚本不用 set -e）
 [ "$rc" != 0 ] && grep -q '要求发布件签名' <<< "$out" && ok "--plan 报 !!（rc $rc）" || bad "--plan 没报（rc $rc）"
 sha="$(sha256sum "$W/runs/g/$R2" | cut -d' ' -f1)"; sz="$(stat -c %s "$W/runs/g/$R2")"
 egx sh -c "sudo -n /usr/local/sbin/lsa-eg-upgrade 'put $sha $sz' < /w/runs/g/$R2 >/dev/null"
