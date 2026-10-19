@@ -40,7 +40,12 @@ chmod +x /usr/local/bin/docker
 eg_yaml() {  # $1 单元号 $2.. 设备
   local u="$1"; shift
   { echo 'schema: 2'; echo 'unit:'; echo "  id: ${u##*-}"; echo "  code: $u"; echo '  at: 断路器室'; echo '  index: 31'
-    echo 'cabinet:'; echo '  code: AH07'; echo 'devices:'; for d in "$@"; do echo "  - name: $d"; echo '    kind: x'; done; } > $E/config/eg.yaml
+    echo 'cabinet:'; echo '  code: AH07'; echo 'devices:'
+    for d in "$@"; do
+      case "$d" in SAM-*) k=sam ;; PM6-*) k=pm ;; PM-* | PM2-*) k=meter ;; CAM-*) k=camera ;; *) k=x ;; esac
+      echo "  - name: $d"; echo "    kind: $k"; echo '    attrs:'; echo '      port: COM2'
+      [ "$k" = meter ] && echo "      proto: Modbus RTU · 从站 ${METER_SLAVE:-6} · 9600"
+    done; } > $E/config/eg.yaml
 }
 fresh_conv() {  # 拆柜前整柜那份：温湿度 → SAM-AH07-A，其余 → SAM-AH07-B
   rm -rf $E/config/conv; mkdir -p $E/config/conv; tar -x -C $E/config/conv -f /tpl/tpl.tar
@@ -86,6 +91,29 @@ grep -q 'restart' /tmp/docker.log && bad "没启用也重启了" || ok "没重�
 echo "== 5. 还没生成过 config/conv：什么都不做"
 rm -rf $E/config/conv; out="$(bash $E/install-conv.sh --rebind 2>&1)"; rc=$?
 [ "$rc" = 0 ] && grep -q '不用改挂' <<<"$out" && ok "rc 0、说不用改挂" || bad "rc $rc：$out"
+
+echo "== 6. 电表（补丁 0007 的 meter.yaml）跟着单元走"
+add_meter() {  # 拆柜前整柜那份：电表挂 PM-AH07、打开
+  printf 'sensor:\n  name: "meter"\n  device: "PM-AH07"\n  slave_id: 6\n  enabled: true\n' > $E/config/conv/sensors/meter.yaml
+}
+mget() { awk -v k="$1" '$1==k":"{v=$2;gsub(/"/,"",v);print v;exit}' $E/config/conv/sensors/meter.yaml; }
+eg_yaml AH07-A SAM-AH07-A PM-AH07 CAM-AH07-A; fresh_conv; add_meter; echo 'EG_CONV=on' > $E/.env
+out="$(bash $E/install-conv.sh --rebind 2>&1)"
+[ "$(mget enabled)" = true ] && [ "$(mget device)" = PM-AH07 ] && ! grep -q '电表（meter.yaml）' <<<"$out" && ok "改作 A（电表归 A）：电表照旧打开、挂 PM-AH07，不提" || bad "A：enabled $(mget enabled) device $(mget device)；$out"
+eg_yaml AH07-B SAM-AH07-B CAM-AH07-B; fresh_conv; add_meter
+out="$(bash $E/install-conv.sh --rebind 2>&1)"
+[ "$(mget enabled)" = false ] && grep -q '本单元没有电表' <<<"$out" && ok "改作 B（电表不归 B）：电表这一路关掉、说清楚" || bad "B：enabled $(mget enabled)；$out"
+grep -q 'meter.yaml 的 device' <<<"$(bash $E/install-conv.sh --status 2>&1)" && bad "关掉以后 --status 还报电表设备名对不上" || ok "关掉以后不再报「设备名对不上」"
+eg_yaml AH07-A SAM-AH07-A PM-AH09 CAM-AH07-A; fresh_conv; add_meter
+out="$(bash $E/install-conv.sh --rebind 2>&1)"
+[ "$(mget device)" = PM-AH09 ] && grep -q '电表（meter.yaml）：PM-AH07 → PM-AH09' <<<"$out" && ok "eg.yaml 的电表换了名：改挂 PM-AH09" || bad "改名：device $(mget device)；$out"
+
+echo "== 7. 电表从站号：attrs.slave 优先，其次 proto 的「从站 N」，都没有 = 6"
+awk '/^meter_slave\(\) \{/,/^\}/' $E/install-conv.sh > /tmp/ms.sh; cd $E; . /tmp/ms.sh
+METER_SLAVE=9 eg_yaml AH07-A SAM-AH07-A PM-AH07; [ "$(meter_slave PM-AH07)" = 9 ] && ok "proto「从站 9」→ 9" || bad "proto：$(meter_slave PM-AH07)"
+sed -i 's/^      port: COM2$/      port: COM2\n      slave: 12/' config/eg.yaml; [ "$(meter_slave PM-AH07)" = 12 ] && ok "attrs.slave 12 优先" || bad "attrs.slave：$(meter_slave PM-AH07)"
+eg_yaml AH07-A SAM-AH07-A; [ "$(meter_slave PM-AH07)" = 6 ] && ok "没有 → 6" || bad "没有：$(meter_slave PM-AH07)"
+cd /
 
 echo
 [ "$fail" = 0 ] && echo "== 通过（$n 项）" || { echo "== 有失败项"; exit 1; }

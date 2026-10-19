@@ -15,6 +15,9 @@
   3  FC03  气体：0x16 ppm、0x17 量程 1000（量程不用发）
   4  FC03  温湿度：0 湿度 ×0.1、1 温度 ×0.1（有符号）
   5  FC04  ALS10 弧光：0 设备状态、3 弧光等级、6 峰值；0x100–0x107 最近一次事件（序号、类型、…、峰值 ×0.01 %、…、持续 ms）
+  6  FC03  多功能电表（补丁 0007 的占位寄存器表 meter.yaml，高字在前）：0x00–0x19 电压 / 电流 / P Q S / PF / F / THDu THDi（float32，
+           二次值：相电压 57.7 V、电流 2.5 A 上下），0x1A 正向有功电能（uint32 ×0.01 kWh，一直往上走）；
+           0x100–0x159 电压、0x200–0x259 电流 A/B/C 各 2–31 次谐波含有率（uint16 ×0.01 %）。电表型号定了，这里跟着换表
 
 时间线（从模拟器启动算起，秒）—— 每一段对应检查工具 / EG 该看到的现象：
    0– 40  全部正常
@@ -73,6 +76,28 @@ class Arc:
 ARC = Arc()
 
 
+def f32(v):
+    """float32 → 两个字（高字在前）"""
+    import struct
+    return list(struct.unpack('>HH', struct.pack('>f', v)))
+
+
+def meter():
+    """从站 6：占位寄存器表（与转换程序 config/sensors/meter.yaml 一致）"""
+    t = el()
+    ia = 2.5 + 0.1 * ((int(t) // 10) % 3)
+    r = {}
+    for a, v in {0x00: 57.74, 0x02: 57.70, 0x04: 57.80, 0x06: ia, 0x08: 2.4, 0x0A: 2.6, 0x0C: 0.43, 0x0E: 0.12,
+                 0x10: 0.45, 0x12: 0.96, 0x14: 50.01, 0x16: 2.1, 0x18: 6.3}.items():
+        r[a], r[a + 1] = f32(v)
+    ep = 123456 + int(t * 2)                              # ×0.01 kWh，单调往上
+    r[0x1A], r[0x1B] = (ep >> 16) & 0xFFFF, ep & 0xFFFF
+    for i in range(90):
+        r[0x100 + i] = 100 + (i % 30) * 3                 # 电压谐波 1.00–1.87 %
+        r[0x200 + i] = 300 + (i % 30) * 5                 # 电流谐波 3.00–4.45 %
+    return r
+
+
 def regs(slave: int, fc: int):
     """返回 {地址: 值}；None = 不应答"""
     t = el()
@@ -94,6 +119,8 @@ def regs(slave: int, fc: int):
         for i, v in enumerate(ARC.ev):
             r[0x100 + i] = v
         return r
+    if slave == 6 and fc == 3:  # 多功能电表（补丁 0007 占位寄存器表）
+        return meter()
     return None
 
 
