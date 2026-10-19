@@ -311,6 +311,14 @@ conv_status() {
     h="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' lsa-eg-conv 2>/dev/null || true)"
     [ -n "$h" ] && echo "  健康检查：$h（最近 2 分钟有没有数据发出或进缓存）"
     conv_check_devices
+    # 0.18.0 舱室 EG：拆柜后本机换了单元，转换程序要跟着重启才换 clientId（同事程序启动时读 eg.yaml）
+    local started cid want
+    started="$(docker inspect -f '{{.State.StartedAt}}' lsa-eg-conv 2>/dev/null || true)"
+    cid="$([ -n "$started" ] && docker logs --since "$started" lsa-eg-conv 2>&1 | sed -n 's/.*MQTT 连接成功.*(client_id=\([^)]*\)).*/\1/p' | tail -1 || true)"
+    want="$(eg_unit_get code)"; want="lsa-conv-${want:-$(eg_cab)}"
+    if [ -n "$cid" ] && [ "$cid" != "$want" ]; then
+      echo "  ！ 转换程序还按旧单元跑（clientId $cid，应为 $want）：eg.yaml 换过单元（拆柜？）—— sudo bash install-conv.sh --rebind"
+    fi
   fi
   echo "可选串口（sudo bash install-conv.sh --serial <设备>）："
   serial_list

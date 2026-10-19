@@ -11,6 +11,9 @@
 #                                                0.18.0 舱室 EG 一台 EG 只有本舱室一台 SAM，全都挂它）
 #   --baud 9600                                 波特率
 #   --regen                                     按模板重新生成 config/conv（旧的备份成 config/conv.bak-<时间>）
+#   --rebind                                    单元换了以后（拆柜：原来那台改作某个单元，0.18.0）：eg.yaml 里已经没有的设备名改挂到本单元的 SAM
+#                                                （规则同生成时），从站地址、开关、波特率、串口都不动；再重启 conv，clientId 跟着换成
+#                                                lsa-conv-<单元号>。子站推新配置（lsa-eg-upgrade-job）发现单元变了会自动做
 #   --src <目录>                                现场改了同事的源码：把这个目录（同事仓库里的 src/）挂进容器顶替镜像里的，不用重打镜像
 #   --status                                    看状态（容器、串口、各路配置、设备名核对、最近采集日志）
 #   --diag [rs485|modbus]                       先停 conv，用同事的 rs485_test.py / pymodbus_diag.py 直接问从站，问完再起 conv
@@ -32,6 +35,7 @@ while [ $# -gt 0 ]; do
     --dev) DEVS="${2:?--dev temperature=SAM-AH07-A}"; shift ;;
     --baud) BAUD="${2:?--baud 9600}"; shift ;;
     --regen) REGEN=1 ;;
+    --rebind) MODE=rebind ;;
     --src) if [ "${2:-}" = none ]; then SRC=none; else SRC="$(cd "${2:?--src 后面给源码目录（none = 不挂了）}" && pwd)"; fi; shift ;;
     --sim) SIM=1 ;;
     --status) MODE=status ;;
@@ -39,7 +43,7 @@ while [ $# -gt 0 ]; do
     --off) MODE=off ;;
     --diag) MODE=diag; case "${2:-}" in rs485 | modbus) DIAG="$2"; shift ;; *) DIAG=rs485 ;; esac ;;
     --dir) DIR="${2:?}"; shift ;;
-    -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -58,6 +62,21 @@ env_set() {  # 同 EG install.sh：有就改，没有就加
 }
 sams() { awk '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{gsub(/"/,"",$3);print $3}' config/eg.yaml | grep '^SAM-' || true; }
 alldevs() { awk '/^devices:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  - name:/{gsub(/"/,"",$3);print $3}' config/eg.yaml; }
+# 本 EG 的单元号：eg.yaml 顶层 unit.code（0.18.0 舱室 EG），没有就是柜号（照旧一柜一台）—— 同事程序的 clientId 就是 lsa-conv-<它>（补丁 0006-F）
+unit_code() {
+  local c
+  c="$(awk '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
+  [ -n "$c" ] || c="$(awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
+  echo "$c"
+}
+gw_dev() { awk '/^device:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="name:"{gsub(/"/,"",$2);print $2;exit}' config/conv/gateway.yaml; }
+# 转换程序这次启动连总线用的 clientId（同事程序日志「MQTT 连接成功: … (client_id=…)」）；没起、没连上为空
+conv_cid() {
+  local started
+  started="$(docker inspect -f '{{.State.StartedAt}}' lsa-eg-conv 2>/dev/null || true)"
+  [ -n "$started" ] || return 0
+  docker logs --since "$started" lsa-eg-conv 2>&1 | sed -n 's/.*MQTT 连接成功.*(client_id=\([^)]*\)).*/\1/p' | tail -1 || true
+}
 file_of() {
   case "$1" in
     pd) echo pd.yaml ;; gas) echo gas.yaml ;; temperature) echo temperature.yaml ;; arc) echo arc_light.yaml ;; infrared) echo infrared.yaml ;;
@@ -142,9 +161,7 @@ gen_config() {
   mkdir -p config/conv config/conv-data
   [ -f config/conv/gateway.yaml ] && return 1
   docker run --rm --network none --entrypoint tar "$IMG" -C /app/config.default -cf - . | tar -x -C config/conv
-  # 本 EG 的单元号：eg.yaml 顶层 unit.code（0.18.0 舱室 EG），没有就是柜号（照旧一柜一台）
-  code="$(awk '/^unit:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
-  [ -n "$code" ] || code="$(awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
+  code="$(unit_code)"
   mapfile -t S < <(sams)
   [ ${#S[@]} -gt 0 ] || { echo "!! eg.yaml 里没有 SAM 设备，转换程序的数据没有地方挂" >&2; exit 1; }
   a="${S[0]}"; b="${S[1]:-${S[0]}}"
@@ -197,6 +214,29 @@ check_devices() {  # 打开的各路 device 都要在 eg.yaml 里
     echo "   eg.yaml 里的设备：$names" >&2
   fi
   true
+}
+# 单元换了（--rebind）：eg.yaml 里已经没有的设备名改挂到本单元的 SAM（温湿度 → 第一台，其余 → 第二台；只有一台就都挂它），
+# 别的（开关、从站地址、波特率、串口）是现场接线，不动。改了返回 0，没什么可改返回 1
+rebind() {
+  local n f dev new names a b g changed=1
+  mapfile -t S < <(sams)
+  [ ${#S[@]} -gt 0 ] || { echo "!! eg.yaml 里没有 SAM 设备，转换程序的数据没有地方挂" >&2; exit 1; }
+  a="${S[0]}"; b="${S[1]:-${S[0]}}"
+  names=" $(alldevs | tr '\n' ' ') "
+  for n in $NAMES; do
+    f="config/conv/sensors/$(file_of "$n")"; [ -f "$f" ] || continue
+    dev="$(yget "$f" device)"
+    case "$names" in *" $dev "*) continue ;; esac
+    if [ "$n" = temperature ]; then new="$a"; else new="$b"; fi
+    yset "$f" device "$new"; changed=0
+    echo "  ${CN[$n]}（$(basename "$f")）：${dev:-空} → $new"
+  done
+  g="$(gw_dev)"
+  case "$names" in
+    *" $g "*) ;;
+    *) sed -i -E "/^device:/,/^[a-z]/s#^(  name: *)\"[^\"]*\"#\1\"$b\"#" config/conv/gateway.yaml; changed=0; echo "  gateway.yaml 的 device.name：${g:-空} → $b" ;;
+  esac
+  return $changed
 }
 show_config() {
   local f n
@@ -256,6 +296,9 @@ status() {
   echo "== 转换程序（$DIR）"
   if grep -q '^EG_CONV=off' .env 2>/dev/null; then echo '状态：已停用（--off）。启用：sudo bash install-conv.sh'; fi
   docker ps -a --filter name=^lsa-eg-conv$ --format '容器：{{.Status}}，镜像 {{.Image}}' | grep . || echo '容器：没有'
+  cid="$(conv_cid)"
+  echo "单元：$(unit_code)（clientId 应为 lsa-conv-$(unit_code)；现在连着用的：${cid:-（没连上）}）"
+  [ -n "$cid" ] && [ "$cid" != "lsa-conv-$(unit_code)" ] && echo "!! 转换程序还按旧单元跑（$cid）：eg.yaml 换过单元（拆柜？）—— sudo bash $0 --rebind"
   [ -f config/conv/gateway.yaml ] && show_config
   [ -n "$(grep ':/app/src:ro' compose.override.yaml 2>/dev/null)" ] && echo "源码：用的是挂进来的 $(grep ':/app/src:ro' compose.override.yaml | sed 's/ *- //;s/:\/app\/src:ro//')（--src）"
   if docker ps --filter name=^lsa-eg-conv$ -q | grep -q .; then
@@ -281,6 +324,19 @@ case "$MODE" in
     env_set EG_CONV off; env_set COMPOSE_PROFILES ''
     docker rm -f lsa-eg-conv >/dev/null 2>&1 || true
     echo '转换程序已停用（重跑 EG 的 install.sh 也保持停用）。再启用：sudo bash install-conv.sh'; exit 0 ;;
+  rebind)
+    [ -f config/conv/gateway.yaml ] || { echo "还没生成过转换程序配置（config/conv）：不用改挂，启用时按 eg.yaml 生成"; exit 0; }
+    echo "== 转换程序按本机 eg.yaml 改挂（单元 $(unit_code)）"
+    if rebind; then echo "设备名已改挂"; else echo "设备名都在 eg.yaml 里，不用改"; fi
+    check_devices
+    if grep -q '^EG_CONV=on' .env 2>/dev/null && docker inspect lsa-eg-conv >/dev/null 2>&1; then
+      # 重启时重新挂 eg.yaml（单文件挂载按启动时的文件），同事程序启动时读单元号定 clientId
+      docker restart lsa-eg-conv >/dev/null
+      echo "已重启转换程序：clientId lsa-conv-$(unit_code)"
+    else
+      echo "转换程序没启用：只改了配置，启用时（sudo bash install-conv.sh）就按这个起"
+    fi
+    exit 0 ;;
 esac
 
 # ---------- 导入镜像 ----------
