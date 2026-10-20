@@ -311,7 +311,7 @@ case "$verb" in
     # 换回和确认互斥（flock 同一把锁）：换回过的留 reverted-<令牌>，confirm 看到就判失败（#73-7）
     u="lsa-field-revert-$tok"
     printf '%s\n' '#!/bin/bash' "exec 8> '$ST/revert-$tok.lock'; flock 8" \
-      "drop() { systemctl disable '$u.timer' > /dev/null 2>&1; rm -f '$UD/$u.timer' '$UD/$u.service'; systemctl daemon-reload > /dev/null 2>&1; true; }" \
+      "drop() { systemctl disable --now '$u.timer' > /dev/null 2>&1; rm -f '$UD/$u.timer' '$UD/$u.service'; systemctl daemon-reload > /dev/null 2>&1; true; }" \
       "[ -f '$ST/confirmed-$tok' ] && { drop; exit 0; }" \
       "rm -f '$np'/*.yaml; cp -a '$bk/.' '$np/'; netplan apply; touch '$ST/reverted-$tok'" \
       "echo \"\$(date '+%F %T') 改地址 $tok 没确认，已换回原来的网口配置\" >> '$ST/revert.log'; drop" > "$ST/revert-$tok.sh"
