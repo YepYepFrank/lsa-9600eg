@@ -134,14 +134,13 @@
         },
         {
           "key": "smoke.ppm",
-          "label": "烟雾参考浓度",
+          "label": "烟雾浓度",
           "unit": "ppm",
-          "periodMs": null,
-          "optional": true,
+          "periodMs": 10000,
+          "optional": false,
           "type": "number",
           "cap": "smokePpm",
-          "capState": "pending",
-          "note": "能力「烟雾参考浓度」待定（等 T08 · 清单 E1、GAS1–GAS3、R4）：EG 本地显示、暂不上送子站；预热由 EG 0.17 自己判，量程寄存器不用发"
+          "capState": "confirmed"
         }
       ],
       "forbid": [
@@ -361,79 +360,6 @@
       ],
       "forbid": [
         "el.load_pct",
-        "dev.link"
-      ]
-    },
-    "pm": {
-      "send": [
-        {
-          "key": "pm.0.3",
-          "label": "≥0.3 μm 颗粒数",
-          "unit": "个/L",
-          "periodMs": 10000,
-          "optional": false,
-          "type": "number",
-          "cap": "pm6",
-          "capState": "unsupported",
-          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
-        },
-        {
-          "key": "pm.0.5",
-          "label": "≥0.5 μm 颗粒数",
-          "unit": "个/L",
-          "periodMs": 10000,
-          "optional": false,
-          "type": "number",
-          "cap": "pm6",
-          "capState": "unsupported",
-          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
-        },
-        {
-          "key": "pm.1.0",
-          "label": "≥1.0 μm 颗粒数",
-          "unit": "个/L",
-          "periodMs": 10000,
-          "optional": false,
-          "type": "number",
-          "cap": "pm6",
-          "capState": "unsupported",
-          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
-        },
-        {
-          "key": "pm.2.5",
-          "label": "PM2.5",
-          "unit": "μg/m³",
-          "periodMs": 10000,
-          "optional": false,
-          "type": "number",
-          "cap": "pm6",
-          "capState": "unsupported",
-          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
-        },
-        {
-          "key": "pm.5.0",
-          "label": "PM5.0",
-          "unit": "μg/m³",
-          "periodMs": 10000,
-          "optional": false,
-          "type": "number",
-          "cap": "pm6",
-          "capState": "unsupported",
-          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
-        },
-        {
-          "key": "pm.10",
-          "label": "PM10",
-          "unit": "μg/m³",
-          "periodMs": 10000,
-          "optional": false,
-          "type": "number",
-          "cap": "pm6",
-          "capState": "unsupported",
-          "note": "能力「六路颗粒物」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
-        }
-      ],
-      "forbid": [
         "dev.link"
       ]
     }

@@ -42,7 +42,7 @@ eg_yaml() {  # $1 单元号 $2.. 设备
   { echo 'schema: 2'; echo 'unit:'; echo "  id: ${u##*-}"; echo "  code: $u"; echo '  at: 断路器室'; echo '  index: 31'
     echo 'cabinet:'; echo '  code: AH07'; echo 'devices:'
     for d in "$@"; do
-      case "$d" in SAM-*) k=sam ;; PM6-*) k=pm ;; PM-* | PM2-*) k=meter ;; CAM-*) k=camera ;; *) k=x ;; esac
+      case "$d" in SAM-*) k=sam ;; PM-* | PM2-*) k=meter ;; CAM-*) k=camera ;; *) k=x ;; esac
       echo "  - name: $d"; echo "    kind: $k"; echo '    attrs:'; echo '      port: COM2'
       [ "$k" = meter ] && echo "      proto: Modbus RTU · 从站 ${METER_SLAVE:-6} · 9600"
     done; } > $E/config/eg.yaml
@@ -77,7 +77,7 @@ out="$(bash $E/install-conv.sh --rebind 2>&1)"
 grep -q '都在 eg.yaml 里，不用改' <<<"$out" && ok "说不用改" || bad "第二次：$out"
 
 echo "== 3. 原来那台改作 AH07-B（单元只有 SAM-AH07-B）：只有温湿度要改挂"
-eg_yaml AH07-B SAM-AH07-B PM6-AH07 CAM-AH07-B; fresh_conv; echo lsa-conv-AH07 > /tmp/cid
+eg_yaml AH07-B SAM-AH07-B CAM-AH07-B; fresh_conv; echo lsa-conv-AH07 > /tmp/cid
 out="$(bash $E/install-conv.sh --rebind 2>&1)"
 grep -q '温湿度（temperature.yaml）：SAM-AH07-A → SAM-AH07-B' <<<"$out" && ok "温湿度 SAM-AH07-A → SAM-AH07-B" || bad "$out"
 [ "$(grep -c ' → ' <<<"$out")" = 1 ] && ok "只改了这一路" || bad "改了 $(grep -c ' → ' <<<"$out") 处"

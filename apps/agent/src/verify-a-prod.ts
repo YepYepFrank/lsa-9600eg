@@ -2,21 +2,21 @@
  *
  *   pnpm --filter @lsa-eg/agent verify:a:prod
  * 环境变量同 verify:a（EG_AGENT_URL、EG_CONFIG_DIR、EG_TB_HTTP、LSA_BACKEND、EG_A_VERSION）。
- * production 口径（@lsa/model caps.ts CAP_DEFAULT_PRODUCTION）：局放次数 / 类型 / 等级、弧光、烟雾、谐波 / THD / 需量、开关位置 pending；
- * pm6、tev unsupported；其余 confirmed。规则：某柜对应能力（RULE_CAP）不是 confirmed 的进 offCabs；EG-rh 缺省停用。
- * 期望（本柜）：EG-arc（弧光 pending）、EG-pm（pm6 unsupported）关；EG-pd 开且只看 us.amp；PM6 整台不进本地 TB、不上送；SAM 照常。
+ * production 口径（@lsa/model caps.ts CAP_DEFAULT_PRODUCTION）：局放次数 / 类型 / 等级、弧光、谐波 / THD / 需量、开关位置 pending；
+ * 地电波 / 特高频按缺省（不支持）；其余 confirmed（0.7.1：烟雾 smokePpm 已确认，PM6 取消）。规则：某柜对应能力（RULE_CAP）不是 confirmed 的进 offCabs；EG-rh 缺省停用。
+ * 期望（本柜）：EG-arc（弧光 pending）关；EG-smoke 开（烟气两级 + 预热降级那支，阈值表要有 smoke 行）；EG-pd 开且只看 us.amp；SAM 照常。
  * 跑完不恢复 —— 由子站重发它自己的配置（网关页「下发配置」或 POST /ext/gateways/<柜>/sync）。
  * EG_A_READONLY=1：不下发，只看 EG 上现在生效的（真子站 0.10 下发的）是不是这个口径。 */
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
-import { CAP_DEFAULT_PRODUCTION, CAP_KEYMAP, RULE_CAP, loadModel } from '@lsa/model'
+import { CAP_DEFAULT_PRODUCTION, CAP_KEYMAP, RULE_CAP, loadModel, warmupTypeOf } from '@lsa/model'
 import { loadConfig, repoRoot, stationToken } from '@lsa-eg/config'
 import { signTicket } from './auth/ticket.js'
 import { agent, AGENT, check, done, env, Tb, until } from './verify/lib.js'
 
 const LOCAL_TB = env('EG_TB_HTTP', 'http://127.0.0.1:18080')
 const MODEL = resolve(env('LSA_BACKEND', resolve(repoRoot() ?? '.', '../lsa-9600sp-backend')), 'tb/model.yaml')
-const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-pm', 'EG-dphase', 'EG-devlost']
+const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-smoke', 'EG-dphase', 'EG-devlost']
 const DEFAULT_OFF = new Set(['EG-rh'])
 
 async function main() {
@@ -54,7 +54,14 @@ async function main() {
   for (const p of ps) alarms.push(...(((await tb.get<{ profileData: { alarms: Alarm[] | null } }>(`/api/deviceProfile/${p.id.id}`)).profileData.alarms ?? []) as Alarm[]))
   const types = new Set(alarms.map(a => a.alarmType))
   check(!types.has('弧光异常'), `EG-arc 关（弧光 pending → offCabs 有本柜）：本地设备配置里没有「弧光异常」`)
-  check(!types.has('烟气'), `EG-pm 关（pm6 unsupported）：本地没有「烟气」`)
+  // 0.7.1：烟雾 smokePpm 缺省已确认、EG-smoke 缺省开 —— 阈值表有 smoke 行（子站 0.18.1 起）就有「烟气」两级与预热降级那支
+  const smoke = alarms.find(a => a.alarmType === '烟气')
+  if (model.thresholds.some(t => t.key === 'smoke')) {
+    const sev = smoke ? Object.keys(smoke.createRules).sort().join('+') : ''
+    const keys = smoke ? [...new Set(Object.values(smoke.createRules).flatMap(c => c.condition.condition.map(x => x.key.key)))] : []
+    check(!!smoke && keys.includes('smoke.ppm') && sev === (model.thresholds.some(t => t.key === 'smoke2') ? 'CRITICAL+MAJOR' : 'MAJOR'), `EG-smoke 开（smokePpm confirmed）：本地「烟气」按 SAM smoke.ppm 判，级别 ${sev || '—'}（条件 key：${keys.join('、') || '—'}）`)
+    check(types.has(warmupTypeOf('烟气')), `烟气带预热：另有「${warmupTypeOf('烟气')}」降级那支`)
+  } else check(!smoke, '阈值表没有 smoke 行（老子站模型）：本地没有「烟气」')
   check(!types.has('柜内湿度高') && !types.has('环境'), `EG-rh 缺省停用：本地没有「柜内湿度高」（也没有旧名「环境」）`)
   const pd = alarms.find(a => a.alarmType === '局放异常')
   const pdKeys = pd ? [...new Set(Object.values(pd.createRules).flatMap(c => c.condition.condition.map(x => x.key.key)))] : []
@@ -62,15 +69,13 @@ async function main() {
   check(types.has('过温') && types.has('过载'), `过温 / 过载照常（thermalRegions / meterBasic confirmed）`)
 
   const ci = await agent<{ delivered: boolean; notUploaded: string[]; notLocal: string[] }>(dir, '/api/caps')
-  const pm6 = cfg.devices.find(d => d.name.startsWith('PM6-'))?.name
-  if (pm6) check(ci.notLocal.includes(pm6) && ci.notUploaded.includes(pm6), `${pm6}（pm6 unsupported）：不进本地 TB、不上送（notLocal ${JSON.stringify(ci.notLocal)}）`)
   const sam = cfg.devices.find(d => d.name.startsWith('SAM-'))!.name
   check(!ci.notUploaded.includes(sam) && !ci.notLocal.includes(sam), `${sam} 照常（局放幅值、温湿度 confirmed；弧光、次数 pending 的 key 由子站按能力过滤）`)
   const act = await until(async () => {
     const v = await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'caps.actual')
     return typeof v === 'string' ? (JSON.parse(v) as Record<string, string>) : null
   }, 60_000, 3000)
-  check(!!act && act['pdAmplitude'] === 'ok' && act['envTH'] === 'ok', `caps.actual：pdAmplitude ${act?.['pdAmplitude']}、envTH ${act?.['envTH']}、arcIntensity ${act?.['arcIntensity']}（pending 而有数 → 子站提示）、pm6 ${act?.['pm6']}`)
+  check(!!act && act['pdAmplitude'] === 'ok' && act['envTH'] === 'ok', `caps.actual：pdAmplitude ${act?.['pdAmplitude']}、envTH ${act?.['envTH']}、arcIntensity ${act?.['arcIntensity']}（pending 而有数 → 子站提示）、smokePpm ${act?.['smokePpm']}`)
   done()
 }
 

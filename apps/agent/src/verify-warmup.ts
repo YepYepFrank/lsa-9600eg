@@ -5,8 +5,8 @@
  *   pnpm warmup:verify -- --tb <URL>    另在一个一次性 TB 上验安全兜底（约 1 分钟；租户 tenant@thingsboard.org / tenant，LOAD_DEMO 建的库）：
  *                                       dev.warmup_s 从没上送、读数越限 → 正式告警必须触发（seedWarmupKey 预置 0）；正在预热的不能被预置覆盖
  *
- * --live 的前提：一套与开发样机隔离的 agent / 仿真器 / 总线（不要连 AH03 那套 lsa-eg-*）。eg.yaml 里要有一台 attrs.warmupS: 40 的 pm 设备
- * （「虚拟气体设备」，PM6 代用 —— 气体点表等 T08）。agent 要刚起（30 s 内）才能查「启动即发」。地址用环境变量：
+ * --live 的前提：一套与开发样机隔离的 agent / 仿真器 / 总线（不要连 AH03 那套 lsa-eg-*）。eg.yaml 里要有一台 attrs.warmupS: 40 的 SAM
+ * （0.7.1 起烟雾是 SAM 气体传感器的 smoke.ppm，PM6 取消；预热只管 SAM 的 smoke.*）。agent 要刚起（30 s 内）才能查「启动即发」。地址用环境变量：
  *   EG_CONFIG_DIR（agent 的配置目录，取本地口令）、EG_AGENT_URL、EMU_URL、EG_BUS_MQTT */
 import 'reflect-metadata'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -21,7 +21,7 @@ import { configHash, filterRules, seedWarmupKey } from './apply/apply.service.js
 import { CapsService } from './caps/caps.service.js'
 import { QualityService } from './quality/quality.service.js'
 import type { BusService } from './bus/bus.service.js'
-import { bootTrigger, DEFAULT_GAS, deviceWarmupS, parseGas, warmupDevice, WarmupTracker } from './warmup/warmup.js'
+import { bootTrigger, DEFAULT_GAS, deviceWarmupS, parseGas, warmupDevice, warmupScope, WarmupTracker } from './warmup/warmup.js'
 import { WarmupService } from './warmup/warmup.service.js'
 
 const LIVE = process.argv.includes('--live')
@@ -68,8 +68,10 @@ function logic(): void {
   check(!bootTrigger({ uptimeS: 10, warmupS: 0, hostBootId: 'b', lastHostBootId: 'a' }), '预热时长 0：不算')
 
   console.log('3. 哪些设备要预热')
-  check(warmupDevice({ kind: 'pm', attrs: { warmup: true } }) && warmupDevice({ kind: 'pm', attrs: { warmupS: 40 } }) && !warmupDevice({ kind: 'pm', attrs: {} }), 'eg.yaml 属性 warmup: true / warmupS 是数 → 要；没写 → 不要（T08 前没有缺省要预热的种类）')
-  check(!warmupDevice({ kind: 'pm', attrs: { warmupS: 0 } }) && deviceWarmupS({ warmupS: 1000 }, DEFAULT_GAS) === 900 && deviceWarmupS({}, { ...DEFAULT_GAS, warmupS: 120 }) === 120, 'warmupS: 0 = 这台不做；按设备覆盖限在 0–900；没写用站级')
+  check(warmupDevice({ kind: 'sam', attrs: { warmup: true } }) && warmupDevice({ kind: 'sam', attrs: { warmupS: 40 } }) && !warmupDevice({ kind: 'sam', attrs: {} }), 'eg.yaml 属性 warmup: true / warmupS 是数 → 要；没写 → 不要（子站按规则里带预热的设备标 warmup: true）')
+  const sc = warmupScope('sam')
+  check(sc('smoke.ppm') && !sc('us.amp') && !sc('env.t') && warmupScope('meter')('el.Ia'), 'SAM 只有 smoke.* 归预热管（局放、温湿度不管）；别的种类整台')
+  check(!warmupDevice({ kind: 'sam', attrs: { warmupS: 0 } }) && deviceWarmupS({ warmupS: 1000 }, DEFAULT_GAS) === 900 && deviceWarmupS({}, { ...DEFAULT_GAS, warmupS: 120 }) === 120, 'warmupS: 0 = 这台不做；按设备覆盖限在 0–900；没写用站级')
 
   console.log('4. 规则开关连带降级那支「预热期读数越限（原类型）」')
   const def = (alarmType: string, sev: string[]) => ({ id: alarmType, alarmType, createRules: Object.fromEntries(sev.map(s => [s, {}])) })
@@ -78,13 +80,13 @@ function logic(): void {
     filterRules(alarms, rs)
       .map(a => `${a.alarmType}:${Object.keys(a.createRules).join('+')}`)
       .join(' ')
-  check(types([{ id: 'EG-pm', on: false }]) === `过温:MAJOR+CRITICAL ${warmupTypeOf('过温')}:WARNING`, '停 EG-pm：烟气与它的降级那支一起去掉', types([{ id: 'EG-pm', on: false }]))
+  check(types([{ id: 'EG-smoke', on: false }]) === `过温:MAJOR+CRITICAL ${warmupTypeOf('过温')}:WARNING`, '停 EG-smoke：烟气两级与它的降级那支一起去掉', types([{ id: 'EG-smoke', on: false }]))
   check(types([{ id: 'EG-rise', on: false }]).includes(`${warmupTypeOf('过温')}:WARNING`) && types([{ id: 'EG-rise', on: false }]).includes('过温:CRITICAL '), '只停 EG-rise（过温一级）：过温剩 CRITICAL，降级那支还在')
   check(!types([{ id: 'EG-rise', on: false }, { id: 'EG-rise2', on: false }]).includes('过温'), '过温两级都停：降级那支也去掉')
   check(types([]) === alarms.map(a => `${a.alarmType}:${Object.keys(a.createRules).join('+')}`).join(' '), '都开着：原样')
 
   console.log('5. 配置哈希：没带预热参数时与老哈希一致')
-  const base = { thresholds: [{ key: 'rise', mv: 50 }], rules: [{ id: 'EG-rise', on: true }], extras: { pdCnt: 20, pm25Abs: 75, commPeriods: 5 }, caps: null, devComm: null, meters: null }
+  const base = { thresholds: [{ key: 'rise', mv: 50 }], rules: [{ id: 'EG-rise', on: true }], extras: { pdCnt: 20, commPeriods: 5 }, caps: null, devComm: null, meters: null }
   const legacy = configHash({ ...base, gas: undefined })
   check(configHash({ ...base, gas: null }) === legacy, '不带预热参数：哈希不变（升级后同一份配置不会被当成新内容）')
   check(configHash({ ...base, gas: { warmupS: 180, gapS: 60, bootOffCabs: [] } }) !== legacy, '带了：计进哈希（改参数会重新应用）')
@@ -99,7 +101,7 @@ function quality(): void {
       dir,
       cabinet: { code: 'AH99', group: 'mv' },
       eg: { name: 'EG-AH99', attrs: {} },
-      devices: [{ name: 'PM6-AH99', kind: 'pm', label: '', attrs: { warmupS: 40 } }],
+      devices: [{ name: 'SAM-AH99-A', kind: 'sam', label: '', attrs: { warmupS: 40 } }],
     } as unknown as EgConfig
     let listener: ((dev: string, entries: { ts: number; values: Record<string, unknown> }[], own: boolean) => void) | null = null
     const sent: { dev: string; values: Record<string, unknown>; ts: number }[] = []
@@ -110,19 +112,58 @@ function quality(): void {
     q.onModuleInit()
     try {
       const now = Date.now()
-      listener!('PM6-AH99', [{ ts: now, values: { q: JSON.stringify({ 'pm.2.5': 'warmup' }) } }], false)
-      check(q.warmupOf('PM6-AH99') === 1 && q.qualityOf('PM6-AH99')['pm.2.5'] === 'warmup', '转换程序标了 warmup（T1）：dev.warmup_s 报 1、q 里 pm.2.5 = warmup')
-      // PM6 周期 10 s → 窗口 max(30 s, 5 × 10 s) × 2 = 100 s（只发了 q、没发读数：不会因读数中断提前报满额，单测新鲜度）
-      check(q.warmupOf('PM6-AH99', now + 99_000) === 1, '99 s 后（窗口内）：还算数')
-      check(q.warmupOf('PM6-AH99', now + 101_000) === 0 && q.qualityOf('PM6-AH99', now + 101_000)['pm.2.5'] !== 'warmup', '101 s 后（转换程序挂了、没再发）：不再算数，不会永远停在「预热」')
-      listener!('PM6-AH99', [{ ts: now, values: { q: '{}' } }], false)
-      check(q.warmupOf('PM6-AH99') === 0, '转换程序发 "{}"：清掉')
-      check(q.warmupOf('SAM-AH99-A') === null, '不是需要预热的设备：null（不发 dev.warmup_s）')
+      const D = 'SAM-AH99-A'
+      listener!(D, [{ ts: now, values: { q: JSON.stringify({ 'smoke.ppm': 'warmup' }) } }], false)
+      check(q.warmupOf(D) === 1 && q.qualityOf(D)['smoke.ppm'] === 'warmup', '转换程序标了 warmup（T1）：dev.warmup_s 报 1、q 里 smoke.ppm = warmup')
+      // SAM 最快的量 2 s，但 devComm 缺省 minMs 30 s → 窗口 max(30 s, 5 × 2 s) × 2 = 60 s（只发了 q、没发读数：单测新鲜度）
+      check(q.warmupOf(D, now + 59_000) === 1, '59 s 后（窗口内）：还算数')
+      check(q.warmupOf(D, now + 61_000) === 0 && q.qualityOf(D, now + 61_000)['smoke.ppm'] !== 'warmup', '61 s 后（转换程序挂了、没再发）：不再算数，不会永远停在「预热」')
+      listener!(D, [{ ts: now, values: { q: '{}' } }], false)
+      check(q.warmupOf(D) === 0, '转换程序发 "{}"：清掉')
+      check(q.warmupOf('SAM-AH99-B') === null, '不是需要预热的设备：null（不发 dev.warmup_s）')
       sent.length = 0
       const ts = now - 1234
-      listener!('PM6-AH99', [{ ts, values: { 'pm.2.5': 31, 'pm.10': 40 } }], false)
-      const w = sent.find(x => x.dev === 'PM6-AH99' && WARMUP_KEY in x.values)
+      listener!(D, [{ ts, values: { 'smoke.ppm': 31, 'us.amp': 5 } }], false)
+      const w = sent.find(x => x.dev === D && WARMUP_KEY in x.values)
       check(!!w && w.ts === ts && w.values[WARMUP_KEY] === 0, `每条读数后马上补发一条同一时刻的 dev.warmup_s（ts 与读数相同：${w?.ts === ts}，值 ${String(w?.values[WARMUP_KEY])}）`)
+    } finally {
+      q.onModuleDestroy()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** 0.7.1：SAM 的预热只管气体那路 —— 局放的读数不驱动预热计时、预热中只有 smoke.* 标 warmup */
+function samScope(): void {
+  console.log('7. SAM 的预热只管气体那路（0.7.1）')
+  const dir = mkdtempSync(join(tmpdir(), 'lsa-warmup-'))
+  try {
+    const cfg = {
+      dir,
+      cabinet: { code: 'AH99', group: 'mv' },
+      unit: { id: 'A', code: 'AH99-A', at: '', index: 0 },
+      eg: { name: 'EG-AH99-A', attrs: {} },
+      devices: [{ name: 'SAM-AH99-A', kind: 'sam', label: '', attrs: { warmupS: 40 } }],
+    } as unknown as EgConfig
+    let listener: ((dev: string, entries: { ts: number; values: Record<string, unknown> }[], own: boolean) => void) | null = null
+    const bus = { onTelemetry: (fn: typeof listener) => (listener = fn), publish: () => undefined, live: new Map() } as unknown as BusService
+    const caps = new CapsService()
+    const warm = new WarmupService(cfg, caps)
+    // 主机刚开机（10 s < 预热 180 s）：武装，下一次读到「气体」时开始计时
+    warm.uptimeS = () => 10
+    warm.onModuleInit()
+    const q = new QualityService(cfg, bus, caps, warm)
+    q.onModuleInit()
+    try {
+      const D = 'SAM-AH99-A'
+      listener!(D, [{ ts: Date.now(), values: { 'us.amp': 5, 'env.t': 26 } }], false)
+      check(warm.waiting(D), '只来了局放 / 温湿度：还在等气体的第一次读数（局放不驱动预热计时）')
+      const q1 = q.qualityOf(D)
+      check(q1['smoke.ppm'] === 'warmup' && q1['us.amp'] !== 'warmup' && q1['env.t'] !== 'warmup', `预热中只有 smoke.ppm 标 warmup，局放、温湿度不标（q：${JSON.stringify(q1)}）`)
+      listener!(D, [{ ts: Date.now(), values: { 'smoke.ppm': 12 } }], false)
+      const r = warm.remaining(D)
+      check(!warm.waiting(D) && r > 35 && r <= 40, `气体读到了：开始计时（剩 ${r} s，预热 40 s）`)
     } finally {
       q.onModuleDestroy()
     }
@@ -133,7 +174,7 @@ function quality(): void {
 
 /** 安全兜底（协调要求）：dev.warmup_s 从没上送、读数越限，正式告警必须触发 —— 一次性 TB 实测 seedWarmupKey */
 async function tbSafety(url: string): Promise<void> {
-  console.log(`\n8. 安全兜底：dev.warmup_s 从没上送时正式告警照常（一次性 TB ${url}）`)
+  console.log(`\n9. 安全兜底：dev.warmup_s 从没上送时正式告警照常（一次性 TB ${url}）`)
   const login = async () => ((await (await fetch(`${url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'tenant@thingsboard.org', password: 'tenant' }) })).json()) as { token: string }).token
   const jwt = await login()
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
@@ -197,11 +238,11 @@ interface Dev {
 
 async function live(): Promise<void> {
   const cfg = loadConfig()
-  const gas = cfg.devices.find(d => d.kind === 'pm' && typeof d.attrs['warmupS'] === 'number')
-  if (!gas) throw new Error('eg.yaml 里没有 attrs.warmupS 的 pm 设备（虚拟气体设备）')
+  const gas = cfg.devices.find(d => d.kind === 'sam' && typeof d.attrs['warmupS'] === 'number')
+  if (!gas) throw new Error('eg.yaml 里没有 attrs.warmupS 的 SAM（气体传感器在 SAM 里，0.7.1）')
   const S = gas.attrs['warmupS'] as number
   const name = gas.name
-  console.log(`\n7. 联机（agent ${AGENT}、仿真器 ${EMU}、总线 ${BUS}；虚拟气体设备 ${name}，预热 ${S} s）`)
+  console.log(`\n8. 联机（agent ${AGENT}、仿真器 ${EMU}、总线 ${BUS}；气体在 ${name}，预热 ${S} s）`)
   const status = async () => (await agent<{ uptimeSec: number; devices: Dev[] }>(cfg.dir, '/api/status'))
   const dev = async () => (await status()).devices.find(d => d.name === name)!
   // 总线上记 dev.warmup_s（agent 发的）与测量值（仿真器发的）的到达时刻
@@ -232,24 +273,24 @@ async function live(): Promise<void> {
     }
     check(maxW === 0, `断 15 s 再恢复（等 28 s）：一直没进预热（dev.warmup_s 最大 ${maxW}）`)
 
-    console.log(`   场景二：断电再来电（断 70 s，来电后 30 s 内 pm.2.5 偏高 300）`)
+    console.log(`   场景二：断电再来电（断 70 s，来电后 30 s 内 smoke.ppm 偏高 300）`)
     const t0 = Date.now()
-    await post(`${EMU}/emu/dev/${name}/powercycle?off=70&spikeKey=pm.2.5&spikeValue=300&spikeS=30`)
+    await post(`${EMU}/emu/dev/${name}/powercycle?off=70&spikeKey=smoke.ppm&spikeValue=300&spikeS=30`)
     await sleep(64_000)
     const pre = await dev()
     check(pre.warmupS === S, `断满 60 s、还没来电：提前报满额 ${S}（实际 ${pre.warmupS}）`)
-    // 来电后各量陆续到（pm.2.5 每秒、其余按 10 s 档）：没到的还是 invalid（优先级高于 warmup），等都到了再看
+    // 来电后各量陆续到（smoke.ppm 每秒、其余按各自的档）：没到的还是 invalid（优先级高于 warmup），等都到了再看
     let back: Dev | null = null
     let lastSeen: Dev | null = null
     for (let i = 0; i < 25 && !back; i++) {
       await sleep(1000)
       const d = (lastSeen = await dev())
-      const pmQ = Object.entries(d.q).filter(([k]) => k.startsWith('pm.'))
-      if (Date.now() - t0 > 71_000 && (d.warmupS ?? 0) > 0 && pmQ.length && pmQ.every(([, v]) => v === 'warmup')) back = d
+      const gasQ = Object.entries(d.q).filter(([k]) => k.startsWith('smoke.'))
+      if (Date.now() - t0 > 71_000 && (d.warmupS ?? 0) > 0 && gasQ.length && gasQ.every(([, v]) => v === 'warmup') && !Object.entries(d.q).some(([k, v]) => !k.startsWith('smoke.') && v === 'warmup')) back = d
     }
-    check(!!back && back.comm.comm === 'DEGRADED', `来电后各量到齐：预热中，pm.* 都标 warmup、dev.comm = DEGRADED（剩 ${back?.warmupS} s）`, JSON.stringify(lastSeen?.q))
+    check(!!back && back.comm.comm === 'DEGRADED', `来电后各量到齐：预热中，smoke.* 标 warmup（局放、温湿度不标）、dev.comm = DEGRADED（剩 ${back?.warmupS} s）`, JSON.stringify(lastSeen?.q))
     // 竞态：来电后的第一条测量值之前，dev.warmup_s > 0 已经在总线上了
-    const firstMeas = log.find(m => !m.own && m.at > t0 + 65_000 && Object.keys(m.values).some(k => k.startsWith('pm.')))
+    const firstMeas = log.find(m => !m.own && m.at > t0 + 65_000 && Object.keys(m.values).some(k => k.startsWith('smoke.')))
     const warmBefore = log.filter(m => m.own && m.at > t0 + 55_000 && typeof m.values['dev.warmup_s'] === 'number' && (m.values['dev.warmup_s'] as number) > 0)
     check(!!firstMeas && warmBefore.some(m => m.at < firstMeas.at), `来电后的第一条读数之前，dev.warmup_s > 0 已经发出（读数与它走两条路到 TB，防正式规则误判）`)
     const waitEnd = Date.now()
@@ -271,12 +312,12 @@ async function live(): Promise<void> {
     check(!!firstZero && gaps.filter(x => x.prev > 0).every(x => x.g <= 13_000), `dev.warmup_s：预热中 ≤ 12 s 发一次、结束马上发 0（共 ${warmMsgs.length} 条）`, seq)
 
     console.log('   场景三：型号自报（断 10 s 不触发 T2，来电后 20 s 内转换程序发 q:warmup）')
-    await post(`${EMU}/emu/dev/${name}/powercycle?off=10&spikeKey=pm.2.5&spikeValue=300&spikeS=20&selfq=1`)
+    await post(`${EMU}/emu/dev/${name}/powercycle?off=10&spikeKey=smoke.ppm&spikeValue=300&spikeS=20&selfq=1`)
     let selfW: Dev | null = null
     for (let i = 0; i < 20 && !selfW; i++) {
       await sleep(1000)
       const d = await dev()
-      if (d.q['pm.2.5'] === 'warmup' && (d.warmupS ?? 0) >= 1) selfW = d
+      if (d.q['smoke.ppm'] === 'warmup' && (d.warmupS ?? 0) >= 1) selfW = d
     }
     check(!!selfW, `转换程序标了 warmup：dev.warmup_s 至少 1（${selfW?.warmupS}）`)
     let clear: Dev | null = null
@@ -288,15 +329,15 @@ async function live(): Promise<void> {
     check(!!clear, '转换程序发 "{}" 之后：回到 0')
 
     console.log('   读数与 dev.warmup_s：本机总线上同一时刻补发，上送子站并进同一行')
-    const meas = log.filter(m => !m.own && Object.keys(m.values).some(k => k.startsWith('pm.')))
+    const meas = log.filter(m => !m.own && Object.keys(m.values).some(k => k.startsWith('smoke.')))
     const pairs = meas.slice(-20).filter(m => log.some(o => o.own && WARMUP_KEY in o.values && Math.abs(o.at - m.at) < 1000))
     check(meas.length >= 5 && pairs.length === Math.min(20, meas.length), `总线：最近 ${Math.min(20, meas.length)} 条读数，每条 1 s 内都有 agent 补发的 dev.warmup_s（${pairs.length} 条）`)
     // 上送：隔离环境的子站地址是死的，行都积在 outbox 里 —— 只读打开看读数行
     const db = new Database(join(cfg.dir, 'outbox.db'), { readonly: true, fileMustExist: true })
     try {
       const rows = db.prepare("select body from outbox where dev = ? and kind = 't' order by seq desc limit 200").all(name) as { body: string }[]
-      const withPm = rows.map(r => JSON.parse(r.body) as Record<string, unknown>).filter(v => Object.keys(v).some(k => k.startsWith('pm.')))
-      check(withPm.length > 0 && withPm.every(v => typeof v[WARMUP_KEY] === 'number'), `上送：outbox 里 ${name} 的读数行 ${withPm.length} 条，全都带 dev.warmup_s`)
+      const withGas = rows.map(r => JSON.parse(r.body) as Record<string, unknown>).filter(v => Object.keys(v).some(k => k.startsWith('smoke.')))
+      check(withGas.length > 0 && withGas.every(v => typeof v[WARMUP_KEY] === 'number'), `上送：outbox 里 ${name} 的气体读数行 ${withGas.length} 条，全都带 dev.warmup_s`)
     } finally {
       db.close()
     }
@@ -309,6 +350,7 @@ async function main() {
   console.log(`传感器预热框架自检${LIVE ? '（含联机）' : '（加 --live 连隔离的 agent + 仿真器）'}\n`)
   logic()
   quality()
+  samScope()
   if (LIVE) await live()
   if (TB_URL) await tbSafety(TB_URL)
   done()

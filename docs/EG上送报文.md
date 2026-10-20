@@ -74,12 +74,12 @@
 | SAM | `uv.int` | 数，%（0–100） | 同事程序 | 弧光强度：ALS10 Arc Level ÷ 100（格式 v0.6 起；以前是原值）。arcIntensity，pending |
 | SAM | `uv.pulse` | **串**（JSON 对象 `{"peak":数,"ms":数}`：峰值、持续毫秒） | 同事程序 | 弧光脉冲，事件型：检测到放电立即发一条，同时带 uv.int = 峰值（arcEvents，pending）。《EG 内部 MQTT 格式》§3 |
 | SAM | `tev.amp`、`uhf.amp` | 数，dBmV | 同事程序 | 地电波 / 特高频放电量（读数 ÷10，期望周期 3 s；能力 tev / uhf，缺省不支持，没装的通道不发）。可选 `tev.level` `uhf.level`：设备状态原码 |
-| SAM | `smoke.*`、`sw.*` | 数 | 同事程序 | 烟雾、开关位置（pending）；目前没有点 |
+| SAM | `smoke.ppm` | 数，ppm | 同事程序 | 烟雾浓度：SAM 气体传感器（smokePpm，0.18.1 / EG 0.7.1 起已确认；独立颗粒物 PM6 取消）。预热期质量码标 warmup，行里带 dev.warmup_s |
+| SAM | `sw.*` | 数 | 同事程序 | 开关位置（首期不做）；目前没有点 |
 | PM / PM2 | `el.Ua` `el.Ub` `el.Uc` `el.Ia` `el.Ib` `el.Ic` `el.P` `el.Q` `el.S` `el.PF` `el.F` `el.Ep` | 数，V / A / kW / kvar / kVA / — / Hz / kWh | 同事程序；**EG 上送前换成一次值**（EG 0.4 起，I3）| 电表基础量（meterBasic） |
 | PM / PM2 | `el.load_pct` | 数，% | **EG 派生**：max(Ia, Ib, Ic) ÷ attrs.rated × 100 | 负荷率 |
 | PM / PM2 | `el.THDu` `el.THDi`、`el.dmd*` | 数 | 同事程序 | THD、需量（pending） |
 | PM / PM2 | `el.hu.*` `el.hi.*` | **串**（JSON 数组：各次谐波含有率 %，30 个） | 同事程序 | 电压 / 电流谐波（pending）。《EG 内部 MQTT 格式》同 |
-| PM6 | `pm.0.3` `pm.0.5` `pm.1.0` `pm.2.5` `pm.5.0` `pm.10` | 数 | 同事程序 | 六路颗粒物（production 下 unsupported，整台不送） |
 | CAM | `ir.max` `ir.min` `ir.max_x` `ir.max_y` | 数，℃ / 像素 | eg-video | 全画面 |
 | CAM | `ir.avg` `ir.center` | 数，℃ | eg-video | 全画面平均温、中心点温度。EG 0.5 起（真机 restv1 有；仿真器随点目录 v1.3 也有）；取不到不发（optional） |
 | CAM | `ir.R<n>.max` `.min` `.max_x` `.max_y` | 数 | eg-video | 测温区 n（1–12：model.yaml 每柜配了几个 `regions.R<n>` 就是几个，最少 1、最多 12，缺省 3；2026-10-10 与后端商定，EG 0.5 起；EG 0.4 及以前固定 R1–R3） |

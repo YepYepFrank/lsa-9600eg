@@ -18,6 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse, stringify } from 'yaml'
 
+/** pm（独立颗粒物 / 烟感 PM6）0.7.1 起取消（舱室方案 v0.9 §10，烟雾取 SAM 的 smoke.ppm）：老 eg.yaml 里有也照读、只打提示（unitWarnings） */
 export type DeviceKind = 'eg' | 'sam' | 'meter' | 'pm' | 'camera'
 export type Group = 'mv' | 'tr' | 'lv'
 
@@ -178,7 +179,8 @@ export function unitOf(eg: Pick<EgFile, 'schema' | 'cabinet' | 'unit'>): EgUnit 
   return { id: '', code: eg.cabinet.code, at: '', index: eg.cabinet.index }
 }
 
-/** eg.attrs.unit、devices[].attrs.unit 只当属性原样上报、不解析；和 unit.code 不一致时返回提示（启动时打警告，不拒绝启动） */
+/** eg.attrs.unit、devices[].attrs.unit 只当属性原样上报、不解析；和 unit.code 不一致时返回提示（启动时打警告，不拒绝启动）。
+ *  0.7.1：设备清单里还有 pm（PM6，已取消）也在这里提示 */
 export function unitWarnings(cfg: Pick<EgConfig, 'unit' | 'eg' | 'devices'>): string[] {
   const out: string[] = []
   const code = cfg.unit.code
@@ -187,6 +189,7 @@ export function unitWarnings(cfg: Pick<EgConfig, 'unit' | 'eg' | 'devices'>): st
   for (const d of cfg.devices ?? []) {
     const du = d.attrs?.['unit']
     if (du !== undefined && du !== null && String(du) !== code) out.push(`${d.name} 的 attrs.unit 是 ${String(du)}，和本 EG 的 unit.code ${code} 不一致`)
+    if (d.kind === 'pm') out.push(`${d.name} 是独立颗粒物传感器（PM6），0.7.1 起取消：烟雾取 SAM 的 smoke.ppm；照常读它，但不再查它的到数 —— 子站模型删掉 pm 后重新生成 eg.yaml（join-egs）即可`)
   }
   return out
 }

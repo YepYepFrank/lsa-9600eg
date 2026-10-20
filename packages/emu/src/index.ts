@@ -12,7 +12,7 @@
  *   GET  /emu/status
  *   POST /emu/dev/<设备名>/dead?on=1|0   这台设备停发（模拟传感器掉线）/ 恢复
  *   POST /emu/dev/<设备名>/drop?keys=a,b  这台设备只停发这几个量（模拟单个传感器坏）；keys 为空 = 恢复
- *   POST /emu/dev/<设备名>/powercycle?off=70[&spikeKey=pm.2.5&spikeValue=300&spikeS=60][&selfq=1]
+ *   POST /emu/dev/<设备名>/powercycle?off=70[&spikeKey=smoke.ppm&spikeValue=300&spikeS=60][&selfq=1]
  *        0.17 传感器预热的两个场景：断电 off 秒再来电（≥ 60 s = 断电，EG 进预热；十几秒 = 总线抖动，不该进）；
  *        来电后 spikeS 秒内 spikeKey 报 spikeValue（预热期读数偏高），selfq=1 另发 q:warmup（型号自报 T1）
  *   POST /emu/arc?intensity=85&ms=22     热点隔室的 SAM 打一次弧光脉冲（强度按 %，0–100：ALS10 Arc Level ÷ 100，格式文档 v0.6；出厂阈值 70）

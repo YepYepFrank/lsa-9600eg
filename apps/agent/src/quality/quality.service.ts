@@ -43,6 +43,7 @@ import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { CapsService } from '../caps/caps.service.js'
 import { WarmupService } from '../warmup/warmup.service.js'
+import { warmupScope } from '../warmup/warmup.js'
 import { ConvExpectService } from '../conv/conv-expect.service.js'
 
 export type Quality = 'stale' | 'invalid'
@@ -81,6 +82,8 @@ interface DeviceWatch {
   publishedAt: number
   /** 上一次发出去的 dev.warmup_s（不是需要预热的设备一直是 null） */
   warm: number | null
+  /** 哪些量归预热管（warmupScope：SAM 只有 smoke.*） */
+  warmScope: (key: string) => boolean
   warmAt: number
   /** 判离线用的周期：必有量里最快的（没有必有量取全部里最快的） */
   period: number
@@ -122,7 +125,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly expect?: ConvExpectService,
   ) {
     for (const d of cfg.devices) {
-      if (d.kind === 'eg') continue
+      // 0.7.1：pm（PM6）已取消，老 eg.yaml 里还挂着也不看护（转换程序不读它，看护了只会一直判失联）
+      if (d.kind === 'eg' || d.kind === 'pm') continue
       const keys = new Map<string, Watch>()
       for (const p of pointsOf(d.kind, cfg.cabinet.group, d.kind === 'camera' ? camRegions(d.attrs) : true)) {
         // I6（0.4）：按点目录的期望周期（局放 us.* / tev.* / uhf.* 是 3 s，装置 3 s 才刷新一次），没写的按 fast / slow 档
@@ -131,7 +135,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         if (ms === null || p.key in DERIVED) continue
         keys.set(p.key, { period: ms, optional: !!p.optional, required: !p.optional, lastAt: this.startedAt, seen: false })
       }
-      const dw: DeviceWatch = { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, period: 60_000, expect: null }
+      const dw: DeviceWatch = { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, warmScope: warmupScope(d.kind), period: 60_000, expect: null }
       this.applyExpect(d.name, dw)
       this.devices.set(d.name, dw)
     }
@@ -180,7 +184,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     if (this.sourceFresh(d, now)) for (const [k, q] of Object.entries(d.fromSource)) put(k, q)
     for (const [k, q] of Object.entries(d.derived)) put(k, q)
     // 0.17：预热中，这台设备的量都标 warmup（可选量来过才标）
-    if (this.warmup.remaining(device, now) > 0) for (const [k, w] of d.keys) if (w.seen || w.required) put(k, 'warmup')
+    // 0.7.1：SAM 只有气体那路（smoke.*）标，局放、温湿度不受预热影响（warmupScope）
+    if (this.warmup.remaining(device, now) > 0) for (const [k, w] of d.keys) if ((w.seen || w.required) && d.warmScope(k)) put(k, 'warmup')
     for (const [key, w] of d.keys) {
       const q = judge(w, now)
       if (q) put(key, q)
@@ -254,6 +259,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now()
     let sourceQChanged = false
     let measured = false
+    let gas = false
     for (const e of entries) {
       for (const [k, v] of Object.entries(e.values)) {
         if (k === 'q') {
@@ -264,7 +270,10 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
           d.fromSourceAt = now
           continue
         }
-        if (!k.startsWith('dev.')) measured = true
+        if (!k.startsWith('dev.')) {
+          measured = true
+          if (d.warmScope(k)) gas = true
+        }
         const w = d.keys.get(k)
         // 可选量（分区测温）与目录外的量：来过才看护
         if (!w) continue
@@ -273,7 +282,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
       }
     }
     // 0.17：读到测量值，交给预热计时（T2 读数中断后恢复、T3 开机后第一次读到）；进了预热马上发
-    const warmed = measured && this.warmup.read(device, now)
+    // （0.7.1：SAM 只看气体那路的读数 —— 局放照常到、气体断了也要算中断）
+    const warmed = gas && this.warmup.read(device, now)
     // 每条读数后补发同一时刻的 dev.warmup_s（evaluate 的定时发照旧）
     if (measured && this.caps.deviceEnabled(device)) {
       const ws = this.warmupOf(device, now)

@@ -28,13 +28,13 @@ async function fullscreen() {
   try { await camera.value?.requestFullscreen() } catch { ElMessage.warning('当前浏览器无法进入全屏') }
 }
 
-const { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, ratioOf } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
+const { m, cam, sams, meter, labelOf, num, text, series, has, card, ratioOf } = useMonitor(toRef(props, 'tab'), computed(() => !props.demo))
 /* 阶段 A：卡片 → 能力（子站下发的能力清单）。演示模式照旧全显示；实测时 confirmed 照常、unsupported 隐藏、
  * pending 照常显示真实读数并打「待定（数据仅供调试核对）」角标（v1.2：pending 多是装了传感器、型号 / 口径没定，现场要先看到读数） */
 const CARD_CAPS = {
   camera: ['camVideo', 'thermalRegions'],
   pd: ['pdAmplitude', 'pdCount', 'pdType', 'pdLevel', 'tev', 'uhf'],
-  smoke: ['smokePpm', 'pm6'],
+  smoke: ['smokePpm'],
   climate: ['envTH'],
   arc: ['arcIntensity', 'arcEvents'],
   meter: ['meterBasic', 'meterHarmonics', 'meterThd', 'meterDemand'],
@@ -129,15 +129,13 @@ const dischargeScales = computed(() => {
 const pdAxisColors = computed(() => ({ [dischargeUnits.value[0]!]: 'var(--s1)', [dischargeUnits.value[1]!]: 'var(--s2)' }))
 const hasPd = computed(() => sams.value.some(s => has(s, 'us.amp')))
 
-/* ---------- 总览：烟雾 / 气体（照点表：≥1.0 μm 颗粒数 个/L、PM2.5、PM10 μg/m³；传感器选型定了再改） ---------- */
-const PM_KEYS = [
-  { key: 'pm.1.0', name: '≥1.0 μm 颗粒数', color: 'var(--s3)' },
-  { key: 'pm.2.5', name: 'PM2.5', color: 'var(--s1)' },
-  { key: 'pm.10', name: 'PM10', color: 'var(--s4)' },
-]
-const pmReadings = computed(() => PM_KEYS.map(p => ({ ...p, unit: catalogUnit('pm', p.key), v: num(pm.value, p.key) })))
-// 趋势只画质量浓度（μg/m³）两路；PM1.0 点表是颗粒数（个/L），量级不同，只给读数
-const pmSeries = computed<UnitSeries[]>(() => PM_KEYS.slice(1).map(p => ({ name: p.name, unit: catalogUnit('pm', p.key, 'μg/m³'), color: p.color, data: series(pm.value, p.key) })))
+/* ---------- 总览：烟雾（0.7.1 起取 SAM 气体传感器的 smoke.ppm，独立颗粒物 PM6 取消；舱室方案 v0.9 §10） ----------
+   一面柜多台 SAM（照旧一柜一台 EG）时各台取大、趋势各画一条；预热期质量码是 warmup，读数照显示、标「预热中」 */
+const smokeUnit = computed(() => catalogUnit('sam', 'smoke.ppm', 'ppm'))
+const smokeNow = computed(() => maxOver('smoke.ppm'))
+const smokeWarm = computed(() => sams.value.some(s => m.live[s]?.q['smoke.ppm'] === 'warmup'))
+const hasSmoke = computed(() => sams.value.some(s => has(s, 'smoke.ppm')))
+const smokeTrend = computed<UnitSeries[]>(() => sams.value.map((s, i) => ({ name: sams.value.length > 1 ? `烟雾浓度 ${shortSam(s)}` : '烟雾浓度', unit: smokeUnit.value, color: ['var(--s1)', 'var(--s6)', 'var(--s7)'][i % 3]!, data: series(s, 'smoke.ppm') })))
 
 /* ---------- 总览：UV 弧光（各 SAM 的 uv.pulse 近 24 h） ---------- */
 const arcPulses = computed(() =>
@@ -299,16 +297,16 @@ async function download(id: string, label: string) {
         <div v-else class="monitor-empty">尚未接入局放监测数据</div>
       </section>
       <section v-if="show('smoke')" class="monitor-card smoke-card" :class="{ 'cap-pending': pendingCard('smoke') }">
-        <div class="monitor-card-heading"><b>烟雾 / 气体监测</b><span class="grow"/><span class="pending" :title="demo ? '颗粒物通道用于演示，待实际传感器选型后调整' : '按点表 pm 设备的 key 与单位接入；传感器型号待确认'">{{ demo ? '模拟 · μg/m³' : pm ? '实测 · 型号待确认' : '选型待定' }}</span></div>
+        <div class="monitor-card-heading"><b>烟雾监测</b><span v-if="!demo && smokeNow && sams.length > 1" class="muted" :title="'各隔室取大，当前最大在 ' + labelOf(smokeNow.s)">{{ shortSam(smokeNow.s) }} 最大</span><span class="grow"/><span class="pending" title="SAM 气体传感器的烟雾浓度（smoke.ppm）；超过阈值表「烟雾」上限持续 30 s 出「烟气」告警">{{ demo ? '模拟 · ppm' : smokeWarm ? '预热中 · 读数仅供参考' : hasSmoke ? '实测 · 近 24h' : '等待数据' }}</span></div>
         <template v-if="demo">
           <div class="preview-readings smoke-readings"><div v-for="s in smokeSeries" :key="s.name"><span><i :style="{ background: s.color }"/>{{ s.name }}</span><b>{{ s.data[s.data.length - 1][1] }}</b></div></div>
           <SensorPreviewTrend :series="smokeSeries" />
         </template>
-        <template v-else-if="pm">
-          <div class="preview-readings smoke-readings"><div v-for="s in pmReadings" :key="s.key" :title="s.unit"><span><i :style="{ background: s.color }"/>{{ s.name }}</span><b>{{ f1(s.v, s.key === 'pm.1.0' ? 0 : 1) }}</b><small>{{ s.unit }}</small></div></div>
-          <SensorPreviewTrend :series="pmSeries" />
+        <template v-else-if="hasSmoke">
+          <div class="preview-readings smoke-readings"><div :title="smokeUnit"><span><i style="background: var(--s1)"/>烟雾浓度</span><b>{{ f1(smokeNow?.v ?? null) }}</b><small>{{ smokeUnit }}</small></div></div>
+          <SensorPreviewTrend :series="smokeTrend" />
         </template>
-        <div v-else class="monitor-empty"><span class="empty-symbol">◌</span><strong>传感器待确认</strong><span>确定型号与接口后接入</span></div>
+        <div v-else class="monitor-empty"><span class="empty-symbol">◌</span><strong>等待烟雾数据</strong><span>{{ sams.length ? 'SAM 气体传感器还没送来 smoke.ppm' : 'eg.yaml 设备清单里没有 SAM' }}</span></div>
       </section>
       </div>
       <section v-if="show('climate')" class="monitor-card climate-card" :class="{ 'cap-pending': pendingCard('climate') }">

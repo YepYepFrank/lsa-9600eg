@@ -2,8 +2,8 @@
  *
  * 子站随配置下发（PUT /api/config）：
  *   caps    { "<柜号>": { "<能力>": "confirmed" | "pending" | "unsupported" } }   EG 取自己柜号那一份
- *   capKeys { "<能力>": ["<设备前缀>:<遥测 key>", …] }                          如 pdCount → ["SAM:us.cnt"]、pm6 → ["PM6:*"]
- * 只有 confirmed 算启用。设备前缀 = 设备名第一个「-」之前（SAM、PM、PM2、PM6、CAM）；key 支持整个 key、末尾 * 的前缀、单独 *。
+ *   capKeys { "<能力>": ["<设备前缀>:<遥测 key>", …] }                          如 pdCount → ["SAM:us.cnt"]、smokePpm → ["SAM:smoke.*"]
+ * 只有 confirmed 算启用。设备前缀 = 设备名第一个「-」之前（SAM、PM、PM2、CAM；PM6 0.7.1 起取消）；key 支持整个 key、末尾 * 的前缀、单独 *。
  *
  * EG 怎么用：
  *   - 规则：不看能力（子站对不启用能力的规则直接下 on:false）

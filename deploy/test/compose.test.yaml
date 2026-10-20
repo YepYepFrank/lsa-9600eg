@@ -1,6 +1,6 @@
 # 测试件（只在虚拟样机 / 实验台上用，**现场不装**）：代替「同事的采集程序」与「双目摄像机」，让正式编排整条链路有数据可跑（G6 验收）。
 #
-#   emu      packages/emu：按 config/eg.yaml 的设备清单往本机总线（127.0.0.1:1884）发 SAM / 电表 / 颗粒物数据，
+#   emu      packages/emu：按 config/eg.yaml 的设备清单往本机总线（127.0.0.1:1884）发 SAM / 电表数据，
 #            并扮摄像机的测温接口（http://127.0.0.1:3190/emu/cam，eg-video 的 sim 驱动取它）
 #   camera   RTSP 测试源（mediamtx + ffmpeg）扮摄像机的四路视频：127.0.0.1:8555（账号 admin / lsa-cam），API 127.0.0.1:9998（emu 断流用）
 #

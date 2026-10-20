@@ -5,7 +5,7 @@
  * v0.7（格式文档 docs/EG内部MQTT格式.md v0.7，2026-10-13 转换程序联调）：
  *   - 每个量带能力 cap 与它在现场口径（production）下的状态 capState：不是 confirmed 的（局放类型 / 等级待定、地电波 / 特高频「本柜装了才发」）
  *     检查工具不报「一直没收到」，收到了给一条说明；
- *   - smoke.ppm（烟雾参考浓度，能力 smokePpm 待定、T08）点目录里还没有，先按 SAM 的可选量放进来，标 pending，不报「不在点表」；
+ *   - smoke.ppm（烟雾浓度）0.7.1 起在点目录的 SAM 里（能力 smokePpm 已确认）；独立颗粒物 PM6 取消，pm 种类不再导出（舱室方案 v0.9 §10）；
  *   - 各设备通用的「不要发」带原因（forbidWhy）：dev.warmup_s（0.17 预热由 EG 判）、dev.comm / dev.link。 */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -13,8 +13,8 @@ import { fileURLToPath } from 'node:url'
 import { CATALOG, CATALOG_VERSION, DEVICE_STATUS, SOUTH, expectedPeriodMs, pointsOf, sourceOf, type PointDef } from '@lsa/points'
 import { CAP_DEFAULT_PRODUCTION, CAP_LABEL, pendingText, type CapKey } from '@lsa/model'
 
-type Kind = 'sam' | 'meter' | 'pm'
-const KINDS: Kind[] = ['sam', 'meter', 'pm']
+type Kind = 'sam' | 'meter'
+const KINDS: Kind[] = ['sam', 'meter']
 
 interface Key {
   key: string
@@ -51,25 +51,13 @@ const toKey = (p: PointDef, optional = !!p.optional): Key => {
 
 const devices: Record<string, { send: Key[]; forbid: string[] }> = {}
 for (const kind of KINDS) {
-  // 低压柜的相数最多，按 lv 展开就覆盖了其他柜型（电表 / SAM / 颗粒物的 key 现在都不按相展开）
+  // 低压柜的相数最多，按 lv 展开就覆盖了其他柜型（电表 / SAM 的 key 现在都不按相展开）
   const pts = pointsOf(kind, 'lv')
   devices[kind] = {
     send: pts.filter(p => sourceOf(kind, p) === 'device').map(p => toKey(p)),
     forbid: pts.filter(p => sourceOf(kind, p) !== 'device').map(p => p.key),
   }
 }
-// 烟雾参考浓度：点目录等 T08 型号定了才加（后端 caps smokePpm: ['SAM:smoke.*']），先让检查工具认得、不报「不在点表」
-devices['sam']!.send.push({
-  key: 'smoke.ppm',
-  label: '烟雾参考浓度',
-  unit: 'ppm',
-  periodMs: null,
-  optional: true,
-  type: 'number',
-  cap: 'smokePpm',
-  capState: CAP_DEFAULT_PRODUCTION.smokePpm,
-  note: `能力「${CAP_LABEL.smokePpm}」待定（${pendingText('smokePpm')}）：EG 本地显示、暂不上送子站；预热由 EG 0.17 自己判，量程寄存器不用发`,
-})
 
 // 各下挂设备都能带的：通信状态（§6b，可选）、质量码（§6，可选）、南向统计（§6，要发就五个一起发）
 const common = {

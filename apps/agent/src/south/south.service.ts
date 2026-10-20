@@ -60,7 +60,8 @@ export class SouthService implements OnModuleInit, OnModuleDestroy {
   /** 按物模型（或预期测点）定每台的周期档；since 给了就把变了档的那几台窗口重起 */
   private build(since: number): void {
     for (const d of this.cfg.devices) {
-      if (d.kind === 'eg') continue
+      // 0.7.1：pm（PM6）已取消，老 eg.yaml 里还挂着也不看护（转换程序不读它，看护了只会一直判失联）
+      if (d.kind === 'eg' || d.kind === 'pm') continue
       const all = pointsOf(d.kind, this.cfg.cabinet.group).map(p => ({ key: p.key, ms: expectedPeriodMs(p) }))
       const e = this.expect?.expected(d.name)
       const mine = e ? all.filter(p => e.has(p.key) && p.ms !== null) : []

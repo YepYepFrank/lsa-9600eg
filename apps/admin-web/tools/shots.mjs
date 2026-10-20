@@ -35,7 +35,8 @@ const EG = /^eg:\n  name: "?([^"\n]+)/m.exec(egYaml)?.[1] ?? `EG-${cabinet}`
 const sams = devs.filter(d => d.kind === 'sam').map(d => d.name)
 const SAM_A = sams[0] ?? `SAM-${cabinet}-A`
 const SAM_B = sams.at(-1) ?? SAM_A
-const PM6 = devs.find(d => d.kind === 'pm')?.name ?? `PM6-${cabinet}`
+// 整台停发拿电表做（0.7.1 起没有 PM6）
+const DEAD = devs.find(d => d.kind === 'meter')?.name ?? `PM-${cabinet}`
 
 /** [名字, 进入方式, 路由, 宽, 高, 额外动作]
  *  进入方式：login 不预置会话 / local 本地账号 / sp:<子站用户> 经子站票据 */
@@ -138,10 +139,10 @@ for (const [name, mode, route, w = 1366, h = 768, action] of SHOTS) {
     console.log('·', name, '（经子站：没开 SP=1，跳过）')
     continue
   }
-  // 质量异常两张：让仿真器停发 SAM-A 的环境温湿度、整台停发颗粒物，等看护标到「无效」
+  // 质量异常两张：让仿真器停发 SAM-A 的环境温湿度、整台停发电表，等看护标到「无效」
   if (action === 'fault' && !faultOn) {
     await fetch(`${EMU}/emu/dev/${SAM_A}/drop?keys=env.t,env.rh`, { method: 'POST' })
-    await fetch(`${EMU}/emu/dev/${PM6}/dead?on=1`, { method: 'POST' })
+    await fetch(`${EMU}/emu/dev/${DEAD}/dead?on=1`, { method: 'POST' })
     faultOn = true
     console.log('  （制造质量异常，等 60 s 让看护标到「无效」）')
     await sleep(60_000)
@@ -221,7 +222,7 @@ for (const [name, mode, route, w = 1366, h = 768, action] of SHOTS) {
 
 if (faultOn) {
   await fetch(`${EMU}/emu/dev/${SAM_A}/drop?keys=`, { method: 'POST' })
-  await fetch(`${EMU}/emu/dev/${PM6}/dead?on=0`, { method: 'POST' })
+  await fetch(`${EMU}/emu/dev/${DEAD}/dead?on=0`, { method: 'POST' })
   console.log('  （质量异常已撤销）')
 }
 ws.close()

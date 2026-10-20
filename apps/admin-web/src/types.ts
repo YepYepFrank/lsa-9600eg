@@ -2,6 +2,7 @@
 
 export interface Dev {
   name: string
+  /** pm（PM6）0.7.1 起取消，老 eg.yaml 里可能还有 */
   kind: 'sam' | 'meter' | 'pm' | 'camera' | 'eg'
   label: string
   keys: number
