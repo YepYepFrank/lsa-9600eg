@@ -143,6 +143,13 @@ async function main() {
     const ce = loadConvExpect(dir)
     check(!!ce && ce.errors.some(e => e.startsWith('bad.yaml')), `读不了的文件记进 errors，其余照读（${ce?.errors.join('；')}）`)
     check(!!ce?.byDevice.has('SAM-AH98-B'), '不在 eg.yaml 里的设备名照样读出来（ConvExpectService 打警告：数据进不了本地 TB）')
+
+    console.log('5. 红外打开（同事的 infrared.yaml 寄存器不写 key，0.7.2）')
+    put('infrared.yaml', 'sensor:\n  name: "infrared"\n  type: "infrared"\n  device: "' + B + '"\n  slave_id: 1\n  enabled: true\nregisters:\n  base_address: 0x004F\n  register_count: 3\n  scale: 0.1\n')
+    const ci = loadConvExpect(dir)
+    const ib = ci?.byDevice.get(B)
+    check(!!ib && ib.has('ir.t_max') && ib.has('ir.t_avg') && !ci!.errors.some(e => e.startsWith('infrared.yaml')), `按类型兜底：B 预期测点多了 ir.t_max、ir.t_avg，不报「不认识」（${ci?.errors.join('；') || '无错'}）`)
+    check(!!ci?.bus.slaves.some(s => s.a === 1 && s.t === 'infrared' && s.dev === B), `485 清单（conv.bus）里有红外从站 1（${ci?.bus.slaves.map(s => `${s.a} ${s.n}`).join('，')}）`)
   } finally {
     for (const s of [q, south, qOld, southOld, expect]) s.onModuleDestroy()
     Date.now = realNow

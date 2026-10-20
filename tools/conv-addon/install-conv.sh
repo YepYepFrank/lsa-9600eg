@@ -343,11 +343,11 @@ status() {
 case "$MODE" in
   status) status; exit 0 ;;
   check)
-    echo "== lsa_check 检查 $CHECK s（按 $DIR/config/eg.yaml 的设备清单）"
+    echo "== lsa_check 检查 $CHECK s（按 $DIR/config/eg.yaml 的设备清单、config/conv 的传感器挂法）"
     if command -v python3 >/dev/null; then
-      python3 "$HERE/conv-kit/lsa_check.py" --eg-yaml config/eg.yaml --duration "$CHECK"
+      python3 "$HERE/conv-kit/lsa_check.py" --eg-yaml config/eg.yaml --conv config/conv --duration "$CHECK"
     else
-      docker run --rm --network host -v "$HERE/conv-kit:/kit:ro" -v "$DIR/config/eg.yaml:/eg.yaml:ro" --entrypoint python3 "$IMG" /kit/lsa_check.py --eg-yaml /eg.yaml --duration "$CHECK"
+      docker run --rm --network host -v "$HERE/conv-kit:/kit:ro" -v "$DIR/config/eg.yaml:/eg.yaml:ro" -v "$DIR/config/conv:/conv:ro" --entrypoint python3 "$IMG" /kit/lsa_check.py --eg-yaml /eg.yaml --conv /conv --duration "$CHECK"
     fi
     exit 0 ;;
   off)

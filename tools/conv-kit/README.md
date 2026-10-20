@@ -53,8 +53,10 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 EG 上总线本来就在（容器 `lsa-eg-mosquitto`，`127.0.0.1:1884`），**不用装**（`install.sh` 也会认出来直接退出）。直接按 EG 的设备清单检查：
 
 ```bash
-python3 lsa_check.py --eg-yaml /opt/lsa-eg/config/eg.yaml
+python3 lsa_check.py --eg-yaml /opt/lsa-eg/config/eg.yaml --conv /opt/lsa-eg/config/conv
 ```
+
+`--conv`（0.7.2）：按转换程序配置算每台设备该来哪些量，与 EG 同一口径 —— 一面柜几台 SAM、传感器按隔室分开挂时（A 只接温湿度、B 接局放 / 弧光 / 气体），不再把另一台的量报成「一直没收到」。`install-conv.sh --check` 会自动带上。不给时照旧按点表全量期望。
 
 在 EG 上检查时，eg-agent / eg-video 自己发的消息（带 MQTT 5 用户属性 `src=eg-agent` / `eg-video`）会被自动略过，只看你的。
 
