@@ -47,6 +47,10 @@ export class VideoService {
   cfg: EgConfig
   private driver!: CameraDriver
   private sources: Partial<Record<ChannelKey, StreamInfo & { from: 'manual' | 'driver' }>> = {}
+  /** 有没有配摄像机（任何一路取得到流地址）：没有时录像、裁片段都按「本机没有摄像机」答，不当故障（0.7.1） */
+  hasCamera(): boolean {
+    return Object.keys(this.sources).length > 0
+  }
   private probes: Partial<Record<ChannelKey, Probe>> = {}
   private streamsInfo: { driver: string; ok: boolean; error: string | null; note: string | null; at: number | null } | null = null
   private mtx: { file: string; changed: boolean; at: number; readFrom: string[] } | null = null

@@ -65,6 +65,8 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
   private purged = { n: 0, oldest: null as number | null }
   private purgeAlarmId: string | null = null
   private recOk: boolean | null = null
+  /** 已经打过「暂时做不了」WARN 的证据（重试时不再刷屏） */
+  private readonly retryWarned = new Set<string>()
   private indexError: string | null = null
   private lastIndexAck: number | null = null
 
@@ -259,13 +261,28 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
         missingReason,
         dueAt: null,
       })
+      this.retryWarned.delete(r.evidenceId)
       this.pair(r)
     }
-    const missing = (reason: string) => this.store.update(r.evidenceId, { status: 'MISSING', missingReason: reason, dueAt: null })
+    const missing = (reason: string) => {
+      this.retryWarned.delete(r.evidenceId)
+      this.store.update(r.evidenceId, { status: 'MISSING', missingReason: reason, dueAt: null })
+    }
+    // 暂时做不了（摄像机 / eg-video 一时不通）：隔得越来越久再试（30 s → 1 → 2 → 4 → 最多 5 min），
+    // 只在第一次和放弃时打 WARN，中间几次不刷屏（0.7.1：P6 没接摄像机时每 30 s 一条）
     const later = (why: string) => {
-      if (now - r.createdAt > GIVE_UP_MS) return missing('camera_unreachable')
-      this.store.update(r.evidenceId, { dueAt: now + 30_000 })
-      this.log.warn(`${r.evidenceId} 暂时做不了（${why}），30 s 后再试`)
+      const age = now - r.createdAt
+      if (age > GIVE_UP_MS) {
+        this.retryWarned.delete(r.evidenceId)
+        this.log.warn(`${r.evidenceId} 试了 ${Math.round(age / 60_000)} 分钟还做不了（${why}），标缺证（camera_unreachable）`)
+        return missing('camera_unreachable')
+      }
+      const wait = Math.min(300_000, 30_000 * 2 ** Math.floor(Math.log2(1 + age / 30_000)))
+      this.store.update(r.evidenceId, { dueAt: now + wait })
+      if (!this.retryWarned.has(r.evidenceId)) {
+        this.retryWarned.add(r.evidenceId)
+        this.log.warn(`${r.evidenceId} 暂时做不了（${why}），隔一会儿再试（最多到 ${GIVE_UP_MS / 60_000} 分钟，之后标缺证）`)
+      } else this.log.debug(`${r.evidenceId} 还是做不了（${why}），${Math.round(wait / 1000)} s 后再试`)
     }
     try {
       if (r.kind === 'video') {
@@ -404,6 +421,7 @@ export class EvidenceService implements OnModuleInit, OnModuleDestroy {
       this.audit.write({ user: 'system', name: '证据', via: 'system', ip: '-', action: full ? 'evidence.disk_full' : 'evidence.disk_ok', target: `${used} %`, ok: !full })
     }
     const rec = await this.video.recording()
+    // 没配摄像机（eg-video 答 ok: null）不报 eg.rec_ok：那不是「录像断了」（0.7.1）
     this.recOk = rec ? rec.ok : null
   }
 
