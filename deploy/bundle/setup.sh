@@ -261,6 +261,59 @@ ca_key_sum() {
   return 0
 }
 
+# ---------- 0.18.1：升级前留旧版（rollback.sh 回上一版要它）、清旧镜像 ----------
+# 一键安装升级子站是原地覆盖（tar 进 lsa9600sp-backend），0.18.0 以前不留旧目录，rollback.sh 一上来就报「没有旧目录」。
+# 现在覆盖前把整个目录 cp -a 成 lsa9600sp-backend.old（先删上一个）：目录只有配置和脚本（实测约 3 MB），库、TB、录像在 docker 命名卷里。
+# 先查剩余空间（≥ 2 × 目录大小 + 100 MB），不够就在覆盖之前停下；cp 失败也停下，不会只覆盖一半。
+# 同一版本重跑（APP_VERSION 没变）不动 .old：那份里是真正的上一版。
+sp_keep_old() {
+  local new="$1" cur old="${SP_B:?}.old" need free
+  cur="$(envget "$SP_ENV" APP_VERSION)"
+  if [ -z "$cur" ] || [ "$cur" = "$new" ]; then
+    echo "同一版本（${cur:-？}）重跑：旧版目录 $old 不动$([ -d "$old" ] && echo "（里面是 $(envget "$old/docker/.env" APP_VERSION)）")"
+    return 0
+  fi
+  need=$(( $(du -sk "$SP_B" | cut -f1) * 2 + 102400 ))
+  free="$(df -Pk "$SP_DEST" | awk 'NR == 2 { print $4 }')"
+  [ "${free:-0}" -ge "$need" ] ||
+    die "留旧版目录要约 $((need / 1024)) MB，$SP_DEST 所在分区只剩 $((${free:-0} / 1024)) MB：腾出空间再装（还什么都没改）"
+  rm -rf "$old.tmp"
+  cp -a "$SP_B" "$old.tmp" || { rm -rf "$old.tmp"; die "留旧版目录失败（cp -a $SP_B → $old.tmp）：还什么都没改"; }
+  rm -rf "$old"
+  mv "$old.tmp" "$old"
+  echo "旧版（$cur）留在 $old：要回到它用 sudo bash $SP_B/scripts/rollback.sh（子站部署手册 §8.2）"
+  docker image inspect "lsa9600sp/app:$cur" >/dev/null 2>&1 ||
+    echo "！ 本机没有旧版镜像 lsa9600sp/app:$cur（被清理过？）：rollback.sh 要先从 $cur 的离线包 docker load；升级照常继续"
+}
+# 本站模型（0.18.1 tb/model.station.yaml，后端）还没有时，留一份升级前的 tb/model.yaml：up.sh 跟历来的样板 sha 比，
+# 一样就删、不一样改名 .candidate 让 check.sh 提示 —— 现场改过的柜列、站 ID 不会被这次覆盖丢掉。失败只提醒，不拦升级
+sp_pre_upgrade_model() {
+  [ ! -f "$SP_B/tb/model.station.yaml" ] && [ -f "$SP_B/tb/model.yaml" ] || return 0
+  if cp -p "$SP_B/tb/model.yaml" "$SP_B/tb/model.yaml.pre-upgrade"; then echo "升级前的 tb/model.yaml 留了一份 tb/model.yaml.pre-upgrade（up.sh 核对现场改过没有）"
+  else echo "！ 没能留升级前的 tb/model.yaml（cp 失败）：现场改过 model.yaml 的话，升级后按子站部署手册 §5 核对柜列与站 ID"; fi
+  return 0
+}
+# 升级成功以后清 lsa9600sp/app 的旧镜像：只留「现在的」和「.old 对应的」两个版本；
+# 还有容器（包括停着的）在用的一律不删（同机装着路段平台时它也用 lsa9600sp/app），删了哪几个、腾出多少打出来
+sp_prune_app_images() {
+  local now old img tag id users size freed=0 removed=() kept=()
+  now="$(envget "$SP_ENV" APP_VERSION)"
+  old="$(envget "${SP_B:?}.old/docker/.env" APP_VERSION 2>/dev/null)"
+  for img in $(docker image ls lsa9600sp/app --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true); do
+    tag="${img#*:}"
+    case "$tag" in "$now" | "$old" | '<none>' | '') continue ;; esac
+    id="$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || true)"
+    [ -n "$id" ] || continue
+    users="$(docker ps -a --filter "ancestor=$id" --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -n "${users// /}" ]; then kept+=("$tag"); echo "  留着 $img：还有容器在用（${users% }）"; continue; fi
+    size="$(docker image inspect -f '{{.Size}}' "$img" 2>/dev/null || echo 0)"
+    if docker image rm "$img" >/dev/null 2>&1; then removed+=("$tag"); freed=$((freed + size)); fi
+  done
+  if [ ${#removed[@]} -gt 0 ]; then echo "清掉旧的子站镜像 lsa9600sp/app：${removed[*]}（约 $((freed / 1024 / 1024)) MB）；留着 $now${old:+、$old（回滚用）}"
+  else echo "子站镜像 lsa9600sp/app：留着 $now${old:+、$old（回滚用）}，没有要清的${kept:+（有容器在用的没删：${kept[*]}）}"; fi
+  return 0
+}
+
 install_sp() {
   local mem_gb ver ip img_id
   mem_gb=$(( $(awk '/MemTotal/ { print $2 }' /proc/meminfo) / 1024 / 1024 ))
@@ -281,6 +334,13 @@ install_sp() {
   k0="$(ca_key_sum)"
   if [ -f "$SP_ENV" ] && { [ -z "$ca0" ] || [ -z "$k0" ]; } && [ "$FORCE" != 1 ]; then
     die "已有 docker/.env，但站内 CA 不全（docker/tls/sp-ca.pem $([ -n "$ca0" ] && echo 在 || echo 缺)；私钥 docker/tls-ca/ 或 docker/tls/ 下的 sp-ca.key $([ -n "$k0" ] && echo 在 || echo 缺)）：继续的话 up.sh 会新生成 CA，所有 EG 的 sp-ca.pem 失效。先把原来的 docker/tls、docker/tls-ca 放回 $SP_B/docker/；确实要换 CA（之后每台 EG 重出配置包）加 --force"
+  fi
+
+  # 升级（已有 docker/.env）：覆盖之前留旧版目录、留升级前的 model.yaml
+  if [ -f "$SP_ENV" ]; then
+    say '留旧版（回滚用）'
+    sp_keep_old "$(envget sp/lsa9600sp-backend/docker/.env.prod.example APP_VERSION)"
+    sp_pre_upgrade_model
   fi
 
   say "放置文件到 $SP_DEST"
@@ -338,6 +398,7 @@ install_sp() {
     if [ "$ca1" = "$ca0" ] && [ "$k1" = "$k0" ]; then echo "站内 CA 未变（证书 sha256 ${ca0:0:16}…、私钥 sha256 ${k0:0:16}…），各 EG 的 sp-ca.pem 照常可用"
     else die "站内 CA 在升级中变了（证书 ${ca0:0:16}… → ${ca1:0:16}…，私钥 ${k0:0:16}… → ${k1:0:16}…）：各 EG 的 sp-ca.pem 全部失效。用备份的 docker/tls、docker/tls-ca 换回去再跑 up.sh --prod"; fi
   fi
+  sp_prune_app_images
   echo "$img_id" > "$SP_DEST/.loaded"
   # TB 系统管理员出厂口令改随机：子站 up.sh 自己会改（rotate_sysadmin，与后端会话商定只留那一份）时不再做，
   # 否则这里用出厂口令登不进去会误报「请手工改」；老包的 up.sh 没有这一步，照旧由这里改
