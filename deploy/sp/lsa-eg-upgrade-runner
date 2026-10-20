@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -684,15 +685,31 @@ def put_state(rid, typ, status, at, reason='', result=None, ended=None):
                                  'reason': reason, 'result': result})
 
 
-def rm_at(name, dfd):
-    """删目录 fd 下的一个条目：不跟随、不递归（v0.4 §9.2）—— 链接 / 文件 unlink，目录只 rmdir（不空就留着、下次再说）"""
+def rm_req(name):
+    """拒掉 requests/ 里的一个条目：不跟随、不递归（v0.4 §9.2）—— 链接 / 文件 / FIFO unlink；
+    目录（可能不空）整个改名进 done/（rename 不跟随，对不空的目录也行；留在原地 path 单元会反复触发）"""
     try:
-        if stat.S_ISDIR(os.lstat(name, dir_fd=dfd).st_mode):
-            os.rmdir(name, dir_fd=dfd)
-        else:
-            os.unlink(name, dir_fd=dfd)
+        st = os.lstat(name, dir_fd=RFD)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        to_done(name)
+        return
+    try:
+        os.unlink(name, dir_fd=RFD)
     except OSError as e:
         log(f'  删不掉 {name[:80]}：{e.strerror}')
+
+
+def rm_done(name):
+    """清 done/ 里的一个条目。done/ 不挂进容器，挪进来的目录容器已经碰不到了：rmtree 的 dir_fd 版（不跟随链接）整个删"""
+    try:
+        if stat.S_ISDIR(os.lstat(name, dir_fd=DFD).st_mode):
+            shutil.rmtree(name, dir_fd=DFD)
+        else:
+            os.unlink(name, dir_fd=DFD)
+    except OSError as e:
+        log(f'  done/ 里删不掉 {name[:80]}：{e.strerror}')
 
 
 def to_done(name):
@@ -706,8 +723,12 @@ def to_done(name):
     try:
         os.rename(name, dst, src_dir_fd=RFD, dst_dir_fd=DFD)
     except OSError as e:
-        log(f'  移不进 done/：{name[:80]}：{e.strerror}；删掉')
-        rm_at(name, RFD)
+        log(f'  移不进 done/：{name[:80]}：{e.strerror}')
+        try:
+            if not stat.S_ISDIR(os.lstat(name, dir_fd=RFD).st_mode):
+                os.unlink(name, dir_fd=RFD)
+        except OSError:
+            pass
 
 
 def handle(name):
@@ -760,7 +781,7 @@ def cleanup():
         ents = sorted((os.lstat(n, dir_fd=DFD).st_mtime, n) for n in os.listdir(DFD))
         for i, (mt, n) in enumerate(ents):
             if mt < cut or i < len(ents) - DONE_CAP:
-                rm_at(n, DFD)
+                rm_done(n)
     except OSError:
         pass
     try:   # state/requests/（只有执行器写）
@@ -808,7 +829,7 @@ def main():
     if len(ents) > FLOOD_N:
         # 扩展服务写坏了或被攻破在刷：全部拒收（直接删，不留 done/、不写每个请求的结果，免得把盘刷满）
         for n in ents:
-            rm_at(n, RFD)
+            rm_req(n)
         runner_json(flood=True, floodAt=now_ms(), floodCount=len(ents))
         log(f'requests/ 里有 {len(ents)} 个条目（上限 {FLOOD_N}）：全部拒收，runner.json 记 flood')
         return
@@ -823,11 +844,11 @@ def main():
             pass
     for n, st in sts.items():
         if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:   # 符号链接、目录、FIFO、设备、硬链接数 > 1：不打开、不跟随，直接删
-            log(f'拒收：不是普通文件，删掉：{n[:80]}')
-            rm_at(n, RFD)
+            log(f'拒收：不是普通文件，删掉（目录挪进 done/）：{n[:80]}')
+            rm_req(n)
         elif n.endswith('.tmp'):   # 扩展服务先写 .tmp 再改名；放久了的是写坏的
             if st.st_mtime < time.time() - TMP_STALE_S:
-                rm_at(n, RFD)
+                rm_req(n)
         elif n.endswith('.json') and ID_RE.fullmatch(n[:-5]):
             valid.append(n)
         else:

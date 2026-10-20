@@ -164,7 +164,7 @@ writeFileSync(join(B, 'join-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/join
 // 0.18.1：发布公钥（子站 --role sp 时装到 /opt/lsa9600sp/release-signers，upgrade-egs.sh 先在子站验一遍签名；EG 那份在 eg/ 里）
 writeFileSync(join(B, 'release-signers'), readFileSync(resolve(ROOT, 'deploy/eg/release-signers'), 'utf8').replace(/\r\n/g, '\n'))
 // 0.19.0：网页升级 EG 的主机侧执行器 + systemd 单元（--role sp 时装到 /opt/lsa9600sp/、/etc/systemd/system/）
-for (const f of ['lsa-eg-upgrade-runner', 'lsa-eg-upgrade-runner.path', 'lsa-eg-upgrade-runner.service'])
+for (const f of ['lsa-eg-upgrade-runner', 'lsa-eg-upgrade-runner.path', 'lsa-eg-upgrade-runner.service', 'lsa-eg-upgrade-runner.timer'])
   writeFileSync(join(B, f), readFileSync(resolve(ROOT, 'deploy/sp', f), 'utf8').replace(/\r\n/g, '\n'))
 writeFileSync(join(B, 'VERSION'), VERSION + '\n')
 const egImages = readFileSync(join(EG, 'IMAGES.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => `    ${l.split(' ')[0]}  ${l.split(' ')[1]}`)

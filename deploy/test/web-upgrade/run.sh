@@ -70,7 +70,7 @@ say "1. setup.sh --role sp 的 sp_egup_runner（装两遍：幂等；老目录�
 SP_DEST=/opt/lsa9600sp
 eval "$(sed -n '/^sp_egup_runner() {$/,/^}$/p' "$T/../../bundle/setup.sh")"
 declare -F sp_egup_runner >/dev/null || { bad 'setup.sh 里没取到 sp_egup_runner'; exit 1; }
-src="$(mktemp -d)"; cp "$T/../../sp/lsa-eg-upgrade-runner" "$T/../../sp/lsa-eg-upgrade-runner.path" "$T/../../sp/lsa-eg-upgrade-runner.service" "$src/"; echo 0.19.0-test > "$src/VERSION"
+src="$(mktemp -d)"; cp "$T/../../sp/lsa-eg-upgrade-runner" "$T/../../sp/lsa-eg-upgrade-runner.path" "$T/../../sp/lsa-eg-upgrade-runner.service" "$T/../../sp/lsa-eg-upgrade-runner.timer" "$src/"; echo 0.19.0-test > "$src/VERSION"
 mkdir -p "$R" && chmod 777 "$R"   # 老子站上手工建过、权限不对
 ( cd "$src" && sp_egup_runner . ) > /tmp/setup1.log 2>&1 || { bad "sp_egup_runner 第一遍失败"; cat /tmp/setup1.log; }
 cp /w/a.run "$P/" && echo keep > "$SR/keep.json"
@@ -89,6 +89,8 @@ chk "tmpfiles 建 /run/lsa9600sp" grep -q '^d /run/lsa9600sp 0755 root root' /et
 chk "runner.json（version $(jget "$S/runner.json" 'o["version"]')、pkgDir）" [ "$(jget "$S/runner.json" 'o["version"]+" "+o["pkgDir"]')" = "0.19.0-test $P" ]
 { [ -f "$P/a.run" ] && [ -f "$SR/keep.json" ]; } && ok '升级时已有的包和结果不动' || bad '升级时把已有的包 / 结果弄没了'
 chk 'enable + restart 了 path 单元' grep -q 'restart lsa-eg-upgrade-runner.path' /fake/systemctl.log
+chk 'timer 装了、enable + restart（每 5 min 兜底：清 flood、7 天清理）' grep -q 'restart lsa-eg-upgrade-runner.timer' /fake/systemctl.log
+chk 'timer 每 5 min 触发执行器' grep -q '^OnUnitActiveSec=5min$' /etc/systemd/system/lsa-eg-upgrade-runner.timer
 rm -f "$P/a.run" "$SR/keep.json"
 U1=/etc/systemd/system/lsa-eg-upgrade-runner.service
 grep -q '^ExecStart=/usr/bin/python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner$' $U1 && grep -q '^Type=oneshot' $U1 \
@@ -241,7 +243,7 @@ mkdir -p /tmp/victim2 && echo keep > /tmp/victim2/old && touch -d '-30 days' /tm
 i15="$(nextid)"; ln -s /etc/shadow "$R/$i15.json"
 ln -s /tmp/victim2 "$R/.done"; ln -s /tmp/victim2 "$R/done"; ln -s /tmp/victim2/old "$R/$(nextid).json"
 dj="$(nextid).json"; mkdir "$R/$dj"                                       # 空目录：rmdir
-dk="$(nextid).json"; mkdir -p "$R/$dk/sub" && echo x > "$R/$dk/sub/f"    # 不空的目录：不递归删，留着
+dk="$(nextid).json"; mkdir -p "$R/$dk/sub" && echo x > "$R/$dk/sub/f" && ln -s /tmp/victim2 "$R/$dk/sub/lnk"   # 不空的目录：整个挪进 done/
 mkfifo "$R/$(nextid).json"
 h1="$(nextid)"; h2="$(nextid)"; printf '{"id":"%s","type":"scan","at":1,"user":"admin","params":{}}' "$h1" > "$R/$h1.json"; ln "$R/$h1.json" "$R/$h2.json"   # 硬链接
 echo '{}' > "$R/hello.json"
@@ -253,10 +255,10 @@ for x in "$i1 不许带路径" "$i2 不许带路径" "$i3 不认识的请求类�
   rejected "$id" "$want" && ok "拒收：$want（$(reason "$id" | cut -c1-60)）" || { bad "没按预期拒（要「$want」）"; show "$id"; }
 done
 chk '/etc/shadow 没被动过' cmp -s /etc/shadow /tmp/shadow.before
-chk "requests/ 里的链接 / 空目录 / FIFO / 硬链接都删了，只剩不空的目录（剩：$(ls -A "$R" | tr '\n' ' ')）" [ "$(ls -A "$R")" = "$dk" ]
-chk '不空的目录没递归删（里面的文件还在）' [ -f "$R/$dk/sub/f" ]
+chk "requests/ 里的链接 / 目录 / FIFO / 硬链接都清走了，requests/ 空了（剩：$(ls -A "$R" | tr '\n' ' ')）" [ -z "$(ls -A "$R")" ]
+{ [ -f "$DN/$dk/sub/f" ] && [ -L "$DN/$dk/sub/lnk" ]; } && ok '不空的目录整个挪进 done/（不递归删、不跟随里面的链接）' || bad '不空的目录没挪进 done/'
 { [ ! -e "$SR/$h1.json" ] && [ ! -e "$SR/$h2.json" ]; } && ok '硬链接的请求（两个名字）不处理、不写结果' || bad '硬链接的请求被处理了'
-rm -rf "${R:?}/$dk"
+
 chk '链接指向的主机目录没被动（/tmp/victim2/old 还在、没多东西）' [ "$(ls -A /tmp/victim2)" = old ]
 chk '指向 /etc/shadow 的链接请求：删掉、不写结果' [ ! -e "$SR/$i15.json" ]
 { [ -f "$DN/$i1.json" ] && [ -f "$DN/hello.json" ]; } && ok "处理完的请求在 $DN（不在挂载目录里）" || bad "done/ 里没有处理完的请求"
@@ -371,8 +373,9 @@ rejected "$r3" 'sha256 变了' && ok '包在批次之后被换（换成另一个
 cp /tmp/a.keep2 "$P/a.run"; rm -f "$P/a.run.sig"
 r4=$(req resume "{\"batch\":\"$BATCH\"}"); runner
 rejected "$r4" '现在验签不过' && ok '.sig 没了：网页续查拒收' || { bad '.sig 没了还能续'; show "$r4"; }
-bash "$UP" --resume "$BATCH" --source web > /tmp/o 2>&1
+bash "$UP" --resume "$BATCH" --source web --req 20261020-000000-zzzzzz > /tmp/o 2>&1
 chk '脚本自己也拒（--resume --source web，包验签不过）' grep -q '现在验签不过' /tmp/o
+chk "检查没过就不改 meta（resumed_req 还是 $(mB resumed_req)）" [ "$(mB resumed_req)" = "$r1" ]
 mv "$P/a.run" /tmp/a.away
 r5=$(req resume "{\"batch\":\"$BATCH\"}"); runner
 rejected "$r5" '已不在安装包目录' && ok '包不在了：网页续查拒收' || { bad '包不在还能续'; show "$r5"; }
@@ -419,15 +422,18 @@ chk "刷 101 个：全删（剩 $(ls -A "$R" | wc -l)）" [ "$(ls -A "$R" | wc -
 chk "runner.json flood true、floodAt、floodCount $(jget "$S/runner.json" 'o.get("floodCount")')" [ "$(jget "$S/runner.json" 'str(o["flood"])+" "+str(o["floodCount"])+" "+str(o["floodAt"]>0)')" = 'True 101 True' ]
 chk '刷的那些没写结果文件' [ -z "$(ls "$SR" | grep junk)" ]
 i=$(req scan '{}'); runner
+runner   # 定时器那样空跑一次（没有新请求）
+chk "刷过去以后不来新请求、定时器空跑一次：flood 清掉（$(jget "$S/runner.json" 'str(o["flood"])')）" [ "$(jget "$S/runner.json" 'str(o["flood"])')" = False ]
 chk "下一次正常了：flood false、请求照常处理（$(status "$i")）" [ "$(jget "$S/runner.json" 'str(o["flood"])')/$(status "$i")" = False/done ]
 printf '{"id":"x"}' > "$R/$(date +%Y%m%d-%H%M%S)-stale1.json.tmp"; touch -d '-20 min' "$R"/*-stale1.json.tmp
 printf '{}' > "$R/fresh.json.tmp"
-touch -d '-8 days' "$DN/hello.json" && echo '{}' > "$SR/20261001-000000-oldold.json" && touch -d '-8 days' "$SR/20261001-000000-oldold.json"
+touch -d '-8 days' "$DN/hello.json" && echo '{}' > "$SR/20261001-000000-oldold.json" && touch -d '-8 days' "$SR/20261001-000000-oldold.json" && touch -d '-8 days' "$DN/$dk"
 cp "$SR/$i.json" /tmp/dup.json; dup=$(raw "{\"id\":\"$i\",\"type\":\"stop\",\"at\":1,\"user\":\"x\",\"params\":{\"batch\":\"20990101-000000\"}}")
 mv "$R/$dup.json" "$R/$i.json"
 runner
 { ! ls "$R" | grep -q stale1 && [ -e "$R/fresh.json.tmp" ]; } && ok '放了 20 分钟的 .tmp 删掉、刚写的 .tmp 留着' || bad ".tmp 清理不对：$(ls "$R")"
 { [ ! -e "$DN/hello.json" ] && [ ! -e "$SR/20261001-000000-oldold.json" ]; } && ok 'done/ 与 state/requests/ 超过 7 天的清掉' || bad '7 天清理不对'
+{ [ ! -e "$DN/$dk" ] && [ "$(ls -A /tmp/victim2)" = old ]; } && ok '挪进 done/ 的目录 7 天后整个删掉，里面指向主机目录的链接不跟随（/tmp/victim2 没动）' || bad "done/ 里的目录没清 / 跟了链接（$(ls -A /tmp/victim2)）"
 chk '请求号重复：不覆盖已有结果' cmp -s "$SR/$i.json" /tmp/dup.json
 rm -f "$R/fresh.json.tmp"
 

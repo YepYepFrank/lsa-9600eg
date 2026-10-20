@@ -1,0 +1,12 @@
+# LSA-9600SP 网页升级 EG 执行器：每 5 min 兜底跑一次（path 单元只在有 requests/*.json 时触发）——
+# 刷请求（flood）过去以后把 runner.json 的 flood 清掉，顺带做 done/ 与 state/requests/ 的 7 天清理。
+[Unit]
+Description=LSA-9600 EG 升级执行器定时兜底（网页入口）
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=lsa-eg-upgrade-runner.service
+
+[Install]
+WantedBy=timers.target

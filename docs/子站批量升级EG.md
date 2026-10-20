@@ -207,8 +207,8 @@ scp LSA-9600SP-<版本>-offline.run LSA-9600SP-<版本>-offline.run.sig <维护�
 journalctl -u lsa-eg-upgrade-runner -n 50          # 执行器：每个请求做了什么、为什么拒
 journalctl -u lsa-eg-upgrade-<批次>                  # 网页起的批次（续查是 lsa-eg-upgrade-<批次>-resume-…）
 sudo python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner  # 手工再跑一遍执行器（平时 lsa-eg-upgrade-runner.path 发现新请求自动跑）
-systemctl status lsa-eg-upgrade-runner.path
+systemctl status lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.timer   # timer 每 5 min 兜底跑一次：清 flood、7 天清理
 ```
 
-- 扩展服务写坏了或被攻破在刷请求：每次只处理最新的 20 个；请求目录里超过 100 个文件时全部丢掉，`state/runner.json` 记 `flood: true`，网页上会提示。
+- 扩展服务写坏了或被攻破在刷请求：每次只处理最新的 20 个；请求目录里超过 100 个文件时全部丢掉，`state/runner.json` 记 `flood: true`，网页上会提示；刷过去以后定时器（每 5 min）跑一次就清掉。请求目录里不是普通文件的（链接、FIFO）直接删，目录整个挪进 `done/`。
 - 没用 0.19.0 起的安装文件 `--role sp` 装过 / 升过的老子站没有执行器：网页显示「本机没装升级执行器」和命令行用法。

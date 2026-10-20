@@ -35,7 +35,7 @@ sed "s/\r\$//" /repo/tools/conv-addon/install-conv.sh > $B/eg/install-conv.sh
 sed "s/\r\$//" /repo/deploy/bundle/setup.sh > $B/setup.sh
 sed "s/\r\$//" /repo/deploy/sp/join-egs.sh > $B/join-egs.sh
 sed "s/\r\$//" /repo/deploy/sp/upgrade-egs.sh > $B/upgrade-egs.sh
-for f in lsa-eg-upgrade-runner lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.service; do sed "s/\r\$//" /repo/deploy/sp/$f > $B/$f; done
+for f in lsa-eg-upgrade-runner lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.service lsa-eg-upgrade-runner.timer; do sed "s/\r\$//" /repo/deploy/sp/$f > $B/$f; done
 sg=/repo/deploy/eg/release-signers; [ -f /signers ] && sg=/signers
 sed "s/\r\$//" $sg > $B/eg/release-signers; cp $B/eg/release-signers $B/release-signers
 if [ -f /apptar.tar.gz ]; then cp /apptar.tar.gz $B/eg/images-it.tar.gz; fi

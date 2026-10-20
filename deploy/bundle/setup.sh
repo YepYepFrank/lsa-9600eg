@@ -338,7 +338,7 @@ sp_egup_runner() {
   for d in "$E" "$E/state" "$E/state/requests" /var/log/lsa9600sp/eg-upgrade; do chown -h root:root "$d" && chmod 755 "$d"; done
   install -m 755 "$src/lsa-eg-upgrade-runner" "$SP_DEST/lsa-eg-upgrade-runner"
   install -d -m 755 /etc/systemd/system /etc/tmpfiles.d
-  install -m 644 "$src/lsa-eg-upgrade-runner.path" "$src/lsa-eg-upgrade-runner.service" /etc/systemd/system/
+  install -m 644 "$src/lsa-eg-upgrade-runner.path" "$src/lsa-eg-upgrade-runner.service" "$src/lsa-eg-upgrade-runner.timer" /etc/systemd/system/
   # /run/lsa9600sp（批次锁）开机就建：执行器的 unit 只读文件系统，只放开这几处可写
   echo 'd /run/lsa9600sp 0755 root root -' > /etc/tmpfiles.d/lsa9600sp.conf
   systemd-tmpfiles --create /etc/tmpfiles.d/lsa9600sp.conf 2>/dev/null || install -d -m 755 /run/lsa9600sp
@@ -346,8 +346,10 @@ sp_egup_runner() {
   printf '{"version": "%s", "at": %s, "pkgDir": "%s/packages"}\n' "$ver" "$(date +%s%3N)" "$E" > "$E/state/runner.json.tmp"
   chmod 644 "$E/state/runner.json.tmp" && mv -f "$E/state/runner.json.tmp" "$E/state/runner.json"
   systemctl daemon-reload
-  systemctl enable lsa-eg-upgrade-runner.path >/dev/null 2>&1 || true
+  systemctl enable lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.timer >/dev/null 2>&1 || true
   systemctl restart lsa-eg-upgrade-runner.path || echo '！ lsa-eg-upgrade-runner.path 没起来（systemctl status lsa-eg-upgrade-runner.path）：网页升级 EG 用不了，命令行 upgrade-egs.sh 照常'
+  # 定时兜底（每 5 min）：刷请求过去后清 flood、做 7 天清理（path 单元只在有新请求时触发）
+  systemctl restart lsa-eg-upgrade-runner.timer || echo '！ lsa-eg-upgrade-runner.timer 没起来（systemctl status lsa-eg-upgrade-runner.timer）：flood 标记要等下一个请求才清'
   echo "  安装包目录 $E/packages（维护账号先加组：sudo usermod -aG lsa-upgrade <账号>，重新登录后 scp 进来），请求 / 结果在 $E/requests、$E/state"
 }
 

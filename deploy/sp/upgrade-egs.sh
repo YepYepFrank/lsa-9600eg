@@ -278,10 +278,6 @@ if [ "$MODE" = resume ]; then
   TO="$(sed -n 's/^to=//p' "$BD/meta")"; PAR="$(sed -n 's/^parallel=//p' "$BD/meta")"; CANARY="$(sed -n 's/^canary=//p' "$BD/meta")"  # sete-ok
   SIGST="$(sed -n 's/^sig=//p' "$BD/meta")"; SIGMSG="$(sed -n 's/^sig_note=//p' "$BD/meta")"; SIGST="${SIGST:-unsigned}"  # sete-ok（0.18.1 前的批次没有，当未签）
   rm -f "$BD/STOP.resume"
-  # 续查：原来的 by / req / source / started_at 不动，记这次续查的人和 pid；ended_at 等这次做完再补
-  meta_set pid "$$"; meta_set resumed_at "$(now_ms)"; meta_set resumed_by "$BY"; meta_set resumed_source "$SOURCE"
-  if [ -n "$REQ" ]; then meta_set resumed_req "$REQ"; else meta_del resumed_req; fi
-  meta_del ended_at; META_ON=1
   # 网页续查（--source web）只认签名验过的批次（方案 Q2）：命令行起的未签名批次只能命令行续
   if [ "$SOURCE" = web ] && [ "$SIGST" != ok ]; then echo "!! 这一批不是签名包（sig=$SIGST），只能命令行续" >&2; exit 1; fi
   [ -f "$RUN" ] || { echo "!! 安装文件 $RUN 不在了：还没开始的不能再升，已经开始的照样续查" >&2; }
@@ -296,6 +292,11 @@ if [ "$MODE" = resume ]; then
     local_sig "$RUN"
     [ "$SIGST" = ok ] || { echo "!! 安装文件现在验签不过（$SIGST：$SIGMSG）：网页不能续" >&2; exit 1; }
   fi
+  # 检查都过了才改 meta（执行器看到 resumed_req 就当续查起来了）：原来的 by / req / source / started_at 不动，
+  # 记这次续查的人和 pid；ended_at 等这次做完再补
+  meta_set pid "$$"; meta_set resumed_at "$(now_ms)"; meta_set resumed_by "$BY"; meta_set resumed_source "$SOURCE"
+  if [ -n "$REQ" ]; then meta_set resumed_req "$REQ"; else meta_del resumed_req; fi
+  meta_del ended_at; META_ON=1
   start_heartbeat
 else
   [ -f "$RUN" ] || { echo "没有安装文件：$RUN" >&2; exit 1; }
