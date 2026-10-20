@@ -27,6 +27,7 @@
     "conv-bus:verify": "pnpm -F @lsa-eg/agent verify:conv-bus",
     "unit:verify": "pnpm -F @lsa-eg/agent verify:unit",
     "regen:verify": "pnpm -F @lsa-eg/agent verify:regen",
+    "pd-absent:verify": "pnpm -F @lsa-eg/agent verify:pd-absent",
     "mqtt-keep:verify": "pnpm -F @lsa-eg/agent verify:mqtt-keep",
     "pulse:verify": "pnpm -F @lsa-eg/agent verify:pulse",
     "warmup:verify": "pnpm -F @lsa-eg/agent verify:warmup",

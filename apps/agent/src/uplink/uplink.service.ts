@@ -19,6 +19,7 @@ import { EG_CONFIG } from '../config.js'
 import { BusService } from '../bus/bus.service.js'
 import { OutboxStore, type OutRow, type RowKind } from './outbox.store.js'
 import { attrKey, chunkRows, dropStaleAttrs, MAX_PAYLOAD_BYTES } from './chunk.js'
+import { dropPdAbsent } from './pd-absent.js'
 import { AuditService } from '../audit/audit.service.js'
 import { CapsService } from '../caps/caps.service.js'
 import { MetersService } from '../meters/meters.service.js'
@@ -56,6 +57,8 @@ const FULL_HOLD_MS = 10 * 60_000
 @Injectable()
 export class UplinkService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('上送')
+  /** 局放没装那一路的固定值已经提示过的（设备|量），只提示一次 */
+  private readonly pdAbsentWarned = new Set<string>()
   private store: OutboxStore | null = null
   private client: MqttClient | null = null
   /** 0.17：子站连接保活（被拒的 CONNACK 之后照样重连、退避、兜底换客户端） */
@@ -144,6 +147,19 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
       const ws = own ? null : this.quality.warmupOf(dev)
       for (const e of entries) {
         let v = e.values
+        // 0.7.1（D5）：局放没装那一路的固定值（地电波 187 / 特高频 269）不上送，第一次见到记一条警告
+        if (!own) {
+          const d = dropPdAbsent(v)
+          if (d.dropped.length) {
+            const tag = `${dev}|${d.dropped.join(',')}`
+            if (!this.pdAbsentWarned.has(tag)) {
+              this.pdAbsentWarned.add(tag)
+              this.log.warn(`${dev} 发来 ${d.dropped.join('、')} 是局放装置「没装这一路」时的固定值（地电波 187 / 特高频 269），不上送子站（转换程序该自己不发；以后同样的不再提示）`)
+            }
+            v = d.values
+            if (!Object.keys(v).length) continue
+          }
+        }
         if (ws !== null && !(WARMUP_KEY in v) && Object.keys(v).some(k => k !== 'q' && !k.startsWith('dev.'))) v = { ...v, [WARMUP_KEY]: ws }
         // I3：电表的 el.* 在入队这一刻换成一次值（子站一律按一次量处理）；补传队列里的旧数入队时已按当时变比换过
         this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(this.meters.toPrimary(dev, v)) })
