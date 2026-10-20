@@ -5,6 +5,26 @@
     "sam": {
       "send": [
         {
+          "key": "ir.t_max",
+          "label": "SAM 红外最高温",
+          "unit": "℃",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number",
+          "cap": "samIr",
+          "capState": "confirmed"
+        },
+        {
+          "key": "ir.t_avg",
+          "label": "SAM 红外平均温",
+          "unit": "℃",
+          "periodMs": 2000,
+          "optional": false,
+          "type": "number",
+          "cap": "samIr",
+          "capState": "confirmed"
+        },
+        {
           "key": "us.amp",
           "label": "超声局放幅值",
           "unit": "dBμV",
@@ -54,8 +74,7 @@
           "optional": false,
           "type": "number",
           "cap": "tev",
-          "capState": "unsupported",
-          "note": "能力「地电波」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
+          "capState": "confirmed"
         },
         {
           "key": "tev.level",
@@ -65,8 +84,7 @@
           "optional": true,
           "type": "number",
           "cap": "tev",
-          "capState": "unsupported",
-          "note": "能力「地电波」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
+          "capState": "confirmed"
         },
         {
           "key": "uhf.amp",
@@ -460,8 +478,6 @@
   },
   "retired": {
     "sam": [
-      "ir.t_max",
-      "ir.t_avg",
       "ir.rise",
       "ir.box.*",
       "ir.z*"

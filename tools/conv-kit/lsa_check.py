@@ -521,7 +521,7 @@ class Checker:
                 self.issue('ERROR', name, 'forbid', '「%s」%s' % (key, forbid_why(key) or '由 eg-agent / eg-video 算，转换程序不要发（§6）'), key, payload)
                 continue
             if retired(dev.kind, key):
-                self.issue('ERROR', name, 'retired', '「%s」已退役：G4 起热像测温改由摄像机（eg-video），SAM 不再发 ir.*' % key, key, payload)
+                self.issue('ERROR', name, 'retired', '「%s」已退役：G4 起热像测温改由摄像机（eg-video），SAM 不再发 ir.rise / ir.box.* / ir.z*（SAM 红外只发 ir.t_max / ir.t_avg）' % key, key, payload)
                 continue
             d = defs.get(key)
             if not d:
@@ -846,12 +846,14 @@ def run_demo(args):
                 if n % 5 == 1:
                     v.update({'env.t': round(26 + i + random.uniform(-0.3, 0.3), 1), 'env.rh': round(random.uniform(40, 50), 1)})
                 v.update({'dev.last_try': ts, 'dev.last_ok': ts, 'dev.err': '', 'dev.fails': 0})
+                v.update({'ir.t_max': round(29.1 + i + random.uniform(-0.2, 0.2), 1), 'ir.t_avg': round(27.7 + i, 1)})   # SAM 红外（0.18.1 恢复，samIr）
+                v['tev.amp'] = round(random.uniform(11, 14), 1)                  # 地电波（S19 二合一装了，D5）
                 if i == 0 and n % 5 == 1:
                     v['smoke.ppm'] = 6                       # 烟雾：气体传感器发在 SAM 下（PM6 已取消）
                 if bad and i == 0:
                     v['dev.warmup_s'] = 0                    # 预热由 EG 判，转换程序不要发
                     v['us.amp'] = str(v['us.amp'])          # 数值发成字符串
-                    v['ir.t_max'] = 62.1                     # 退役的 key
+                    v['ir.rise'] = 12.1                      # 退役的 key（SAM 红外只发 ir.t_max / ir.t_avg）
                     v.pop('uv.int')                          # 不发背景值
                 if bad and i == 1:
                     v['tev.amp'] = 18.7                      # 没装地电波，读出的固定值照发

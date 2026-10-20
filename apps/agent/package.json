@@ -17,6 +17,7 @@
     "verify:pulse": "node --import @swc-node/register/esm-register src/verify-pulse-dedup.ts",
     "verify:warmup": "node --import @swc-node/register/esm-register src/verify-warmup.ts",
     "verify:regen": "node --import @swc-node/register/esm-register src/verify-regen.ts",
+    "verify:pd-absent": "node --import @swc-node/register/esm-register src/verify-pd-absent.ts",
     "verify:g1": "node --import @swc-node/register/esm-register src/verify-g1.ts",
     "verify:g2": "node --import @swc-node/register/esm-register src/verify-g2.ts",
     "verify:i1": "node --import @swc-node/register/esm-register src/verify-i1.ts",

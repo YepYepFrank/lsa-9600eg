@@ -73,7 +73,8 @@
 | SAM | `us.type`、`us.level` | 数 | 同事程序 | 局放类型码 / 等级（可选，pending） |
 | SAM | `uv.int` | 数，%（0–100） | 同事程序 | 弧光强度：ALS10 Arc Level ÷ 100（格式 v0.6 起；以前是原值）。arcIntensity，pending |
 | SAM | `uv.pulse` | **串**（JSON 对象 `{"peak":数,"ms":数}`：峰值、持续毫秒） | 同事程序 | 弧光脉冲，事件型：检测到放电立即发一条，同时带 uv.int = 峰值（arcEvents，pending）。《EG 内部 MQTT 格式》§3 |
-| SAM | `tev.amp`、`uhf.amp` | 数，dBmV | 同事程序 | 地电波 / 特高频放电量（读数 ÷10，期望周期 3 s；能力 tev / uhf，缺省不支持，没装的通道不发）。可选 `tev.level` `uhf.level`：设备状态原码 |
+| SAM | `tev.amp`、`uhf.amp` | 数，dBmV | 同事程序 | 地电波 / 特高频放电量（读数 ÷10，期望周期 3 s；能力 tev 0.18.1 起缺省已确认、uhf 缺省不支持；没装的通道读出 187 / 269 不发，EG 0.7.1 起上送前另挡一道）。可选 `tev.level` `uhf.level`：设备状态原码 |
+| SAM | `ir.t_max`、`ir.t_avg` | 数，℃ | 同事程序 | SAM 红外最高温 / 平均温（0.18.1 / EG 0.7.1 起恢复，能力 samIr 缺省已确认）：只显示、上送，温升 / 过温仍以摄像机为准 |
 | SAM | `smoke.ppm` | 数，ppm | 同事程序 | 烟雾浓度：SAM 气体传感器（smokePpm，0.18.1 / EG 0.7.1 起已确认；独立颗粒物 PM6 取消）。预热期质量码标 warmup，行里带 dev.warmup_s |
 | SAM | `sw.*` | 数 | 同事程序 | 开关位置（首期不做）；目前没有点 |
 | PM / PM2 | `el.Ua` `el.Ub` `el.Uc` `el.Ia` `el.Ib` `el.Ic` `el.P` `el.Q` `el.S` `el.PF` `el.F` `el.Ep` | 数，V / A / kW / kvar / kVA / — / Hz / kWh | 同事程序；**EG 上送前换成一次值**（EG 0.4 起，I3）| 电表基础量（meterBasic） |

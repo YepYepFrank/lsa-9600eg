@@ -74,8 +74,9 @@ const common = {
   } as Record<string, string>,
 }
 
-// G4 起 SAM 不再报热像（改由摄像机）；老程序按 v0.1 发的这些 key 不会被识别
-const retired = { sam: ['ir.t_max', 'ir.t_avg', 'ir.rise', 'ir.box.*', 'ir.z*'] }
+// G4 起 SAM 不再报热像（改由摄像机）；老程序按 v0.1 发的这些 key 不会被识别。
+// 0.18.1（S19 A4，能力 samIr）SAM 红外的 ir.t_max / ir.t_avg 恢复（点目录里有了，只显示、上送，不进温升 / 过温），这里只留还退役的
+const retired = { sam: ['ir.rise', 'ir.box.*', 'ir.z*'] }
 
 // EG 级信号（MQTT 格式 §5.4），设备名 EG-<柜号>；eg.* 自身指标是 eg-agent 发的
 const eg = {
