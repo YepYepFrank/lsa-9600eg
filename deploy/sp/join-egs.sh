@@ -325,13 +325,15 @@ join_one() {
 
   # 4. 等子站看到它在线、配置生效
   echo "== $(ts) 4. 等子站看到它在线、配置生效（最多 ${ONLINE_TIMEOUT_S} s）"
-  t_end=$(( $(date +%s) + ONLINE_TIMEOUT_S )); okl=''
+  t_end=$(( $(date +%s) + ONLINE_TIMEOUT_S )); okl='' up_at=''
   while [ "$(date +%s)" -lt "$t_end" ]; do
     row="$(eglist_row "$U" || true)"
     IFS=$'\t' read -r _ _ st ver upok cfg host _ <<< "$row" || true
     echo "$(ts) 子站看到：状态 ${st:-?}，版本 ${ver:-?}，上送 ${upok:-?}，配置生效 ${cfg:-?}，地址 ${host:-?}"
+    # 第一次看到上送正常的时刻（拆柜断数窗口按它算，0.7.1）；没看到之前 5 s 查一次，之后等配置生效 15 s 一次
+    if [ "$upok" = true ] && [ -z "$up_at" ]; then up_at=$(date +%s); echo "uplink_at=$up_at" >> "$BD/state"; fi
     [ "$upok" = true ] && [ "$cfg" = true ] && { okl=1; break; }
-    sleep 15
+    if [ -z "$up_at" ]; then sleep 5; else sleep 15; fi
   done
   [ -n "$okl" ] && RES[online]="完成（$st，$ver）" || stop online '子站没看到它上送正常 / 配置生效' '看网关页这台的「上送」「配置」；EG 上 sudo bash /opt/lsa-eg/install.sh --status'
   echo "online_at=$(date +%s)" >> "$BD/state"
@@ -514,17 +516,25 @@ if [ "$MODE" = split ]; then
   done
   [ "${#NEW[@]}" -gt 0 ] || { echo "子站 eg-list 一直没列出 $CAB 的单元：看 check.sh 的「舱室单元」；之后 sudo bash $0 --cabinet $CAB --eg $EGARG" >&2; exit 1; }
   echo "柜 $CAB 拆成：${NEW[*]}"
-  rc_all=0 last_online=''
+  rc_all=0 last_online='' last_up='' ups=()
   for u in "${NEW[@]}"; do
     h="$(addr_for "$u" "${#NEW[@]}")"
     [ -n "$h" ] || { note "$u" - '没接（--eg 里没给，子站上显示「未接入」）'; continue; }
     if run_one "$u" "$h" "$CAB"; then
       note "$u" "$h" '接入完成'; last_online="$(sed -n 's/^online_at=//p' "$BD/state" 2>/dev/null | tail -1)"
+      t="$(sed -n 's/^uplink_at=//p' "$BD/state" 2>/dev/null | tail -1 || true)"
+      if [ -n "$t" ]; then
+        ups+=("$u $(( t - T0 )) s")
+        if [ -z "$last_up" ] || [ "$t" -gt "$last_up" ]; then last_up="$t"; fi
+      fi
     else note "$u" "$h" "失败（日志 $BD；重来：sudo bash $0 --unit $u --eg $h）"; rc_all=1; fi
   done
   for i in "${!SU[@]}"; do printf '%s\n' "${NEW[@]}" | grep -qx "${SU[$i]}" || { note "${SU[$i]}" "${SH[$i]}" '子站上没有这个单元（model.yaml 的 units 里没有？），没接'; rc_all=1; }; done
   echo; echo "== $(ts) 拆柜 $CAB 汇总（日志 $RUN）"; table
-  if [ "$rc_all" = 0 ] && [ -n "$last_online" ]; then echo "断数窗口：$(( last_online - T0 )) s（up.sh 开始 → 最后一台上送正常）"
+  # 断数窗口（0.7.1）：up.sh 开始（旧令牌作废）→ 最后一台第一次上送正常；各台恢复上送的时刻、全部配置生效另报
+  if [ "$rc_all" = 0 ] && [ -n "$last_up" ]; then
+    echo "断数窗口：$(( last_up - T0 )) s（up.sh 开始 → 最后一台第一次上送正常；各台：${ups[*]}，按顺序一台一台接）"
+    [ -n "$last_online" ] && echo "全部配置生效：$(( last_online - T0 )) s（配置生效不影响上送，只是晚一点）"
   else echo "断数窗口：还没结束（有单元没接上）。从 $(date -d "@$T0" '+%F %T') 起"; fi
   echo "拆完的标准：网关页每个单元都在线、check.sh 的「舱室单元」与「配置下发」都正常（子站部署手册 §5b）"
   exit "$rc_all"

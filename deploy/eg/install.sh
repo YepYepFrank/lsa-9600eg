@@ -188,7 +188,17 @@ cam_ntp_status() {
   if ! cam_ntp_on; then echo '摄像机对时：关（sudo bash install.sh --cam-ntp-on 打开）'; return 0; fi
   [ -n "$nic" ] || { echo '摄像机对时：没开（没给过 --lan1，不知道哪个是摄像机网口）'; return 0; }
   hosts="$(cam_hosts | tr '\n' ' ')"
-  if [ ! -f "$CAM_NTP_CONF" ]; then echo "摄像机对时：没开（LAN1 $nic 没有 IPv4 地址？配好后 sudo bash install.sh --cam-ntp-on）"; return 0; fi
+  if [ ! -f "$CAM_NTP_CONF" ]; then
+    # 待接入（还没有 eg.yaml）：install.sh 走不到对时那一步，接入子站后自动打开（0.7.1 改措辞，出厂手册 7.1 那一行）
+    if [ ! -f config/eg.yaml ]; then
+      echo "摄像机对时：待接入，接入子站后自动打开（LAN1 $nic${hosts:+；防火墙已为摄像机 ${hosts% } 放行}）"
+    elif [ -z "$(lan1_cidr "$nic")" ]; then
+      echo "摄像机对时：没开（LAN1 $nic 没有 IPv4 地址：netplan 里配好地址后 sudo bash install.sh --cam-ntp-on）"
+    else
+      echo "摄像机对时：没开（sudo bash install.sh --cam-ntp-on 打开）"
+    fi
+    return 0
+  fi
   echo "摄像机对时：开（chrony $(sed -n 's/^allow //p' "$CAM_NTP_CONF")；摄像机 NTP 服务器填本机 LAN1 地址）"
   if [ -z "$hosts" ]; then
     echo '  ！ local.yaml 里还没有摄像机地址：防火墙没给它放行 UDP 123 —— 管理页「视频与测温」填好地址后 sudo bash install.sh --cam-ntp-on'

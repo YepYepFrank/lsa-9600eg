@@ -53,8 +53,10 @@ class VideoController {
 
   @Get('recording')
   async recording() {
+    // 没配摄像机：不是「录像断了」，ok 给 null（agent 就不报 eg.rec_ok），configured: false
+    if (!this.svc.hasCamera()) return { ok: null, configured: false, ringHours: this.svc.cfg.local.evidence.ringHours, paths: [] }
     const ring = await this.svc.recording.ring()
-    return { ok: ring.every(r => r.recording), ringHours: this.svc.cfg.local.evidence.ringHours, paths: ring }
+    return { ok: ring.every(r => r.recording), configured: true, ringHours: this.svc.cfg.local.evidence.ringHours, paths: ring }
   }
 
   @Get('clip')
@@ -63,6 +65,7 @@ class VideoController {
     const s = Number(start)
     const e = Number(end)
     if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) throw new BadRequestException('start / end 要是毫秒、且 end > start')
+    if (!this.svc.hasCamera()) throw new NotFoundException({ code: 'missing', missingReason: 'no_camera', message: '本机没有配摄像机（local.yaml 摄像机一段没有地址）' })
     try {
       const c = await this.svc.recording.clip(ch, s, e)
       res.setHeader('Content-Type', 'video/mp4')
