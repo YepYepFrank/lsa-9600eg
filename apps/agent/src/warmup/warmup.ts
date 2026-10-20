@@ -17,16 +17,18 @@ export interface GasParams {
   /** T3 不适用的柜（传感器与 EG 不同一路电） */
   bootOffCabs: string[]
 }
-export const DEFAULT_GAS: GasParams = { warmupS: 180, gapS: 60, bootOffCabs: [] }
+/** 缺省（子站没下发时）。预热时长 0.7.1 起缺省 0（用户答 S19 待确认 D4「烟雾传感器输出无等待时间」；子站 0.18.1 起 gasWarmupS 没写也下发 0）：
+ *  不做预热，但标了 warmup 的设备照报 dev.warmup_s = 0（TB 正式规则的「dev.warmup_s < 1」要有值）；预热两支代码留着，现场改成非 0 就生效 */
+export const DEFAULT_GAS: GasParams = { warmupS: 0, gapS: 60, bootOffCabs: [] }
 export const GAS_RANGE = { warmupS: [0, 900], gapS: [30, 600] } as const
 
 /** 需要预热的设备种类：T08 定了气体 / 烟雾的 kind 后加进来（缺省就要预热）；现在只认 eg.yaml 设备属性 */
 export const WARMUP_KINDS = new Set<string>([])
 
-/** 这台设备要不要做预热处理：种类在 WARMUP_KINDS 里，或 eg.yaml 设备属性 warmup: true / warmupS 是数（按设备覆盖时长；0 = 这台不做） */
+/** 这台设备要不要报 dev.warmup_s：种类在 WARMUP_KINDS 里，或 eg.yaml 设备属性 warmup: true / warmupS 是数（按设备覆盖时长）。
+ *  0.7.1：warmupS: 0 也算（这台不做预热，但照报 dev.warmup_s = 0 —— 以前 0 就不报，TB 正式规则只能靠开机预置的那条 0） */
 export function warmupDevice(d: { kind: string; attrs: Record<string, unknown> }): boolean {
-  const s = d.attrs['warmupS']
-  if (typeof s === 'number') return s > 0
+  if (typeof d.attrs['warmupS'] === 'number') return true
   return d.attrs['warmup'] === true || WARMUP_KINDS.has(d.kind)
 }
 

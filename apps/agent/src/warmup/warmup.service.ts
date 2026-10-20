@@ -64,12 +64,15 @@ export class WarmupService implements OnModuleInit {
     const p = this.caps.gas
     const cab = this.cfg.cabinet.code
     const unit = this.cfg.unit.code
-    const boot = bootTrigger({ uptimeS: this.uptimeS(), warmupS: p.warmupS, hostBootId: this.hostBootId, lastHostBootId: last?.hostBootId ?? null })
+    // 按要预热的设备里最长的时长判「刚开机」（0.7.1：站级缺省 0 了，设备 attrs.warmupS 单独设了的照样要判）；预热 0 秒的设备不武装
+    const armable = [...this.devs.entries()].filter(([, d]) => deviceWarmupS(d.attrs, p) > 0)
+    const maxS = Math.max(0, ...armable.map(([, d]) => deviceWarmupS(d.attrs, p)))
+    const boot = bootTrigger({ uptimeS: this.uptimeS(), warmupS: maxS, hostBootId: this.hostBootId, lastHostBootId: last?.hostBootId ?? null })
     // gasBootWarmupOffCabs 按柜号（子站按柜给）；单元号也认
     if (boot && (p.bootOffCabs.includes(cab) || p.bootOffCabs.includes(unit))) this.log.log(`EG 主机刚开机，但本柜 ${cab} 在 gasBootWarmupOffCabs 里（传感器与 EG 不同一路电），不进预热`)
     else if (boot) {
-      for (const d of this.devs.values()) d.t.bootArmed = true
-      this.log.log(`EG 主机刚开机（开机 ${Math.round(this.uptimeS())} s）：${[...this.devs.keys()].join('、')} 读到数后预热 ${p.warmupS} s`)
+      for (const [, d] of armable) d.t.bootArmed = true
+      this.log.log(`EG 主机刚开机（开机 ${Math.round(this.uptimeS())} s）：${armable.map(([n, d]) => `${n} ${deviceWarmupS(d.attrs, p)} s`).join('、')}，读到数后开始预热`)
     }
     this.save()
   }
@@ -94,6 +97,12 @@ export class WarmupService implements OnModuleInit {
     this.log.log(`${device} 进入预热 ${s} s（${why} ${REASON_TEXT[why]}）`)
     this.save()
     return true
+  }
+
+  /** 这台设备的预热时长（s）：eg.yaml attrs.warmupS > 子站下发的 gasWarmupS > 缺省 0；0 = 不做预热 */
+  seconds(device: string): number {
+    const d = this.devs.get(device)
+    return d ? deviceWarmupS(d.attrs, this.caps.gas) : 0
   }
 
   /** 剩余预热秒数（0 = 就绪；不是需要预热的设备也是 0） */

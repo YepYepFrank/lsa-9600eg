@@ -207,6 +207,8 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
   /** 0.17：要报的 dev.warmup_s（不是需要预热的设备返回 null）：agent 判的剩余秒数；转换程序标了 warmup 时至少 1 */
   warmupOf(device: string, now = Date.now()): number | null {
     if (!this.warmup.has(device)) return null
+    // 0.7.1（D4）：预热时长 0 = 不做预热 —— 转换程序自报 warmup 也不抬成 1，一直报 0（q 里转换程序标的 warmup 照旧显示）
+    if (this.warmup.seconds(device) === 0) return 0
     const r = this.warmup.remaining(device, now)
     const d = this.devices.get(device)
     const src = !!d && this.sourceFresh(d, now) && Object.values(d.fromSource).includes('warmup')

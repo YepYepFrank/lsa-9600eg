@@ -50,7 +50,7 @@ export class CapsService {
     return this.comm
   }
 
-  /** 传感器预热参数（子站没下发 = 缺省 180 / 60 / []） */
+  /** 传感器预热参数（子站没下发 = 缺省 0 / 60 / []；0.7.1 起预热缺省 0） */
   get gas(): GasParams {
     return this.gasP
   }
