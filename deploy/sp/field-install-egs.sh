@@ -29,6 +29,7 @@ REVERT_S="${LSA_FIELD_REVERT_S:-180}"         # 改地址后多久连不回来�
 RECONNECT_S="${LSA_FIELD_RECONNECT_S:-90}"    # 等正式地址上连回来
 POLL_S="${LSA_FIELD_POLL_S:-10}"
 INSTALL_TIMEOUT_S="${LSA_FIELD_INSTALL_TIMEOUT_S:-2700}"
+ONCE_WAIT_S="${LSA_FIELD_ONCE_WAIT_S:-30}"       # --once：等 .250 上出现机器最多多久
 TCP_CMD="${LSA_FIELD_TCP:-}"                  # 测试替身：<命令> <地址> <端口>，0 = 通
 
 PLAN='' ONCE=0 RUN='' JOINKEY='' GW_ALL='' LAN1_ADDR='192.168.100.1/24' PAR=3 YES=0 MODE=loop ONE_SN='' COUNT=0
@@ -313,14 +314,17 @@ case "$verb" in
     rm -f "$ST/install.rc"; echo "$sha" > "$ST/install.sha"; date +%s > "$ST/install.started"
     bg "lsa-field-install-$(date +%s)" 0 "$ST/install-job.sh" || { echo 'ERR 起不了安装任务'; exit 3; }
     echo 'OK install started' ;;
+  gwcheck)     # gwcheck <网关>：碰一下网关（触发 ARP），看邻居表里它应答了没有（只提醒，不拦）
+    timeout 2 bash -c "exec 3<>/dev/tcp/$1/22" > /dev/null 2>&1; sleep 1
+    echo "gw_neigh=$(ip neigh show "$1" 2> /dev/null | awk '{ print $NF; exit }')" ;;
   istatus)
     echo "elapsed=$(( $(date +%s) - $(cat "$ST/install.started" 2> /dev/null || date +%s) ))"
     if [ -f "$ST/install.pid" ] && kill -0 "$(cat "$ST/install.pid")" 2> /dev/null; then echo state=running
     elif [ -f "$ST/install.rc" ]; then echo state=done; echo "rc=$(cat "$ST/install.rc")"
     elif [ -f "$ST/install.started" ] && [ $(( $(date +%s) - $(cat "$ST/install.started") )) -lt 30 ]; then echo state=running
     else echo state=none; fi
-    echo "last=$(tail -n 1 "$ST/install.log" 2> /dev/null | cut -c1-150)" ;;
-  ilog) tail -n "${1:-60}" "$ST/install.log" 2> /dev/null ;;
+    echo "last=$(tail -n 1 "$ST/install.log" 2> /dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | cut -c1-150)" ;;
+  ilog) tail -n "${1:-60}" "$ST/install.log" 2> /dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' ;;
   verify)
     [ -f "$R/opt/lsa-eg/install.sh" ] || { echo 'ERR /opt/lsa-eg/install.sh 不在：没装上'; exit 3; }
     out="$(cd "$R/opt/lsa-eg" && bash install.sh --status 2>&1 < /dev/null)"
@@ -342,16 +346,44 @@ tcp_open() {
   timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
 }
 flush_arp() { [ "$(id -u)" = 0 ] && command -v ip >/dev/null && ip neigh flush to "$TEMP_IP" >/dev/null 2>&1; return 0; }
-# dup_temp <这台 LAN2 的 MAC>：打印 .250 上别的 MAC（没有就空）。看本机 ARP 表（连之前清过，连上后就是应答的那台）；
-# 有 arping（iputils，要 root）再广播问 3 次。两样都没有就不查
+# dup_temp <这台 LAN2 的 MAC>：打印 .250 上别的 MAC（没有就空）。本机 ARP 表只记一个 MAC（应答的那台），查不出两台同址，
+# 所以（root 时）再广播问 3 次：有 arping（iputils）用它；Ubuntu Server minimal 没装 arping（2026-10-20 VM 实测），用 python3
+# （cloud-init 依赖，子站 / 笔记本都有）发原始 ARP。都没有就只看 ARP 表
+PYARP="$(cat <<'PYARP_EOF'
+import socket, struct, sys, time
+dev, tip, sip = sys.argv[1], socket.inet_aton(sys.argv[2]), socket.inet_aton(sys.argv[3])
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0806))
+s.bind((dev, 0x0806)); me = s.getsockname()[4][:6]
+req = b'\xff' * 6 + me + b'\x08\x06' + struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1) + me + sip + b'\0' * 6 + tip
+seen, end, nxt, n = set(), time.time() + 2.5, 0, 0
+while time.time() < end:
+    if n < 3 and time.time() >= nxt:
+        s.send(req); n += 1; nxt = time.time() + 0.4
+    s.settimeout(0.1)
+    try:
+        p = s.recv(128)
+    except socket.timeout:
+        continue
+    if len(p) >= 42 and p[12:14] == b'\x08\x06' and struct.unpack('!H', p[20:22])[0] == 2 and p[28:32] == tip:
+        seen.add(':'.join('%02x' % b for b in p[22:28]))
+print('\n'.join(sorted(seen)))
+PYARP_EOF
+)"
 dup_temp() {
-  local mine="$1" seen dev
+  local mine="$1" seen r dev src
   command -v ip >/dev/null || return 0
   seen="$(ip neigh show "$TEMP_IP" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "lladdr") print tolower($(i + 1)) }' || true)"
-  if [ "$(id -u)" = 0 ] && command -v arping >/dev/null; then
-    dev="$(ip route get "$TEMP_IP" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }' || true)"
-    [ -z "$dev" ] || seen="$seen
+  if [ "$(id -u)" = 0 ]; then
+    r="$(ip route get "$TEMP_IP" 2>/dev/null | head -1 || true)"
+    dev="$(awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }' <<< "$r")"
+    src="$(awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }' <<< "$r")"
+    if [ -n "$dev" ] && command -v arping >/dev/null; then
+      seen="$seen
 $(timeout 6 arping -c 3 -w 4 -I "$dev" "$TEMP_IP" 2>/dev/null | grep -o '\[[0-9A-Fa-f:]*\]' | tr -d '[]' | tr 'A-F' 'a-f' || true)"
+    elif [ -n "$dev" ] && command -v python3 >/dev/null; then
+      seen="$seen
+$(timeout 6 python3 -I -c "$PYARP" "$dev" "$TEMP_IP" "${src:-0.0.0.0}" 2>/dev/null || true)"
+    fi
   fi
   grep -v -x -e "$mine" -e '' <<< "$seen" | sort -u | tr '\n' ' ' | sed 's/ $//' || true
 }
@@ -478,6 +510,15 @@ stage_a() {
       if grep -q "^OK confirm" <<< "$o"; then
         st_set "$sn" phase readdressed note "LAN2 $l2 ${addr}，LAN1 $l1"
         ev "$sn" "地址已改好：${addr}（同一把主机密钥、同一台），撤掉了自动换回"
+        # 网关写错但在同一网段时子站照样连得回来、不会换回（2026-10-20 VM 实测）：EG 上看网关应不应答 ARP，只提醒
+        if [ "$gw" != - ]; then
+          o="$(rsudo "$sn" "${addr%/*}" gwcheck "$gw" 2>&1)"
+          case "$(kv gw_neigh "$o")" in
+            REACHABLE | STALE | DELAY | PROBE | PERMANENT) ;;
+            *) ev "$sn" "！ 网关 $gw 在 EG 上没应答（$(kv gw_neigh "$o" | sed 's/^$/没有 ARP 记录/')）：网关写错了？子站同网段，照样装、能接入；EG 到别的网段不通 —— 查清后在 EG 上改 /etc/netplan/50-lsa-eg.yaml 的 via，sudo netplan apply"
+               st_set "$sn" note "LAN2 $l2 ${addr}，LAN1 $l1；！网关 $gw 没应答" ;;
+          esac
+        fi
         CUR_SN="$sn"; return 0
       fi
       ev "$sn" "!! 撤自动换回没成功（$(tail -1 <<< "$o")）：${REVERT_S} s 后它会换回 $TEMP_IP"
@@ -593,7 +634,9 @@ fi
 # ---------- 能到 .250 吗 ----------
 if [ -n "$TEMP_ADD" ]; then
   [ "$(id -u)" = 0 ] && command -v ip >/dev/null || die '--temp-ip 要 root 和 ip 命令'
-  [ -n "$TEMP_DEV" ] || TEMP_DEV="$(ip -o -4 addr show 2>/dev/null | awk -v a="$SPADDR" '$4 ~ "^" a "/" { print $2; exit }' || true)"
+  # 加在哪个口：持有子站地址（join-key 里的）的口；--readdress-only 没有 join-key（2026-10-20 VM 实测在这里停了）→ 到分配表第一台正式地址走的口
+  [ -n "$TEMP_DEV" ] || [ -z "$SPADDR" ] || TEMP_DEV="$(ip -o -4 addr show 2>/dev/null | awk -v a="$SPADDR" '$4 ~ "^" a "/" { print $2; exit }' || true)"
+  [ -n "$TEMP_DEV" ] || TEMP_DEV="$(ip route get "${P_ADDR[${P_ORDER[0]}]%/*}" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }' || true)"
   [ -n "$TEMP_DEV" ] || die "--temp-ip 要加在哪个网口上？用 --temp-dev <接站内交换机的网口> 给"
   if ip -o -4 addr show dev "$TEMP_DEV" | grep -q " ${TEMP_ADD%/*}/"; then echo "临时地址 $TEMP_ADD 已在 $TEMP_DEV 上"
   else ip addr add "$TEMP_ADD" dev "$TEMP_DEV" || die "加不上临时地址 $TEMP_ADD（$TEMP_DEV）"; TEMP_ADDED=1; echo "已在 $TEMP_DEV 上临时加 $TEMP_ADD（退出时删）"; fi
@@ -612,12 +655,14 @@ if [ "$MODE" != readdress ]; then
 fi
 
 # ---------- 主循环：等 .250 上出现下一台 ----------
-DONE_A=0 WAIT_GONE=0 SAID=''
+DONE_A=0 WAIT_GONE=0 SAID='' T_START=$(date +%s)
 all_done() { local s; for s in "${P_ORDER[@]}"; do case "$(st_get "$s" phase)" in pending | joined) ;; readdressed | pushing | installing) [ "$MODE" = readdress ] || return 1 ;; *) return 1 ;; esac; done; return 0; }
 while :; do
   [ "$MODE" = readdress ] || pump
   if all_done; then echo "$(ts) 分配表里的都做完了"; break; fi
   if [ "$COUNT" -gt 0 ] && [ "$DONE_A" -ge "$COUNT" ]; then echo "$(ts) 已做满 $COUNT 台"; break; fi
+  # 先清 .250 的 ARP：上一台改走后，ARP 表里还是它的 MAC，不清就探不到刚插上的下一台（2026-10-20 VM 实测 --once 因此说「没有机器」）
+  flush_arp
   if tcp_open "$TEMP_IP" 22; then
     if [ "$WAIT_GONE" = 0 ]; then
       SAID=''
@@ -635,7 +680,8 @@ while :; do
   else
     [ "$WAIT_GONE" = 1 ] && echo "$(ts) $TEMP_IP 上的那台已拿走"
     WAIT_GONE=0
-    [ "$ONCE" = 1 ] && { echo "$(ts) $TEMP_IP 上没有机器"; SESSION_FAIL=1; break; }
+    # --once：刚插上 / 刚开机的那台要等几秒才出现，等到 ONCE_WAIT_S 再放弃
+    if [ "$ONCE" = 1 ] && [ $(( $(date +%s) - T_START )) -ge "$ONCE_WAIT_S" ]; then echo "$(ts) ${ONCE_WAIT_S} s 内 $TEMP_IP 上没有机器"; SESSION_FAIL=1; break; fi
     if [ "$SAID" != wait ]; then echo "$(ts) 等下一台出现在 $TEMP_IP …（LAN2 接交换机、上电即可；q 回车结束）$([ "$MODE" = readdress ] || echo "  后台：$(running_n) 台在装、${#QUEUE[@]} 台排队")"; SAID=wait; fi
   fi
   cmd=''

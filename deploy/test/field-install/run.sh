@@ -13,7 +13,7 @@ chk() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 rm -rf /fake; mkdir -p /fake/eg /fake/sd
 printf '%s\n' "$PW" > /fake/pw; : > /fake/rack
-export PATH="$H/bin:$PATH" LSA_FIELD_TCP="$H/bin/tcp" LSA_FIELD_REVERT_S=4 LSA_FIELD_RECONNECT_S=8 LSA_FIELD_POLL_S=1
+export PATH="$H/bin:$PATH" LSA_FIELD_TCP="$H/bin/tcp" LSA_FIELD_REVERT_S=4 LSA_FIELD_RECONNECT_S=8 LSA_FIELD_POLL_S=1 LSA_FIELD_ONCE_WAIT_S=3
 JK_BODY='LSAJOIN1 192.168.10.2 ssh-ed25519 AAAAtunnelkeyfake ssh-ed25519 AAAAupgradekeyfake'
 JK="$JK_BODY $(printf '%s' "$JK_BODY" | sha256sum | cut -c1-8)"
 
@@ -181,6 +181,14 @@ echo; echo '== 11b. 站内网段就在 192.168.1.x：提醒'
 printf 'X1 192.168.1.31/24 192.168.1.1\n' > /fake/p-same.tsv
 out="$(fis --plan /fake/p-same.tsv --status 2>&1)"
 chk "提醒同一段、建议单独交换机" '[[ "$out" == *"同一段"*"单独的交换机"* ]]'
+
+echo; echo '== 11c. 网关写错但在同一网段（子站照样连得回来，不会换回）：提醒、照装'
+mk_eg c3 SNC003; plug c3; echo 'SNC003 192.168.10.53/24 192.168.10.254 C-C -' >> /fake/plan.tsv
+echo 192.168.10.254 > /fake/gwdead
+out="$(fis --plan /fake/plan.tsv --run $RUN --yes --once 2>&1)"; rc=$?
+chk "提醒网关没应答、照样待接入" '[ "$rc" = 0 ] && [[ "$out" == *"网关 192.168.10.254 在 EG 上没应答"* ]] && [ "$(phase SNC003)" = pending ]'
+chk "网关正常的不提醒" '! grep -q "没应答" /fake/sd/SNC002/log'
+rm -f /fake/gwdead
 
 echo; echo '== 12. 口令没落盘'
 hits="$(grep -rlF -- "$PW" /fake /tmp /var /root /home /etc /rel 2>/dev/null | grep -vx /fake/pw || true)"
