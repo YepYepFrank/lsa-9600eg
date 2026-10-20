@@ -46,7 +46,9 @@ async function main() {
   const rows = (patch: Record<string, number>) => base.map(r => (r.key in patch ? { ...r, [cfg.cabinet.group]: patch[r.key] } : r))
   const allOn = Object.keys({ 'EG-rise': 1, 'EG-rise2': 1, 'EG-tabs': 1, 'EG-pd': 1, 'EG-arc': 1, 'EG-rh': 1, 'EG-ol': 1, 'EG-smoke': 1 }).map(id => ({ id, on: true }))
   const alarmsOf = async (name: string) => {
-    const p = (await tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')).data.find(x => x.name === name)!
+    const p = (await tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')).data.find(x => x.name === name)
+    // 没有这个设备配置（如本柜没有摄像机就没有 cam_*）：当没有告警规则
+    if (!p) return [] as Alarm[]
     return ((await tb.get<{ profileData: { alarms: Alarm[] | null } }>(`/api/deviceProfile/${p.id.id}`)).profileData.alarms ?? []) as Alarm[]
   }
   const limitOf = (as: Alarm[], type: string, sev: string) => as.find(a => a.alarmType === type)?.createRules[sev]?.condition.condition[0]?.predicate.value.defaultValue
@@ -69,7 +71,11 @@ async function main() {
   check(r1.body.status === 'APPLIED' && r1.body.version === v1, '回执 APPLIED、版本号对', JSON.stringify(r1.body))
   const a1 = await alarmsOf(samProfile)
   check(limitOf(a1, '弧光异常', 'CRITICAL') === 90, `本地 TB ${samProfile} 的弧光限值改成 90 %`, String(limitOf(a1, '弧光异常', 'CRITICAL')))
-  check(!!a1.find(a => a.alarmType === '过温') && limitOf(a1, '过温', 'MAJOR') === undefined && limitOf(a1, '过温', 'CRITICAL') !== undefined, '停用 EG-rise：过温只剩上上限（CRITICAL）一级')
+  // G4 起过温在摄像机的设备配置（cam_<柜型>），不在 SAM 的；本柜没有摄像机就没有过温规则，这项跳过
+  const c1 = await alarmsOf(`cam_${cfg.cabinet.group}`)
+  if (c1.find(a => a.alarmType === '过温') || cfg.devices.some(d => d.kind === 'camera'))
+    check(!!c1.find(a => a.alarmType === '过温') && limitOf(c1, '过温', 'MAJOR') === undefined && limitOf(c1, '过温', 'CRITICAL') !== undefined, `停用 EG-rise：cam_${cfg.cabinet.group} 的过温只剩上上限（CRITICAL）一级`)
+  else console.log('  · 本柜没有摄像机（没有 cam_* 的过温规则）：停用 EG-rise 这项跳过')
   const attr = await until(async () => ((await cfgAttr()) === v1 ? v1 : null), 15_000, 1000)
   check(!!attr, 'EG 的 cfg 属性（本地 TB 客户端属性）= 新版本', String(await cfgAttr()))
   const conf = await agent<{ applied: { version: string; rulesOff: string[] } }>(cfg.dir, '/api/config')
