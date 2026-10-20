@@ -13,12 +13,8 @@ export const climateSeries = [
   { name: '相对湿度', unit: '%', color: 'var(--s1)', data: samples(56, 4, 2) },
 ]
 export const pdSeries = [{ name: '局放幅值', unit: 'dBμV', color: 'var(--s1)', data: samples(6.2, 1) }]
-// 临时展示通道，实际型号确定后再替换字段、单位和量程；不用于告警判断。
-export const smokeSeries = [
-  { name: 'PM1.0', unit: 'μg/m³', color: 'var(--s3)', data: samples(8, 1.2) },
-  { name: 'PM2.5', unit: 'μg/m³', color: 'var(--s1)', data: samples(12, 1.8, .5) },
-  { name: 'PM10', unit: 'μg/m³', color: 'var(--s4)', data: samples(18, 2.4, 1) },
-]
+// 烟雾：SAM 气体传感器的 smoke.ppm（0.7.1 起，独立颗粒物 PM6 取消）
+export const smokeSeries = [{ name: '烟雾浓度', unit: 'ppm', color: 'var(--s1)', data: samples(12, 2.5) }]
 export const arcPreview = {
   from: end - 86400_000, to: end, unit: 'a.u.',
   pulses: [

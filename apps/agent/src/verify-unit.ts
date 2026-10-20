@@ -96,12 +96,12 @@ const legacyT = verifyTicket('tok-AH01-A', signTicket('tok-AH01-A', claims('AH01
 check(!('error' in legacyT), 'schema 1：给柜号的票据照旧认')
 
 console.log('\n4. caps / meters 取键')
-const capKeys = { pm6: ['PM6:*'] }
+const capKeys = { smokePpm: ['SAM:smoke.*'] }
 const keys = [s2.unit.code, s2.cabinet.code]
-const cUnit = parseCaps({ caps: { 'AH01-A': { pm6: 'confirmed' }, AH01: { pm6: 'unsupported' } }, capKeys }, keys)
-check(cUnit?.caps['pm6'] === 'confirmed', 'caps 有单元号键：取单元号那份')
-const cCab = parseCaps({ caps: { AH01: { pm6: 'pending' } }, capKeys }, keys)
-check(cCab?.caps['pm6'] === 'pending', 'caps 只有柜号键（老子站）：取柜号那份')
+const cUnit = parseCaps({ caps: { 'AH01-A': { smokePpm: 'confirmed' }, AH01: { smokePpm: 'unsupported' } }, capKeys }, keys)
+check(cUnit?.caps['smokePpm'] === 'confirmed', 'caps 有单元号键：取单元号那份')
+const cCab = parseCaps({ caps: { AH01: { smokePpm: 'pending' } }, capKeys }, keys)
+check(cCab?.caps['smokePpm'] === 'pending', 'caps 只有柜号键（老子站）：取柜号那份')
 check(throws(() => parseCaps({ caps: { AH02: {} }, capKeys }, keys), /没有本 EG（AH01-A \/ AH01）/), 'caps 两个键都没有：报错')
 const mUnit = parseMeters({ 'AH01-A': { 'PM-AH01': { ct: 40 } } }, keys, ['PM-AH01'])
 check(mUnit?.['PM-AH01']?.ct === 40, 'meters 单元号键：取本机电表')

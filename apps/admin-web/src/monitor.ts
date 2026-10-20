@@ -86,7 +86,6 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   const cam = computed(() => devs.value.find(d => d.kind === 'camera')?.name ?? null)
   const sams = computed(() => devs.value.filter(d => d.kind === 'sam').map(d => d.name).sort())
   const meter = computed(() => devs.value.find(d => d.kind === 'meter')?.name ?? null)
-  const pm = computed(() => devs.value.find(d => d.kind === 'pm')?.name ?? null)
   const labelOf = (name: string) => devs.value.find(d => d.name === name)?.label || name
   /** I3：电表的 el.* 是表计原值（二次值），显示时按实际生效的变比换成一次值（与 agent meters.service.ts 同一套规则） */
   const ratioOf = (dev: string | null) => (dev ? devs.value.find(d => d.name === dev)?.ratio : undefined) ?? { ct: 1, pt: 1 }
@@ -123,7 +122,7 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   }
 
   const liveDevices = computed(() =>
-    tab.value === 'overview' ? [cam.value, ...sams.value, pm.value] : tab.value === 'electric' ? [meter.value] : [],
+    tab.value === 'overview' ? [cam.value, ...sams.value] : tab.value === 'electric' ? [meter.value] : [],
   )
 
   async function loadLive() {
@@ -155,9 +154,8 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
       await Promise.all([
         // 测温区按 eg-video 报来的区域（本柜配了几个就几个，1–12；I18），还没报来时按 R1–R3
         hist(cam.value, [...regionIds().map(id => `ir.${id}.max`), 'ir.rmax', 'ir.rise']),
-        ...sams.value.map(s => hist(s, ['env.t', 'env.rh', 'us.amp', 'us.cnt'])),
+        ...sams.value.map(s => hist(s, ['env.t', 'env.rh', 'us.amp', 'us.cnt', 'smoke.ppm'])),
         ...sams.value.map(s => hist(s, ['uv.pulse'], 'NONE')),
-        hist(pm.value, ['pm.1.0', 'pm.2.5', 'pm.10']),
       ])
     } else if (tab.value === 'electric') {
       await hist(meter.value, ['el.Ia', 'el.Ib', 'el.Ic', 'el.P'])
@@ -214,7 +212,7 @@ export function useMonitor(tab: Ref<MonitorTab>, enabled: Ref<boolean>) {
   onBeforeUnmount(stop)
   watch([tab, enabled, () => !!store.status], start)
 
-  return { m, cam, sams, meter, pm, labelOf, num, text, series, has, card, ratioOf, refresh: start }
+  return { m, cam, sams, meter, labelOf, num, text, series, has, card, ratioOf, refresh: start }
 }
 
 /** 露点（Magnus 公式，与领导原型同一组系数） */

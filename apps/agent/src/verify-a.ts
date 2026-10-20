@@ -24,17 +24,18 @@ function unit(): void {
   console.log('0. 能力清单的纯函数')
   check(prefixOf('PM2-AH12') === 'PM2' && prefixOf('SAM-AH12-A') === 'SAM' && prefixOf('EG') === 'EG', '设备前缀取第一个「-」之前')
   check(keyMatch('*', 'x') && keyMatch('el.*', 'el.Ia') && keyMatch('el.h*', 'el.hu.A') && !keyMatch('el.h*', 'el.Ia') && keyMatch('us.cnt', 'us.cnt') && !keyMatch('us.cnt', 'us.cnt2'), 'key：整个、末尾 *、单独 *')
+  // 0.7.1：PM6 取消，「整台由能力决定」改拿电表演示（电表的能力全都不是 confirmed 时整台不启用）；烟雾是 SAM 的 smoke.*
   const c: CapsConfig = {
-    caps: { pdCount: 'confirmed', pm6: 'unsupported', smokePpm: 'pending', meterBasic: 'confirmed', meterHarmonics: 'unsupported' },
-    capKeys: { pdCount: ['SAM:us.cnt'], pm6: ['PM6:*'], smokePpm: ['PM6:smoke.ppm'], meterBasic: ['PM:el.*', 'PM2:el.*'], meterHarmonics: ['PM:el.h*'] },
+    caps: { pdCount: 'confirmed', smokePpm: 'pending', meterBasic: 'unsupported', meterHarmonics: 'pending', meterThd: 'unsupported' },
+    capKeys: { pdCount: ['SAM:us.cnt'], smokePpm: ['SAM:smoke.*'], meterBasic: ['PM:el.*', 'PM2:el.*'], meterHarmonics: ['PM:el.h*'], meterThd: ['PM:el.THDu'] },
   }
-  check(deviceEnabled('SAM-AH12-A', c) && !deviceEnabled('PM6-AH12', c) && deviceEnabled('PM-AH12', c) && deviceEnabled('CAM-AH12', c) && deviceEnabled('EG-AH12', c), '整台不启用：PM6（pm6 unsupported、smokePpm pending）；PM 有一项 confirmed 照常；匹配不上的照常')
-  check(deviceEnabled('PM6-X', null), '没下发能力 = 全部启用')
-  check(deviceLocal('PM6-AH12', c) && !deviceLocal('PM6-AH12', { ...c, caps: { ...c.caps, smokePpm: 'unsupported' } }) && deviceLocal('PM6-X', null), 'v1.2 本地库：有 pending 的进本地 TB；全都 unsupported 的不进')
-  const act = capsActual(c, ['SAM-AH12-A', 'PM-AH12', 'PM6-AH12'], (d, k) => d === 'SAM-AH12-A' && k === 'us.cnt')
-  check(act['pdCount'] === 'ok' && act['pm6'] === 'nodata' && act['meterBasic'] === 'nodata', `caps.actual 判 ok / nodata：${JSON.stringify(act)}`)
-  check(capsActual(c, ['SAM-AH12-A'], () => true)['pm6'] === 'absent', 'eg.yaml 里没有 PM6 → absent')
-  check(cardState(['smokePpm', 'pm6'], c) === 'pending' && cardState(['meterHarmonics'], c) === 'hidden' && cardState(['pdCount'], c) === 'show' && cardState(['x'], c) === 'show', '卡片：pending → 待定，unsupported → 隐藏')
+  check(deviceEnabled('SAM-AH12-A', c) && !deviceEnabled('PM-AH12', c) && deviceEnabled('CAM-AH12', c) && deviceEnabled('EG-AH12', c), '整台不启用：电表（meterBasic unsupported、谐波 pending，没有一项 confirmed）；SAM 有一项 confirmed 照常；匹配不上的照常')
+  check(deviceEnabled('PM-X', null), '没下发能力 = 全部启用')
+  check(deviceLocal('PM-AH12', c) && !deviceLocal('PM-AH12', { ...c, caps: { ...c.caps, meterHarmonics: 'unsupported' } }) && deviceLocal('PM-X', null), 'v1.2 本地库：有 pending 的进本地 TB；全都 unsupported 的不进')
+  const act = capsActual(c, ['SAM-AH12-A', 'PM-AH12'], (d, k) => d === 'SAM-AH12-A' && k === 'us.cnt')
+  check(act['pdCount'] === 'ok' && act['smokePpm'] === 'nodata' && act['meterBasic'] === 'nodata', `caps.actual 判 ok / nodata：${JSON.stringify(act)}`)
+  check(capsActual(c, ['SAM-AH12-A'], () => true)['meterBasic'] === 'absent', 'eg.yaml 里没有电表 → absent')
+  check(cardState(['smokePpm'], c) === 'pending' && cardState(['meterBasic', 'meterThd'], c) === 'hidden' && cardState(['pdCount'], c) === 'show' && cardState(['x'], c) === 'show', '卡片：pending → 待定，unsupported → 隐藏')
   let bad = ''
   try {
     parseCaps({ caps: { AH12: { a: 'yes' } }, capKeys: {} }, 'AH12')
@@ -59,7 +60,8 @@ async function main() {
   const tb = await new Tb(LOCAL_TB, cfg.tb?.user ?? '', cfg.tb?.password ?? '').login()
   const devs = cfg.devices.map(d => d.name)
   const sam = devs.find(n => n.startsWith('SAM-'))!
-  const pm6 = devs.find(n => n.startsWith('PM6-'))
+  // 「整台由能力决定」拿电表做（0.7.1 起没有 PM6）
+  const meterDev = devs.find(n => /^PM2?-/.test(n))
   const camDev = devs.find(n => n.startsWith('CAM-'))
   const ticket = () => {
     const now = Date.now()
@@ -69,7 +71,7 @@ async function main() {
     const r = await fetch(`${AGENT}/api/config`, { method: 'PUT', headers: { 'content-type': 'application/json', 'X-EG-Ticket': ticket() }, body: JSON.stringify(body) })
     return (await r.json()) as { version: string; status: string; error?: string; changed?: number }
   }
-  const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-pm', 'EG-dphase', 'EG-devlost']
+  const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-smoke', 'EG-dphase', 'EG-devlost']
   const rules = (off: string[] = []) => RULES.map(id => ({ id, on: !off.includes(id) }))
   /** v1.2 补：按柜停用（offCabs） */
   const rulesCab = (off: string[], cab: string) => RULES.map(id => ({ id, on: true, ...(off.includes(id) ? { offCabs: [cab] } : {}) }))
@@ -86,39 +88,41 @@ async function main() {
     caps: { [code]: states },
     capKeys: {
       thermalRegions: ['CAM:ir.*'], camVideo: ['CAM:cam.*'], envTH: ['SAM:env.*'], pdAmplitude: ['SAM:us.amp'], pdCount: ['SAM:us.cnt'],
-      arcIntensity: ['SAM:uv.int'], arcEvents: ['SAM:uv.pulse'], pm6: ['PM6:*'], smokePpm: ['PM6:smoke.ppm'],
+      arcIntensity: ['SAM:uv.int'], arcEvents: ['SAM:uv.pulse'], smokePpm: ['SAM:smoke.*'],
       meterBasic: ['PM:el.*', 'PM2:el.*'], meterHarmonics: ['PM:el.h*', 'PM2:el.h*'],
     },
     devComm: { failN: 5, minMs: 30_000, periods: 5 },
   })
-  const ALL_ON = { thermalRegions: 'confirmed', camVideo: 'confirmed', envTH: 'confirmed', pdAmplitude: 'confirmed', pdCount: 'confirmed', arcIntensity: 'confirmed', arcEvents: 'confirmed', meterBasic: 'confirmed', meterHarmonics: 'pending' }
+  const ALL_ON = { thermalRegions: 'confirmed', camVideo: 'confirmed', envTH: 'confirmed', pdAmplitude: 'confirmed', pdCount: 'confirmed', arcIntensity: 'confirmed', arcEvents: 'confirmed', smokePpm: 'confirmed', meterBasic: 'confirmed', meterHarmonics: 'pending' }
+  /** 电表整台不启用：基础量 unsupported、谐波 pending（还进本地 TB） */
+  const METER_OFF = { ...ALL_ON, meterBasic: 'unsupported', meterHarmonics: 'pending' }
 
-  console.log('\n1. 能力下发：pm6 / smokePpm 不启用（PM6 整台不上送），电表谐波 pending')
-  const r1 = await put({ version: ver(1), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  console.log('\n1. 能力下发：电表基础量 unsupported、谐波 pending（电表整台不上送）')
+  const r1 = await put({ version: ver(1), thresholds: base, rules: rules(['EG-rh']), ...capsBody(METER_OFF) })
   check(r1.status === 'APPLIED', `PUT /api/config 带 caps / capKeys / devComm → ${r1.status}${r1.error ? `：${r1.error}` : ''}`)
   const ci = await agent<{ delivered: boolean; caps: Record<string, string>; actual: Record<string, string> | null; devComm: { failN: number } }>(dir, '/api/caps')
-  check(ci.delivered && ci.caps['pm6'] === 'unsupported' && ci.devComm.failN === 5, `GET /api/caps 照下发的：${JSON.stringify(ci.caps)}`)
+  check(ci.delivered && ci.caps['meterBasic'] === 'unsupported' && ci.devComm.failN === 5, `GET /api/caps 照下发的：${JSON.stringify(ci.caps)}`)
   const st = await agent<{ devices: { name: string; capsEnabled?: boolean; comm?: { comm: string } }[] }>(dir, '/api/status')
   const en = Object.fromEntries(st.devices.map(d => [d.name, d.capsEnabled]))
-  if (pm6) check(en[pm6] === false && en[sam] === true, `/api/status：${pm6} 不启用、${sam} 启用`)
+  if (meterDev) check(en[meterDev] === false && en[sam] === true, `/api/status：${meterDev} 不启用、${sam} 启用`)
   const act = await until(async () => {
     const v = await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'caps.actual')
     return typeof v === 'string' ? (JSON.parse(v) as Record<string, string>) : null
   }, 60_000, 3000)
   check(!!act && act['pdCount'] === 'ok' && act['envTH'] === 'ok', `caps.actual 属性进了本地 TB：${JSON.stringify(act)}`)
-  if (pm6) check(act?.['pm6'] === 'ok', `PM6 照常采（本地有数）→ pm6 = ok（与下发的 unsupported 不一致，子站据此提示）`)
+  if (meterDev) check(act?.['meterBasic'] === 'ok', `电表照常采（本地有数）→ meterBasic = ok（与下发的 unsupported 不一致，子站据此提示）`)
 
-  if (pm6) {
+  if (meterDev) {
     console.log('\n1b. v1.2 本地库：pending 的设备照常进本地 TB（供调试核对）；全都 unsupported 的不进（IoT Gateway 约 60 s 内重载）')
-    const pmKey = 'pm.2.5'
-    const tsOf = async () => (await tb.latest(pm6, [pmKey]))[pmKey]?.ts ?? 0
+    const pmKey = 'el.Ia'
+    const tsOf = async () => (await tb.latest(meterDev, [pmKey]))[pmKey]?.ts ?? 0
     const a0 = await tsOf()
     await sleep(25_000)
     const a1 = await tsOf()
-    check(a1 > a0, `${pm6}（pm6 unsupported、smokePpm pending）本地 TB 照常有数：${pmKey} 最新时刻前进了 ${Math.round((a1 - a0) / 1000)} s`)
-    const rx = await put({ version: ver(9), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'unsupported' }) })
+    check(a1 > a0, `${meterDev}（基础量 unsupported、谐波 pending）本地 TB 照常有数：${pmKey} 最新时刻前进了 ${Math.round((a1 - a0) / 1000)} s`)
+    const rx = await put({ version: ver(9), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...METER_OFF, meterHarmonics: 'unsupported' }) })
     const nl = await agent<{ notLocal: string[] }>(dir, '/api/caps')
-    check(rx.status === 'APPLIED' && nl.notLocal.includes(pm6), `pm6、smokePpm 都改成 unsupported → APPLIED，/api/caps notLocal = ${JSON.stringify(nl.notLocal)}`)
+    check(rx.status === 'APPLIED' && nl.notLocal.includes(meterDev), `电表基础量、谐波都改成 unsupported → APPLIED，/api/caps notLocal = ${JSON.stringify(nl.notLocal)}`)
     // IoT Gateway 60 s 查一次配置：等它不再往本地 TB 写（连续 30 s 最新时刻不动）
     const stopped = await until(async () => {
       const b0 = await tsOf()
@@ -126,7 +130,7 @@ async function main() {
       return (await tsOf()) === b0 ? b0 : null
     }, 180_000, 1000)
     check(!!stopped, `本地 TB 不再收 ${pmKey}（最后一条 ${stopped ? new Date(stopped).toISOString() : '—'}）`)
-    const ry = await put({ version: ver(10), thresholds: base, rules: rules(['EG-rh']), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+    const ry = await put({ version: ver(10), thresholds: base, rules: rules(['EG-rh']), ...capsBody(METER_OFF) })
     const again = await until(async () => ((await tsOf()) > (stopped || 0) ? true : null), 150_000, 5000)
     check(ry.status === 'APPLIED' && !!again, '改回 pending → 本地 TB 又开始收（从那一刻起）')
   }
@@ -137,12 +141,12 @@ async function main() {
     return l['dev.comm'] ? l : null
   }, 90_000, 3000)
   check(!!comm && ['ONLINE', 'DEGRADED'].includes(String(comm['dev.comm']?.value)) && String(comm['dev.link']?.value) === '1', `${sam}：dev.comm = ${comm?.['dev.comm']?.value}、dev.link = ${comm?.['dev.link']?.value}、last_ok ${comm?.['dev.last_ok']?.value}、fails ${comm?.['dev.fails']?.value}`)
-  if (pm6) {
+  if (meterDev) {
     // 比 EG 自己的时间戳（EG 的钟跟子站，与跑自检的机器可能差几十秒）：65 s 里最近一条没往前走 = 没再发
-    const l = await tb.latest(pm6, ['dev.comm'])
+    const l = await tb.latest(meterDev, ['dev.comm'])
     await sleep(65_000)
-    const l2 = await tb.latest(pm6, ['dev.comm'])
-    check(!l2['dev.comm'] || l2['dev.comm'].ts === l['dev.comm']?.ts, `${pm6}（能力不启用）不发 dev.*：最近一条 ${l2['dev.comm'] ? new Date(l2['dev.comm'].ts).toISOString() : '无'}（自检开始前 ${l['dev.comm'] ? '有' : '无'}）`)
+    const l2 = await tb.latest(meterDev, ['dev.comm'])
+    check(!l2['dev.comm'] || l2['dev.comm'].ts === l['dev.comm']?.ts, `${meterDev}（能力不启用）不发 dev.*：最近一条 ${l2['dev.comm'] ? new Date(l2['dev.comm'].ts).toISOString() : '无'}（自检开始前 ${l['dev.comm'] ? '有' : '无'}）`)
   }
   console.log(`   ${sam} 整台停发 → 应 OFFLINE（fails ≥ 5 且 > max(30 s, 5 周期)），恢复 → ONLINE`)
   await post(`${EMU}/emu/dev/${sam}/dead?on=1`)
@@ -175,11 +179,11 @@ async function main() {
     return null
   }, 60_000, 2000)
   check(!!arcOn, `打弧光 → 本地 TB 活动告警「弧光异常」（${arcOn?.d ?? '没出来'}）`)
-  const r4 = await put({ version: ver(2), thresholds: base, rules: rulesCab(['EG-rh', 'EG-arc'], code), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  const r4 = await put({ version: ver(2), thresholds: base, rules: rulesCab(['EG-rh', 'EG-arc'], code), ...capsBody(METER_OFF) })
   check(r4.status === 'APPLIED' && !(await profileTypes()).has('弧光异常'), `按柜停用 EG-arc（offCabs: [${code}]）→ ${r4.status}，本地设备配置里没有「弧光异常」了`)
   const cleared = await until(async () => (arcOn && !(await tb.activeAlarms(arcOn.d)).some(x => x.type === '弧光异常') ? true : null), 30_000, 2000)
   check(!!cleared, '停用后「弧光异常」活动告警被清掉（没有规则了，不清就一直挂着）')
-  const r4b = await put({ version: ver(4), thresholds: base, rules: rulesCab(['EG-rh', 'EG-arc'], 'ZZ99'), ...capsBody({ ...ALL_ON, pm6: 'unsupported', smokePpm: 'pending' }) })
+  const r4b = await put({ version: ver(4), thresholds: base, rules: rulesCab(['EG-rh', 'EG-arc'], 'ZZ99'), ...capsBody(METER_OFF) })
   check(r4b.status === 'APPLIED' && (await profileTypes()).has('弧光异常'), `offCabs 只列别的柜（ZZ99）→ ${r4b.status}，本柜「弧光异常」规则回来了`)
 
   console.log('\n5. 恢复：不带能力的配置（全部照旧上送）')

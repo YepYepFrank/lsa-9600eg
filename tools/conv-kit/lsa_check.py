@@ -212,9 +212,10 @@ def load_spec():
 
 
 SPEC = None
-ROOMS = {'mv': 'AB', 'tr': 'ABC', 'lv': 'A'}
+# 柜型的 SAM 槽位（示范数据与没给 eg.yaml 时的设备清单用）：高压 A/B、变压器 A/B/C、低压 A/B（S19 低压柜有两个舱室）
+ROOMS = {'mv': 'AB', 'tr': 'ABC', 'lv': 'AB'}
 ROOM_NAMES = {'mv': '中压开关柜', 'tr': '干式变压器', 'lv': '低压柜'}
-KIND_NAMES = {'sam': '感知模块 SAM', 'meter': '多功能电表', 'pm': '颗粒物 / 烟气', 'eg': 'EG 级信号', 'camera': '摄像机'}
+KIND_NAMES = {'sam': '感知模块 SAM', 'meter': '多功能电表', 'eg': 'EG 级信号', 'camera': '摄像机'}
 PERIOD_NAMES = {2000: '快 2 s', 3000: '局放 3 s', 10000: '慢 10 s', 60000: '分钟 60 s'}
 DEV_ERR = {'', 'TIMEOUT', 'CRC', 'REFUSED', 'PARSE', 'AUTH'}
 Q_VALUES = {'invalid', 'stale', 'warmup', 'calibrating'}
@@ -223,7 +224,6 @@ SOUTH5 = ['dev.req_24h', 'dev.timeout_24h', 'dev.crc_24h', 'dev.retry_24h', 'dev
 PD_ABSENT = {'tev.amp': (18.7, 187), 'uhf.amp': (26.9, 269)}
 NAME_RE = [
     (re.compile(r'^SAM-([A-Za-z0-9]+)-([A-Z])$'), 'sam'),
-    (re.compile(r'^PM6-([A-Za-z0-9]+)$'), 'pm'),
     (re.compile(r'^PM2?-([A-Za-z0-9]+)$'), 'meter'),
     # 0.18.0 舱室 EG：EG / 摄像机按单元，名字带舱室字母（EG-AH01-A、CAM-AH01-A）；照旧一柜一台的 EG-AH03
     (re.compile(r'^EG-([A-Za-z0-9]+(?:-[A-Z])?)$'), 'eg'),
@@ -311,7 +311,6 @@ def devices_for(cab, group, pm2=False):
     devs['PM-' + cab] = 'meter'
     if pm2:
         devs['PM2-' + cab] = 'meter'
-    devs['PM6-' + cab] = 'pm'
     devs['EG-' + cab] = 'eg'
     return devs
 
@@ -409,7 +408,7 @@ class Checker:
         if not dev:
             kind, _cab = kind_of_name(name)
             if kind is None:
-                self.issue('ERROR', name, 'name', '设备名「%s」不合规则（§3：SAM-<柜号>-<隔室字母> / PM-<柜号> / PM2-<柜号> / PM6-<柜号> / EG-<单元号>，单元号 = 柜号或 柜号-舱室字母），不会上送' % name, name, payload)
+                self.issue('ERROR', name, 'name', '设备名「%s」不合规则（§3：SAM-<柜号>-<隔室字母> / PM-<柜号> / PM2-<柜号> / EG-<单元号>，单元号 = 柜号或 柜号-舱室字母），不会上送' % name, name, payload)
                 return
             if kind == 'camera':
                 self.issue('ERROR', name, 'camera', '摄像机数据由 eg-video 发，转换程序不要发 CAM-*（§6）', name, payload)
@@ -531,7 +530,7 @@ class Checker:
             if d.get('cap'):
                 dev.caps_seen.add(d['cap'])
             if d.get('note'):
-                # 同一能力只说一次（谐波 6 个量、颗粒物 6 个量……）
+                # 同一能力只说一次（谐波 6 个量……）
                 self.issue('INFO', name, 'cap-note', '收到「%s」等。%s' % (key, d['note']), d.get('cap') or key, payload, once=True)
             self.check_value(dev, key, d, v, payload)
             if key in SOUTH5:
@@ -555,10 +554,6 @@ class Checker:
                 pk = None
             if isinstance(pk, (int, float)) and pk and abs(values['uv.int'] - pk) > 0.01:
                 self.issue('WARN', name, 'pulse-int-val', '弧光脉冲那条的 uv.int（%s）要等于事件峰值（%s），不是当时的背景值（§5.1）' % (values['uv.int'], pk), '', payload)
-        if dev.kind == 'pm':
-            m = [values.get(k) for k in ('pm.2.5', 'pm.5.0', 'pm.10')]
-            if all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in m) and not (m[0] <= m[1] <= m[2]):
-                self.issue('WARN', name, 'pm-order', '质量浓度应 PM2.5 ≤ PM5.0 ≤ PM10，现在是 %s / %s / %s（寄存器对应错了？）' % tuple(m), '', payload)
 
     def check_value(self, dev, key, d, v, payload):
         name, typ = dev.name, d['type']
@@ -826,9 +821,9 @@ def run_demo(args):
     threading.Thread(target=reader, daemon=True).start()
     rooms = ROOMS[group]
     sams = ['SAM-%s-%s' % (cab, r) for r in rooms]
-    pm, pm6, eg = 'PM-' + cab, 'PM6-' + cab, 'EG-' + cab
+    pm, eg = 'PM-' + cab, 'EG-' + cab
     bad = args.bad
-    print('往 %s:%d 发 %s 的示范数据（%s）：%s；Ctrl+C 停' % (args.host, args.port, cab, '常见错误' if bad else '正确格式', '、'.join(sams + [pm, pm6, eg])))
+    print('往 %s:%d 发 %s 的示范数据（%s）：%s；Ctrl+C 停' % (args.host, args.port, cab, '常见错误' if bad else '正确格式', '、'.join(sams + [pm, eg])))
 
     def pub(dev, values, ts=None, qos=1, retain=False, topic=None):
         msg = json.dumps({'ts': ts if ts is not None else now_ms(), 'values': values}, ensure_ascii=False)
@@ -852,7 +847,7 @@ def run_demo(args):
                     v.update({'env.t': round(26 + i + random.uniform(-0.3, 0.3), 1), 'env.rh': round(random.uniform(40, 50), 1)})
                 v.update({'dev.last_try': ts, 'dev.last_ok': ts, 'dev.err': '', 'dev.fails': 0})
                 if i == 0 and n % 5 == 1:
-                    v['smoke.ppm'] = 6                       # 气体（能力待定，T08）：发在 SAM 下
+                    v['smoke.ppm'] = 6                       # 烟雾：气体传感器发在 SAM 下（PM6 已取消）
                 if bad and i == 0:
                     v['dev.warmup_s'] = 0                    # 预热由 EG 判，转换程序不要发
                     v['us.amp'] = str(v['us.amp'])          # 数值发成字符串
@@ -888,10 +883,6 @@ def run_demo(args):
             if n % 30 == 1:
                 h = json.dumps([round(random.uniform(0, 3), 2) for _ in range(30 if not bad else 12)])
                 pub(pm, {'el.hu.A': h, 'el.hu.B': h, 'el.hu.C': h, 'el.hi.A': h, 'el.hi.B': h, 'el.hi.C': h}, ts=ts)
-            if n % 5 == 1:
-                pub(pm6, {'pm.0.3': random.randint(800, 1200), 'pm.0.5': random.randint(300, 500), 'pm.1.0': random.randint(80, 150),
-                          'pm.2.5': 12.0, 'pm.5.0': 18.5, 'pm.10': 25.3, 'dev.last_try': ts, 'dev.last_ok': ts, 'dev.err': '', 'dev.fails': 0},
-                    ts=ts, retain=bad)
             if n % 30 == 1:
                 pub(eg, {'sw.cb': 1 if not bad else 2, 'eg.power': 0}, ts=ts)
             if bad and n % 10 == 3:

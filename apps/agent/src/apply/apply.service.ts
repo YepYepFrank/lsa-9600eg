@@ -5,7 +5,7 @@
  *
  * 告警规则由后端库 @lsa/model 的同一份代码按阈值表生成（与子站 provision、provision:eg 一致），再按规则开关去掉停用的：
  *   EG-rise / EG-rise2 是「过温」的 MAJOR / CRITICAL 两级，停一级去掉一级，两级都停整条去掉；其余一条规则对应一类告警。
- * 只改本机本来就有的、带告警的设备配置（sam_* / meter / pm_sensor）。写到一半失败把已写的改回去。
+ * 只改本机本来就有的、带告警的设备配置（sam_* / meter / cam_*；0.7.1 起没有 pm_sensor —— PM6 取消，烟雾归 SAM）。写到一半失败把已写的改回去。
  * 生效版本记在配置目录的 applied-config.json（重启后照旧上报；告警事件的 ruleVersion 也取它）。
  * 本地 TB 暂时没就绪（EG 刚开机 TB 还在起、连不上、超时、5xx）：不回 FAILED，回 PENDING（retryable: true），
  *   这份配置落盘（pending-config.json）排队，15 s 起退避到 60 s 自己重试，应用成功后照常更新 cfg 属性（§8.3 的「实际版本」即最终状态）；
@@ -73,6 +73,9 @@ export interface Applied {
   meters?: Record<string, Partial<Ratio>> | null
   /** 0.17：传感器预热参数（extras 里的 gasWarmupS / gasGapS / gasBootWarmupOffCabs；都没带为 null = 缺省） */
   gas?: GasParams | null
+  /** 0.7.1：这台 EG 不认识、跳过了的规则的开关（本柜生效后的 { id, on }）。EG 升级后开机重算时按它，不违背子站的开关；
+   *  0.7.0 及以前没有这个字段（被跳过的规则开关没记，见 regenRules） */
+  ignoredRules?: { id: string; on: boolean }[]
 }
 
 /** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别；alias = 改名前的类型（@lsa/model 的模板还没跟上时照样认） */
@@ -85,7 +88,9 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string; alias
   // 用户 2026-10-08 拍板（§6 第 6 条）：改名「柜内湿度高」，子站缺省下 on:false
   'EG-rh': { type: '柜内湿度高', alias: ['环境'] },
   'EG-ol': { type: '过载' },
-  'EG-pm': { type: '烟气' },
+  // 0.7.1（舱室方案 v0.9 §10）：独立颗粒物 PM6 取消，烟雾取 SAM 的 smoke.ppm —— 规则 EG-smoke 两级（smoke2 紧急 / smoke 重要，各持续 30 s），
+  // 类型仍是「烟气」（北向 SMOKE_HIGH）；气体有预热，@lsa/model 另派生「预热期读数越限（烟气）」。两级一个开关，所以不写 severity
+  'EG-smoke': { type: '烟气' },
   // G4：摄像机区域温差（ir.dmax > dphase 持续 5 min，设备配置 cam_*）
   'EG-dphase': { type: '区域温差' },
   // 下挂设备失联（dev.link == 0，通信类、重要；后端 provision:eg 加规则）
@@ -118,8 +123,13 @@ export async function seedWarmupKey(tb: { get<T>(path: string): Promise<T>; req<
   return seeded
 }
 
-/** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用 */
-const DEFAULT_EXTRAS: ThresholdExtras = { pdCnt: 20, pm25Abs: 75, commPeriods: 5 }
+/** 已退役的规则 id：老子站（0.18.0 及以前）还会发，这台 EG 认得、不必列进 ignored（列了会被当成「EG 比子站旧」）—— 直接不管。
+ *  EG-pm（PM2.5 越上限）随 PM6 在 0.7.1 取消：它管的「烟气」现在归 EG-smoke，老子站的 EG-pm 开关不能再去动烟雾那条 */
+const RETIRED_RULES = new Set(['EG-pm'])
+
+/** 阈值表外的常量（后端 tb/model.yaml thresholdExtras）；子站没带、本机也没应用过时用。
+ *  pm25Abs 0.7.1 起不用（PM6 取消）：老子站还带也不存，免得同一份内容因它不同而算成新配置 */
+const DEFAULT_EXTRAS: ThresholdExtras = { pdCnt: 20, commPeriods: 5 }
 
 class Invalid extends Error {
   constructor(
@@ -274,7 +284,7 @@ export class ApplyService {
       return { version, status: 'FAILED', error, errorCode, ...rid }
     }
     const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}`, errorCode: 'LOCAL_NOT_READY', ...rid })
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; ignoredRules: { id: string; on: boolean }[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null }
     try {
       input = this.parse(body)
     } catch (e) {
@@ -303,33 +313,22 @@ export class ApplyService {
       return fail(`读本地 TB 的设备配置失败：${(e as Error).message}`, 'INTERNAL')
     }
     if (!profiles.length) return fail('本地 TB 上没有带告警规则的设备配置（先跑 provision:eg）', 'LOCAL_NOT_CONFIGURED')
-    for (const p of profiles) {
-      const def = PROFILES.find(d => d.name === p.name)!
-      let alarms: TbAlarmDef[]
-      try {
-        alarms = (profileBody(def, { rows: input.thresholds, extras: input.extras }).profileData.alarms ?? []) as TbAlarmDef[]
-      } catch (e) {
-        return fail(`阈值表不全（设备配置 ${p.name}）：${(e as Error).message}`, 'BAD_THRESHOLD')
-      }
-      const next = filterRules(alarms, input.rules)
-      if (canon(next) === canon(p.profileData.alarms ?? [])) continue
-      plan.push({ before: p, after: { ...p, profileData: { ...p.profileData, alarms: next.length ? next : null } } })
+    try {
+      plan.push(...planProfiles(profiles, input))
+    } catch (e) {
+      if (e instanceof Invalid) return fail(e.message, e.code)
+      throw e
     }
 
     // 写；失败就把已写的改回去
-    const done: TbProfile[] = []
     try {
-      for (const x of plan) {
-        const saved = await this.tb.req<TbProfile>('POST', '/api/deviceProfile', x.after)
-        done.push({ ...x.before, version: saved['version'] })
-      }
+      await this.writePlan(plan)
     } catch (e) {
-      for (const b of done) await this.tb.req('POST', '/api/deviceProfile', b).catch(() => undefined)
       if (transient(e)) return later(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`)
       return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`, 'INTERNAL')
     }
 
-    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas }
+    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas, ignoredRules: input.ignoredRules }
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
     this.caps.set(input.caps, input.devComm, input.gas)
     this.meters.set(input.meters)
@@ -348,6 +347,20 @@ export class ApplyService {
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid, meters: this.meters.effective() }
   }
 
+  /** 依次写设备配置；中途失败把已写的改回去、再抛出 */
+  private async writePlan(plan: { before: TbProfile; after: TbProfile }[]): Promise<void> {
+    const done: TbProfile[] = []
+    try {
+      for (const x of plan) {
+        const saved = await this.tb.req<TbProfile>('POST', '/api/deviceProfile', x.after)
+        done.push({ ...x.before, version: saved['version'] })
+      }
+    } catch (e) {
+      for (const b of done) await this.tb.req('POST', '/api/deviceProfile', b).catch(() => undefined)
+      throw e
+    }
+  }
+
   /** 等开机清扫做完（告警事件开机重发要等它）；本地 TB 一直没就绪就等到 ms 为止 */
   sweepDone(ms: number): Promise<void> {
     return Promise.race([this.sweptP, new Promise<void>(r => setTimeout(r, ms).unref?.())])
@@ -359,8 +372,9 @@ export class ApplyService {
     const p = this.chain.then(async () => {
       if (this.swept) return
       const list = await this.tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')
-      const profiles = await Promise.all(list.data.filter(x => PROFILES.find(d => d.name === x.name)?.alarms).map(x => this.tb.get<TbProfile>(`/api/deviceProfile/${x.id.id}`)))
+      let profiles = await Promise.all(list.data.filter(x => PROFILES.find(d => d.name === x.name)?.alarms).map(x => this.tb.get<TbProfile>(`/api/deviceProfile/${x.id.id}`)))
       if (!profiles.length) return
+      profiles = await this.regenerate(profiles)
       await this.seedWarmup(profiles)
       const now = new Set(profiles.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
       const known = new Set(Object.values(RULE_ALARM).flatMap(r => [r.type, ...(r.alias ?? [])]).flatMap(t => [t, warmupTypeOf(t)]))
@@ -375,6 +389,33 @@ export class ApplyService {
     })
     this.chain = p.catch(() => undefined)
     return p.catch(() => undefined)
+  }
+
+  /** 开机按已生效的配置重算一遍告警规则（0.7.1）：EG 升级后 @lsa/model 生成的规则可能变了（如 0.7.1 起 SAM 有 EG-smoke 烟雾两级），
+   *  而子站的配置版本没变、不会重发 —— 不重算的话新规则要等子站下一次改阈值才有。重算结果与本地 TB 现有的不同就写进去。
+   *  规则开关一律以已生效配置里子站给的为准（regenRules）：当时被跳过的规则 0.7.1 起也记了开关；0.7.0 及以前存的没记，
+   *  这些规则保持本地 TB 现状（现在有就算开、没有就算停）—— 不会把子站关掉的告警打开，子站下次下发再以子站为准。
+   *  有排着的配置时不动（它应用时会整份重写）；阈值表缺项只记警告；本地 TB 暂时写不进抛出，清扫下一轮再来 */
+  private async regenerate(profiles: TbProfile[]): Promise<TbProfile[]> {
+    const a = this.applied
+    if (!a || this.pending) return profiles
+    let plan: { before: TbProfile; after: TbProfile }[]
+    try {
+      const present = new Set(profiles.flatMap(x => (x.profileData.alarms ?? []).map(y => y.alarmType)))
+      const { rules, unknown } = regenRules(a, present)
+      if (unknown.length) this.log.log(`开机重算：已生效配置 ${a.version} 是老 EG 存的，没记它当时跳过的规则的开关 —— ${unknown.map(r => `${r.id} 按本地现状${r.on ? '开' : '停'}`).join('、')}，子站下次下发再以子站为准`)
+      plan = planProfiles(profiles, { ...a, rules })
+    } catch (e) {
+      if (!(e instanceof Invalid)) throw e
+      this.log.warn(`开机按已生效配置 ${a.version} 重算告警规则失败：${e.message}（等子站下次下发）`)
+      return profiles
+    }
+    if (!plan.length) return profiles
+    await this.writePlan(plan)
+    const names = plan.map(x => x.before.name).join('、')
+    this.log.log(`开机按已生效配置 ${a.version} 重算告警规则：本机程序生成的规则与本地 TB 现有的不同（多半是 EG 刚升级），改了 ${plan.length} 个设备配置（${names}）`)
+    this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '重算告警规则', target: a.version, ok: true, detail: `开机按已生效配置重算：改了 ${names}` })
+    return profiles.map(x => plan.find(y => y.before === x)?.after ?? x)
   }
 
   /** seedWarmupKey 的包装：失败只记日志（不影响应用；开机清扫下次还会再查） */
@@ -431,6 +472,7 @@ export class ApplyService {
     if (!Array.isArray(rawRules)) throw new Invalid('rules 要是数组')
     const rules: { id: string; on: boolean }[] = []
     const ignored: string[] = []
+    const ignoredRules: { id: string; on: boolean }[] = []
     // offCabs 按哪个键看：caps 里有本单元号的键就只看单元号，没有才看柜号（见 offCabsKey）
     const offKey = offCabsKey(b, this.cfg.unit.code, this.cfg.cabinet.code)
     for (const r of rawRules) {
@@ -439,23 +481,26 @@ export class ApplyService {
       const offCabs = r['offCabs'] ?? []
       if (!Array.isArray(offCabs) || !offCabs.every(x => typeof x === 'string')) throw new Invalid(`rules[${r['id']}].offCabs 要是柜号数组`)
       // 子站执行的规则（SP-*）与 EG 无关，带了也不管
-      if (!r['id'].startsWith('EG-')) continue
+      if (!r['id'].startsWith('EG-') || RETIRED_RULES.has(r['id'])) continue
       // 不认识的（子站比这台 EG 新）：跳过，回执里列出来，不让整份配置失败
       if (!RULE_ALARM[r['id']]) {
         ignored.push(r['id'])
+        // 0.7.1：开关也记下（存进 applied-config.json），以后 EG 升级认得它了，开机重算按子站给的开关
+        ignoredRules.push({ id: r['id'], on: r['on'] && !offCabs.includes(offKey) })
         continue
       }
       // 存与算哈希的都是本柜生效后的 { id, on }：别的柜进出 offCabs 对本柜不算新内容；不带 offCabs 与老哈希一致
       rules.push({ id: r['id'], on: r['on'] && !offCabs.includes(offKey) })
     }
 
-    let extras = this.applied?.extras ?? DEFAULT_EXTRAS
+    // 0.7.0 以前存下的 applied 里可能还有 pm25Abs：只取在用的两项
+    let extras: ThresholdExtras = { pdCnt: this.applied?.extras.pdCnt ?? DEFAULT_EXTRAS.pdCnt, commPeriods: this.applied?.extras.commPeriods ?? DEFAULT_EXTRAS.commPeriods }
     let gas = this.applied?.gas ?? null
     if (b['extras'] !== undefined) {
       const e = b['extras']
       if (!isObj(e)) throw new Invalid('extras 要是对象')
       extras = { ...extras }
-      for (const k of ['pdCnt', 'pm25Abs', 'commPeriods'] as const) if (e[k] !== undefined) extras[k] = num(e[k], `extras.${k}`) ?? extras[k]
+      for (const k of ['pdCnt', 'commPeriods'] as const) if (e[k] !== undefined) extras[k] = num(e[k], `extras.${k}`) ?? extras[k]
       // 0.17 传感器预热参数：单独存、单独计哈希（extras 只留阈值三项，老配置哈希不变）；都没带 = 缺省
       try {
         gas = parseGas(e)
@@ -499,18 +544,55 @@ export class ApplyService {
     } catch (e) {
       throw new Invalid((e as Error).message)
     }
-    return { version, thresholds, rules, extras, ignored, caps, devComm, meters, gas }
+    return { version, thresholds, rules, extras, ignored, ignoredRules, caps, devComm, meters, gas }
   }
 }
 
 /** 配置内容哈希（判重复下发）。老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，
  *  升级后同一份配置不会被当成新内容；meters（I3）、gas（0.17 预热参数）也是带了才计进去 */
-export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown }): string {
+export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown; ignoredRules?: { id: string; on: boolean }[] }): string {
   const parts: unknown[] = [i.thresholds, i.rules, i.extras]
   if (i.caps || i.devComm) parts.push(i.caps, i.devComm)
   if (i.meters) parts.push({ meters: i.meters })
   if (i.gas) parts.push({ gas: i.gas })
+  // 0.7.1：被跳过的规则的开关也算内容（子站只改了它也要重新记下）；没有被跳过的与老哈希一致
+  if (i.ignoredRules?.length) parts.push({ ignoredRules: i.ignoredRules })
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
+}
+
+/** 开机重算用的规则开关（0.7.1，协调 10-20）：以已生效配置里子站给的为准 ——
+ *   1. rules（当时认得的）与 ignoredRules（当时跳过的，0.7.1 起才记）里有的，照它的 on；
+ *   2. 都没有的：已生效配置是 0.7.1 起存的（有 ignoredRules 字段）= 子站根本没发这条，按缺省开；
+ *      是 0.7.0 及以前存的（没有这个字段）= 可能被跳过了、开关没记，不知道 —— 保持本地 TB 现状（presentTypes 里有这条的告警类型算开，没有算停），
+ *      免得把子站关掉的告警（如 EG-pm 关、迁成 EG-smoke 关）重新打开。unknown 列出这一类，给日志用 */
+export function regenRules(a: Pick<Applied, 'rules' | 'ignoredRules'>, presentTypes: ReadonlySet<string>): { rules: { id: string; on: boolean }[]; unknown: { id: string; on: boolean }[] } {
+  const given = [...a.rules, ...(a.ignoredRules ?? [])]
+  const ids = new Set(given.map(r => r.id))
+  const missing = Object.keys(RULE_ALARM).filter(id => !ids.has(id))
+  if (a.ignoredRules) return { rules: given, unknown: [] }
+  const unknown = missing.map(id => {
+    const m = RULE_ALARM[id]!
+    return { id, on: [m.type, ...(m.alias ?? [])].some(t => presentTypes.has(t)) }
+  })
+  return { rules: [...given, ...unknown], unknown }
+}
+
+/** 按阈值表与规则开关算本地 TB 各设备配置的告警规则，只列出与现有不同的；阈值表缺项抛 Invalid（BAD_THRESHOLD） */
+function planProfiles(profiles: TbProfile[], input: { thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras }): { before: TbProfile; after: TbProfile }[] {
+  const plan: { before: TbProfile; after: TbProfile }[] = []
+  for (const p of profiles) {
+    const def = PROFILES.find(d => d.name === p.name)!
+    let alarms: TbAlarmDef[]
+    try {
+      alarms = (profileBody(def, { rows: input.thresholds, extras: input.extras }).profileData.alarms ?? []) as TbAlarmDef[]
+    } catch (e) {
+      throw new Invalid(`阈值表不全（设备配置 ${p.name}）：${(e as Error).message}`, 'BAD_THRESHOLD')
+    }
+    const next = filterRules(alarms, input.rules)
+    if (canon(next) === canon(p.profileData.alarms ?? [])) continue
+    plan.push({ before: p, after: { ...p, profileData: { ...p.profileData, alarms: next.length ? next : null } } })
+  }
+  return plan
 }
 
 /** 按规则开关去掉停用的告警 / 级别。预热期的降级那支（「预热期读数越限（原类型）」，只有 WARNING 一级）跟着原类型：

@@ -44,7 +44,7 @@ async function main() {
     return { http: r.status, body: (await r.json()) as Receipt & { message?: string } }
   }
   const rows = (patch: Record<string, number>) => base.map(r => (r.key in patch ? { ...r, [cfg.cabinet.group]: patch[r.key] } : r))
-  const allOn = Object.keys({ 'EG-rise': 1, 'EG-rise2': 1, 'EG-tabs': 1, 'EG-pd': 1, 'EG-arc': 1, 'EG-rh': 1, 'EG-ol': 1, 'EG-pm': 1 }).map(id => ({ id, on: true }))
+  const allOn = Object.keys({ 'EG-rise': 1, 'EG-rise2': 1, 'EG-tabs': 1, 'EG-pd': 1, 'EG-arc': 1, 'EG-rh': 1, 'EG-ol': 1, 'EG-smoke': 1 }).map(id => ({ id, on: true }))
   const alarmsOf = async (name: string) => {
     const p = (await tb.get<{ data: { id: { id: string }; name: string }[] }>('/api/deviceProfiles?pageSize=100&page=0')).data.find(x => x.name === name)!
     return ((await tb.get<{ profileData: { alarms: Alarm[] | null } }>(`/api/deviceProfile/${p.id.id}`)).profileData.alarms ?? []) as Alarm[]

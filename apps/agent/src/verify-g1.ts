@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import mqtt from 'mqtt'
-import { pointsOf } from '@lsa/points'
+import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import { BUS_TOPIC, loadConfig, repoRoot } from '@lsa-eg/config'
 import { agent, AGENT, BUS, check, containerMemMb, docker, done, EMU, env, maxGap, post, sleep, Tb, until, type Point } from './verify/lib.js'
 
@@ -52,20 +52,21 @@ async function main() {
   const samA = sam[0]!.name
   const samB = (sam[1] ?? sam[0]!).name
   const meter = cfg.devices.find(d => d.kind === 'meter')!.name
-  const pm = cfg.devices.find(d => d.kind === 'pm')!.name
+  // 整台停发拿电表做（0.7.1 起没有 PM6）
+  const pm = meter
   const sensors = cfg.devices.filter(d => d.kind !== 'camera').map(d => d.name)
 
   console.log('1. 《EG 内部 MQTT 格式》与点表目录一致')
   const doc = readFileSync(resolve(repoRoot()!, 'docs/EG内部MQTT格式.md'), 'utf8')
   const missing: string[] = []
-  for (const kind of ['sam', 'meter', 'pm'] as const) {
+  for (const kind of ['sam', 'meter'] as const) {
     for (const p of pointsOf(kind, 'lv', true)) {
       // 分区测温文档里写成 ir.z01 … ir.z24
       const k = /^ir\.z\d\d$/.test(p.key) ? 'ir.z01' : p.key
       if (!doc.includes('`' + k + '`')) missing.push(p.key)
     }
   }
-  check(!missing.length, '文档列出了点表目录里 SAM / 电表 / 颗粒物的每个量', missing.slice(0, 6).join(' '))
+  check(!missing.length, '文档列出了点表目录里 SAM / 电表的每个量', missing.slice(0, 6).join(' '))
   check(/不要发的量[\s\S]*`el\.load_pct`/.test(doc), '文档写明负荷率由 eg-agent 算、同事不发')
   // 给同事的检查工具（tools/conv-kit/spec.json）也要跟点表目录一致：pnpm conv-kit:spec -- --check 只比对不写
   const spec = spawnSync('pnpm', ['-s', 'conv-kit:spec', '--', '--check'], { cwd: repoRoot()!, encoding: 'utf8', shell: process.platform === 'win32' })
@@ -143,7 +144,8 @@ async function main() {
       const qa = parseQ((await tb.latest(samA, ['q']))['q']?.value)
       const qp = parseQ((await tb.latest(pm, ['q']))['q']?.value)
       const egs = (await tb.latest(cfg.eg.name, ['eg.state']))['eg.state']?.value
-      const pmKeys = pointsOf('pm', cfg.cabinet.group).map(p => p.key)
+      // 电表 10 s 以内档的必有量（分钟档的要 5 min 才判 invalid，不等它们）
+      const pmKeys = pointsOf('meter', cfg.cabinet.group).filter(p => !p.optional && (p.src ?? 'device') === 'device' && (expectedPeriodMs(p) ?? Infinity) <= 10_000).map(p => p.key)
       return qa?.['env.t'] === 'invalid' && qa['env.rh'] === 'invalid' && !qa['us.amp'] && pmKeys.every(k => qp?.[k] === 'invalid') && egs === 'degraded'
         ? { qa, qp, s }
         : null

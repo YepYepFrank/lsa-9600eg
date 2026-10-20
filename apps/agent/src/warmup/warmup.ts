@@ -30,6 +30,13 @@ export function warmupDevice(d: { kind: string; attrs: Record<string, unknown> }
   return d.attrs['warmup'] === true || WARMUP_KINDS.has(d.kind)
 }
 
+/** 一台需要预热的设备里，哪些量归预热管（0.7.1）：SAM 是一组传感器（局放 / 弧光 / 温湿度 / 气体），只有气体那路要预热 ——
+ *  只有 smoke.* 的读数驱动预热计时（T2 读数中断看的是它）、预热中只给 smoke.* 标 warmup，局放、温湿度这些照常可信。
+ *  其余种类（老配置里的 PM6 等）整台都归预热管 */
+export function warmupScope(kind: string): (key: string) => boolean {
+  return kind === 'sam' ? k => k.startsWith('smoke.') : () => true
+}
+
 /** 按设备覆盖的预热时长（eg.yaml attrs.warmupS，限在 0–900）；没写用站级参数 */
 export function deviceWarmupS(attrs: Record<string, unknown>, p: GasParams): number {
   const s = attrs['warmupS']

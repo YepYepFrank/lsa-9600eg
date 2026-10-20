@@ -4,7 +4,7 @@
  *     nodata  配了，但窗口内没有有效值
  *     absent  eg.yaml 里没有对应设备
  *   窗口 = max(10 min, 3 × 该 key 的周期)（点表目录的周期；目录里没有的按 10 min）。
- *   通配（"PM6:*"、"el.*"）不算 q 与 dev.*（那是 agent 自己发的，传感器坏了也照样有）。
+ *   通配（"SAM:smoke.*"、"el.*"）不算 q 与 dev.*（那是 agent 自己发的，传感器坏了也照样有）。
  *   每 30 s 判一次：变了马上报，连上本机总线 / 子站时报，另外每小时重报一次。子站没下发能力就不报。 */
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
@@ -36,7 +36,8 @@ export class CapsActualService implements OnModuleInit, OnModuleDestroy {
     private readonly uplink: UplinkService,
   ) {
     for (const d of cfg.devices) {
-      if (d.kind === 'eg') continue
+      // 0.7.1：pm（PM6）已取消，老 eg.yaml 里还挂着也不看护（转换程序不读它，看护了只会一直判失联）
+      if (d.kind === 'eg' || d.kind === 'pm') continue
       const m = new Map<string, number>()
       // 摄像机按本柜配了几个测温区展开（I18，1–12，缺省 3）
       for (const p of pointsOf(d.kind, cfg.cabinet.group, d.kind === 'camera' ? Object.fromEntries(Array.from({ length: camRegionLimit(d.attrs) }, (_, i) => [`R${i + 1}`, 'region' as const])) : true)) {
@@ -62,7 +63,7 @@ export class CapsActualService implements OnModuleInit, OnModuleDestroy {
   actual(now = Date.now()): Record<string, CapActual> | null {
     const c = this.caps.config
     if (!c) return null
-    const devices = this.cfg.devices.filter(d => d.kind !== 'eg').map(d => d.name)
+    const devices = this.cfg.devices.filter(d => d.kind !== 'eg' && d.kind !== 'pm').map(d => d.name)
     return capsActual(c, devices, (device, pattern) => this.hasValid(device, pattern, now))
   }
 

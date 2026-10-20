@@ -13,7 +13,7 @@ import { checkMeters } from './verify/meters.js'
 
 const MODEL = resolve(env('LSA_BACKEND', resolve(repoRoot() ?? '.', '../lsa-9600sp-backend')), 'tb/model.yaml')
 const EXT = process.env['EXT_BASE']
-const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-pm', 'EG-dphase', 'EG-devlost']
+const RULES = ['EG-rise', 'EG-rise2', 'EG-tabs', 'EG-pd', 'EG-arc', 'EG-rh', 'EG-ol', 'EG-smoke', 'EG-dphase', 'EG-devlost']
 
 async function main() {
   console.log('阶段 A11 自检：requestId / errorCode / 票据 401 的 code\n')

@@ -63,7 +63,8 @@ export class ConvGuardService implements OnModuleInit, OnModuleDestroy {
     private readonly audit: AuditService,
   ) {
     this.file = resolve(cfg.dir, 'conv-guard.json')
-    this.devices = new Set(cfg.devices.filter(d => d.kind === 'sam' || d.kind === 'meter' || d.kind === 'pm').map(d => d.name))
+    // 0.7.1：PM6 取消，老 eg.yaml 里还挂着的 pm 不算（转换程序不再读它，算进来会一直判「没数」而重启转换程序）
+    this.devices = new Set(cfg.devices.filter(d => d.kind === 'sam' || d.kind === 'meter').map(d => d.name))
     try {
       this.state = { ...this.state, ...(JSON.parse(readFileSync(this.file, 'utf8')) as Partial<ConvGuardState>) }
     } catch {
