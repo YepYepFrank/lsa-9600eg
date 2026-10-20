@@ -175,9 +175,10 @@ LSA-9600SP-0.18.1-<日期>-r1-offline.run.sig      ← 0.18.1 起
 | 路径 | 属主 / 权限 | 用途 |
 |---|---|---|
 | `/var/lib/lsa9600sp/eg-upgrade/packages/` | root:lsa-upgrade 2775 | 安装包目录：维护人员 scp 进来 |
-| `/var/lib/lsa9600sp/eg-upgrade/requests/` | root 0700 | 扩展服务写请求（挂进容器 rw）；处理完移到 `.done/`，留 7 天 |
+| `/var/lib/lsa9600sp/eg-upgrade/requests/` | root 0700 | 扩展服务写请求（挂进容器 rw）；里面不是普通文件的（链接、目录）执行器直接删 |
+| `/var/lib/lsa9600sp/eg-upgrade/done/`、`work/` | root 0700 | 处理完的请求（留 7 天）、安装文件的工作拷贝（升级时拷一份，做完删）；都不挂进容器 |
 | `/var/lib/lsa9600sp/eg-upgrade/state/` | root 0755 | 执行器写结果（`runner.json`、`packages.json`、`requests/<请求号>.json`，挂进容器 ro） |
-| `/var/log/lsa9600sp/eg-upgrade/<批次>/` | root 0755 | 批次目录（同命令行；`meta` 多了 `by` / `req` / `source` / `started_at` / `ended_at` / `pid`，每台多一个 `<单元号>.phase`） |
+| `/var/log/lsa9600sp/eg-upgrade/<批次>/` | root 0755 | 批次目录（同命令行；`meta` 多了 `by` / `req` / `source` / `started_at` / `ended_at` / `pid`，每台多一个 `<单元号>.phase`；在跑时每 30 s 动一下 `.alive`） |
 
 **准备（每个子站一次）**：维护人员的账号加进 `lsa-upgrade` 组，重新登录后才生效：
 
@@ -194,8 +195,11 @@ scp LSA-9600SP-<版本>-offline.run LSA-9600SP-<版本>-offline.run.sig <维护�
 - **网页只认签名验过（✓）的安装包**；没签名、验不过的灰掉，只能照 §2 用命令行升。
 - 目录只留最近 3 个包（每个约 3 GB），多了扫描时提示、不自动删；盘剩余不够再放 2 个时也提示。旧的自己删：`rm /var/lib/lsa9600sp/eg-upgrade/packages/<旧的>.run*`。
 - 文件名只许字母、数字、`.` `_` `-`。
+- 真升级时（命令行也一样）先把安装文件和 `.sig` 拷进 root 的 `work/`，算 sha256、验签、推给 EG 都用这份拷贝：`work/` 所在盘要能再放下一个安装包。
 
-**网页上的「开始」只照计划原样**：包、范围、`--force`、「连不上的跳过」都以生成计划时为准，开始时只能再选先升哪台、并发几台（1–4）；计划 10 分钟内有效，包在计划之后被换过（sha256 变了）或签名没了就拒绝，要重新扫描、重新生成计划。
+**网页上的「开始」只照计划原样**：包、范围、`--force`、「连不上的跳过」都以生成计划时为准，开始时只能再选先升哪台、并发几台（1–4）；计划 10 分钟内有效、**只能用一次**，包在计划之后被换过（sha256 变了）或签名没了就拒绝，要重新扫描、重新生成计划。
+
+**网页上的「续查」只认签名包的批次**：命令行起的未签名批次只能命令行 `--resume`。
 
 **查问题**（子站主机上）：
 

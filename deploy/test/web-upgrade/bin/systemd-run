@@ -1,18 +1,22 @@
 #!/bin/bash
-# 假 systemd-run：--unit <名> … -- <命令>：另起一个会话后台跑（不等），输出进 /fake/units/<名>.log，pid 进 .pid
-unit=''
+# 假 systemd-run：--unit <名> [-p ExecStopPost=…] … -- <命令>：另起一个会话后台跑（不等），输出进 /fake/units/<名>.log，pid 进 .pid；
+# 命令做完再跑 ExecStopPost（同 systemd：带 EXIT_STATUS）。和 systemd 一样把参数里的 $$ 还原成 $
+unit='' post=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     --unit) unit="$2"; shift ;;
     --unit=*) unit="${1#--unit=}" ;;
-    --description | -p | --property) shift ;;
+    -p | --property) case "$2" in ExecStopPost=*) post="${2#ExecStopPost=}" ;; esac; shift ;;
+    --description) shift ;;
   esac
   shift
 done
 [ -n "$unit" ] || { echo 'systemd-run（假）：要 --unit' >&2; exit 1; }
 mkdir -p /fake/units
 if [ -f "/fake/units/$unit.pid" ] && kill -0 "$(cat "/fake/units/$unit.pid")" 2>/dev/null; then echo "Failed to start transient service unit: Unit $unit.service already exists." >&2; exit 1; fi
-echo "$*" > "/fake/units/$unit.cmd"
-setsid "$@" > "/fake/units/$unit.log" 2>&1 < /dev/null &
+args=(); for a in "$@"; do args+=("${a//\$\$/\$}"); done
+echo "${args[*]}" > "/fake/units/$unit.cmd"
+export POST="$post"
+setsid bash -c '"$@"; rc=$?; if [ -n "$POST" ]; then read -r -a p <<< "$POST"; EXIT_STATUS=$rc "${p[@]}"; fi' x "${args[@]}" > "/fake/units/$unit.log" 2>&1 < /dev/null &
 echo $! > "/fake/units/$unit.pid"

@@ -9,7 +9,10 @@
 #           先定批次号，systemd-run --unit lsa-eg-upgrade-<批次> --collect 另起 unit 跑 upgrade-egs.sh
 #   resume  同上另起 unit 跑 upgrade-egs.sh --resume <批次>
 #   stop    在批次目录放 STOP（不再开新的，在升的做完）
-# 结果写 state/requests/<请求号>.json；请求文件处理完移到 requests/.done/。
+# 结果写 state/requests/<请求号>.json；请求文件处理完移到 done/（不在挂载目录里）。
+# 容器不可信：requests/ 是 rw 挂进容器的（容器里是 root），里面的一切都可能是符号链接 / 目录 / 半路被换 ——
+#   只经 requests/ 的目录 fd 操作，每个条目先 lstat，不是普通文件就删掉（不跟随），打开用 O_NOFOLLOW。
+# start / resume 起的 unit 退出时（ExecStopPost）再调一次本程序 --finish <请求号>，把还是 running 的结果补成 done / failed。
 # 只用 python3 标准库（Ubuntu 24.04 自带，子站离线也有）。手工跑一遍：sudo python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner
 import errno
 import fcntl
@@ -27,7 +30,7 @@ import traceback
 
 ROOT = '/var/lib/lsa9600sp/eg-upgrade'
 REQ_DIR = ROOT + '/requests'
-DONE_DIR = REQ_DIR + '/.done'
+DONE_DIR = ROOT + '/done'               # root 0700，不挂进容器（方案 v0.3 §9.2 复审改）
 STATE_DIR = ROOT + '/state'
 SREQ_DIR = STATE_DIR + '/requests'
 PKG_DIR = ROOT + '/packages'
@@ -42,8 +45,8 @@ SIG_ID = SIG_NS = 'lsa9600-release'                # 和 upgrade-egs.sh、EG 的
 MAX_BYTES = 16 * 1024      # 请求文件上限
 BATCH_N = 20               # 每次只处理最新的这么多个
 FLOOD_N = 100              # requests/ 里超过这么多个文件就全部拒收
-KEEP_S = 7 * 86400         # .done/ 与 state/requests/ 留 7 天
-DONE_CAP = 2000            # .done/ 最多留这么多个（7 天内也删最旧的）
+KEEP_S = 7 * 86400         # done/ 与 state/requests/ 留 7 天
+DONE_CAP = 2000            # done/ 最多留这么多个（7 天内也删最旧的）
 TMP_STALE_S = 600          # 没改名的 .tmp 放 10 分钟就删
 PLAN_TTL_S = 600           # 计划 10 分钟内有效
 PLAN_TIMEOUT_S = 1800
@@ -55,7 +58,9 @@ UNIT_RE = re.compile(r'[A-Za-z0-9-]{1,24}', re.A)
 RUN_RE = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}\.run', re.A)
 BATCH_RE = re.compile(r'[0-9]{8}-[0-9]{6}', re.A)
 SHA_RE = re.compile(r'[0-9a-f]{64}', re.A)
-CTRL_RE = re.compile(r'[\x00-\x1f\x7f]')
+USER_RE = re.compile(r'[A-Za-z0-9._@-]{1,64}', re.A)   # 会进 systemd-run 的命令行：不许 $ % 空白
+SELF = os.path.abspath(__file__)
+RFD = DFD = None           # requests/、done/ 的目录 fd（main 里打开）
 TYPES = ('scan', 'plan', 'start', 'stop', 'resume')
 TOP_KEYS = {'id', 'type', 'at', 'user', 'params'}
 
@@ -117,9 +122,9 @@ def _no_const(c):
 
 
 def read_request(name):
-    """读 requests/<name>：不跟符号链接、只认普通文件、≤ 16 KB、严格 JSON（不许重复字段、NaN）"""
+    """读 requests/<name>（经目录 fd）：不跟符号链接、只认普通文件、≤ 16 KB、严格 JSON（不许重复字段、NaN）"""
     try:
-        fd = os.open(os.path.join(REQ_DIR, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=RFD)
     except OSError as e:
         raise Reject('请求文件是符号链接，拒收' if e.errno == errno.ELOOP else f'请求文件打不开：{e.strerror}')
     with os.fdopen(fd, 'rb') as f:
@@ -172,8 +177,8 @@ def validate(obj, rid):
     if not _int(obj['at']) or obj['at'] <= 0:
         raise Reject('at 要是毫秒时间戳（整数）')
     user = obj['user']
-    if not isinstance(user, str) or not 1 <= len(user) <= 64 or CTRL_RE.search(user):
-        raise Reject('user 要是 1–64 个字、不含控制字符')
+    if not _str_re(user, USER_RE):
+        raise Reject('user 只许字母、数字、. _ @ -（1–64 个）')
     p = obj['params']
     if not isinstance(p, dict):
         raise Reject('params 要是 JSON 对象')
@@ -411,12 +416,22 @@ def lock_busy():
         os.close(fd)
 
 
+ALIVE_S = 90   # upgrade-egs.sh 每 30 s touch <批次>/.alive；90 s 内动过算在跑（三库约定）
+
+
+def batch_alive(b):
+    try:
+        return time.time() - os.lstat(os.path.join(LOGROOT, b, '.alive')).st_mtime <= ALIVE_S
+    except OSError:
+        return False
+
+
 def running_batch():
-    """没写 ended_at 的最新批次（给人看的提示）"""
+    """在跑的批次（没 ended_at、.alive 90 s 内动过；给人看的提示）"""
     try:
         for b in sorted(os.listdir(LOGROOT), reverse=True):
             m = read_meta(b) if BATCH_RE.fullmatch(b) else None
-            if m is not None and 'ended_at' not in m:
+            if m is not None and 'ended_at' not in m and batch_alive(b):
                 return b
     except OSError:
         pass
@@ -446,25 +461,81 @@ def journal_tail(unit):
     return ' / '.join(line.strip() for line in r.stdout.splitlines() if line.strip())[-400:]
 
 
-def launch(unit, argv, desc, batch, ready):
-    """systemd-run 另起 unit（执行器 oneshot 退出时不会被一起杀掉），等批次 meta 写出来"""
-    cmd = ['systemd-run', '--unit', unit, '--collect', '--quiet', '--description', desc, '--', '/bin/bash', SCRIPT] + argv
+def sd_arg(a):
+    """systemd 会展开命令行里的 $：一律写成 $$（参数本来都校验过，这里再兜一层）"""
+    return a.replace('$', '$$')
+
+
+def ready_fn(typ, rid):
+    if typ == 'start':
+        return lambda m: m.get('req') == rid
+    return lambda m: m.get('resumed_req') == rid
+
+
+def unit_name(typ, batch, rid):
+    return f'lsa-eg-upgrade-{batch}' + (f'-resume-{rid[-6:]}' if typ == 'resume' else '')
+
+
+def not_started_reason(unit, extra=''):
+    j = journal_tail(unit)
+    if '没有要升的' in j:
+        return '没有要升的：计划里要升的现在都已是目标版本或要跳过（重新生成计划看看）'
+    return f'批次没起来{extra}：{j or "（journalctl -u " + unit + " 看原因）"}'
+
+
+def launch(rid, typ, argv, desc, batch):
+    """systemd-run 另起 unit（执行器 oneshot 退出时不会被一起杀掉），等批次 meta 写出来。
+    unit 退出时 ExecStopPost 再调本程序 --finish，补上这里等不到的结果。返回 (status, reason)"""
+    unit = unit_name(typ, batch, rid)
+    post = f'ExecStopPost=/usr/bin/python3 -I {SELF} --finish {rid}'
+    cmd = ['systemd-run', '--unit', unit, '--collect', '--quiet', '--description', desc, '--property', post,
+           '--', '/bin/bash', SCRIPT] + [sd_arg(a) for a in argv]
     log('  ' + ' '.join(cmd))
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise Fail(f'systemd-run 起不来（{r.returncode}）：{(r.stderr or r.stdout).strip()[:300]}')
+    ready = ready_fn(typ, rid)
     end = time.time() + START_WAIT_S
     while time.time() < end:
         m = read_meta(batch)
         if m is not None and ready(m):
-            return None
+            return 'done', ''
         if not unit_active(unit):
             m = read_meta(batch)
             if m is not None and ready(m):
-                return None
-            raise Fail(f'批次没起来：{journal_tail(unit) or "（journalctl -u " + unit + " 看原因）"}')
+                return 'done', ''
+            raise Fail(not_started_reason(unit))
         time.sleep(1)
-    return f'{START_WAIT_S} s 了还在预检（批次 meta 还没写出来）：稍后在批次列表里看，或 journalctl -u {unit}'
+    # 等不到：照实写 running（带批次号），unit 退出时 --finish 补结果；扩展服务接着看批次目录
+    return 'running', f'{START_WAIT_S} s 了还在预检（批次 meta 还没写出来）：结果出来后这里会更新，也可以 journalctl -u {unit}'
+
+
+def finish(rid):
+    """--finish <请求号>（unit 的 ExecStopPost）：结果还是 running 的补成 done / failed"""
+    if not ID_RE.fullmatch(rid):
+        return
+    st = read_json(state_path(rid))
+    if not isinstance(st, dict) or st.get('status') != 'running' or st.get('type') not in ('start', 'resume'):
+        return
+    batch = (st.get('result') or {}).get('batch')
+    if not isinstance(batch, str) or not BATCH_RE.fullmatch(batch):
+        return
+    m = read_meta(batch)
+    if m is not None and ready_fn(st['type'], rid)(m):
+        st.update(status='done', reason='', endedAt=now_ms())
+    else:
+        code = os.environ.get('EXIT_STATUS', '')
+        st.update(status='failed', reason=not_started_reason(unit_name(st['type'], batch, rid), f'（退出码 {code}）' if code else ''),
+                  endedAt=now_ms())
+    write_json(state_path(rid), st)
+    log(f'[{rid}] --finish：{st["status"]}')
+
+
+def check_plan_units(plan):
+    """计划里的单元号来自 eg-list（容器）：不合格的只能是 bad 行"""
+    for r in plan.get('rows', []):
+        if not isinstance(r, dict) or (not _str_re(r.get('unit'), UNIT_RE) and r.get('action') != 'bad'):
+            raise Fail('计划里有不合格的单元号（子站清单有问题），不能用')
 
 
 def do_plan(rid, p, user):
@@ -492,17 +563,21 @@ def do_plan(rid, p, user):
         raise Fail(f'生成计划失败（upgrade-egs.sh 退出码 {r.returncode}）：{tail}')
     if plan.get('sha') != info['sha256']:
         raise Fail('生成计划时安装包变了（sha256 和刚才的不一样）：重新扫描后再生成')
+    check_plan_units(plan)
     plan['ok'] = bool(plan.get('ok')) and plan.get('sig') == 'ok'
     plan.update(req=rid, run=p['run'], params=p)
     return plan
 
 
 def do_start(rid, p, user):
-    ps = read_json(os.path.join(SREQ_DIR, p['plan'] + '.json'))
+    pp_path = state_path(p['plan'])
+    ps = read_json(pp_path)
     if not isinstance(ps, dict) or ps.get('type') != 'plan':
         raise Reject(f'没有这个计划（请求号 {p["plan"]}）')
     if ps.get('status') != 'done' or not isinstance(ps.get('result'), dict):
         raise Reject('这个计划没有生成成功')
+    if ps.get('consumedBy'):
+        raise Reject(f'这个计划已经用过（请求 {ps["consumedBy"]}）：重新生成计划再开始')
     plan = ps['result']
     ended = ps.get('endedAt')
     if not _int(ended) or now_ms() - ended > PLAN_TTL_S * 1000:
@@ -514,7 +589,11 @@ def do_start(rid, p, user):
     pp, run = plan.get('params') or {}, plan.get('run')
     if not _str_re(run, RUN_RE) or not isinstance(pp, dict):
         raise Fail('计划记录不完整')
-    ups = [r.get('unit') for r in plan.get('rows', []) if isinstance(r, dict) and r.get('action') == 'up']
+    sel = pp.get('sel')
+    if sel != 'all' and not (isinstance(sel, list) and sel and all(_str_re(u, UNIT_RE) for u in sel)):
+        raise Fail('计划记录里的范围不对')
+    check_plan_units(plan)
+    ups = [r.get('unit') for r in plan.get('rows', []) if r.get('action') == 'up']
     if not ups:
         raise Reject('计划里没有要升级的单元')
     if p['canary'] is not None and p['canary'] not in ups:
@@ -529,9 +608,13 @@ def do_start(rid, p, user):
     if lock_busy():
         raise Reject(busy_reason())
     batch = new_batch()
-    # 范围、包、--force / --skip-offline 照计划原样；只加 canary / 并发 / 批次号 / 谁 / 哪个请求；--expect-sha 防计划之后换包
+    # 计划只用一次：起 unit 之前就标上（起不来也要重新生成计划：情况变了）
+    ps.update(consumedBy=rid, consumedAt=now_ms())
+    write_json(pp_path, ps)
+    # 范围、包、--force / --skip-offline 照计划原样；只加 canary / 并发 / 批次号 / 谁 / 哪个请求；
+    # --expect-sha：脚本拷进 root 工作目录以后对这份拷贝核 sha，计划之后换包不开始
     argv = ['--run', os.path.join(PKG_DIR, run)]
-    argv += ['--all'] if pp.get('sel') == 'all' else ['--only', ','.join(pp.get('sel') or [])]
+    argv += ['--all'] if sel == 'all' else ['--only', ','.join(sel)]
     if pp.get('force') is True:
         argv.append('--force')
     if pp.get('skipOffline') is True:
@@ -540,9 +623,9 @@ def do_start(rid, p, user):
     if p['canary'] is not None:
         argv += ['--canary', p['canary']]
     argv += ['--batch', batch, '--by', user, '--req', rid, '--source', 'web', '--expect-sha', plan['sha']]
-    note = launch(f'lsa-eg-upgrade-{batch}', argv, f'LSA-9600 EG 批量升级 {batch}（网页，{user}）', batch,
-                  lambda m: m.get('req') == rid)
-    return {'batch': batch}, note
+    put_state(rid, 'start', 'running', now_ms(), '', {'batch': batch})
+    status, note = launch(rid, 'start', argv, f'LSA-9600 EG 批量升级 {batch}（网页，{user}）', batch)
+    return {'batch': batch}, status, note
 
 
 def need_batch(b):
@@ -554,12 +637,15 @@ def need_batch(b):
 
 def do_resume(rid, p, user):
     b = p['batch']
-    need_batch(b)
+    m = need_batch(b)
+    if m.get('sig') != 'ok':
+        raise Reject(f'这一批不是签名包，只能命令行续（sudo bash /opt/lsa9600sp/upgrade-egs.sh --resume {b}）')
     if lock_busy():
         raise Reject(busy_reason())
-    note = launch(f'lsa-eg-upgrade-{b}-resume-{rid[-6:]}', ['--resume', b, '--by', user, '--req', rid, '--source', 'web'],
-                  f'LSA-9600 EG 批量升级 {b} 续查（网页，{user}）', b, lambda m: m.get('resumed_req') == rid)
-    return {'batch': b}, note
+    put_state(rid, 'resume', 'running', now_ms(), '', {'batch': b})
+    status, note = launch(rid, 'resume', ['--resume', b, '--by', user, '--req', rid, '--source', 'web'],
+                          f'LSA-9600 EG 批量升级 {b} 续查（网页，{user}）', b)
+    return {'batch': b}, status, note
 
 
 def do_stop(rid, p, user):
@@ -570,7 +656,7 @@ def do_stop(rid, p, user):
     stop = os.path.join(LOGROOT, b, 'STOP')
     if not os.path.lexists(stop):
         os.close(os.open(stop, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
-    return {'batch': b}, None
+    return {'batch': b}, 'done', ''
 
 
 # ---------------- 主流程 ----------------
@@ -583,26 +669,30 @@ def put_state(rid, typ, status, at, reason='', result=None, ended=None):
                                  'reason': reason, 'result': result})
 
 
-def to_done(name):
-    src = os.path.join(REQ_DIR, name)
-    dst = os.path.join(DONE_DIR, name)
-    if os.path.lexists(dst):
-        dst += f'.{now_ms()}'
+def rm_at(name, dfd):
+    """删目录 fd 下的一个条目，不跟随符号链接（目录用 rmtree 的 dir_fd 版：防符号链接攻击）"""
     try:
-        os.rename(src, dst)
-    except OSError as e:
-        log(f'  移不进 .done/：{name}：{e.strerror}；删掉')
-        rm(src)
-
-
-def rm(path):
-    try:
-        if os.path.isdir(path) and not os.path.islink(path):
-            shutil.rmtree(path)
+        if stat.S_ISDIR(os.lstat(name, dir_fd=dfd).st_mode):
+            shutil.rmtree(name, dir_fd=dfd)
         else:
-            os.unlink(path)
-    except OSError:
+            os.unlink(name, dir_fd=dfd)
+    except OSError as e:
+        log(f'  删不掉 {name[:80]}：{e.strerror}')
+
+
+def to_done(name):
+    """requests/ 里的条目改名进 done/（两边都经目录 fd；改名不跟随，半路被换成链接也只是挪走链接本身）"""
+    dst = name
+    try:
+        os.lstat(dst, dir_fd=DFD)
+        dst += f'.{now_ms()}'
+    except FileNotFoundError:
         pass
+    try:
+        os.rename(name, dst, src_dir_fd=RFD, dst_dir_fd=DFD)
+    except OSError as e:
+        log(f'  移不进 done/：{name[:80]}：{e.strerror}；删掉')
+        rm_at(name, RFD)
 
 
 def handle(name):
@@ -620,23 +710,27 @@ def handle(name):
         typ, p, user = validate(obj, rid)
         put_state(rid, typ, 'running', at)
         log(f'[{rid}] {typ}（{user}）')
+        status, note = 'done', ''
         if typ == 'scan':
-            res, note = do_scan(), None
+            res = do_scan()
         elif typ == 'plan':
-            res, note = do_plan(rid, p, user), None
+            res = do_plan(rid, p, user)
         elif typ == 'start':
-            res, note = do_start(rid, p, user)
+            res, status, note = do_start(rid, p, user)
         elif typ == 'resume':
-            res, note = do_resume(rid, p, user)
+            res, status, note = do_resume(rid, p, user)
         else:
-            res, note = do_stop(rid, p, user)
-        put_state(rid, typ, 'done', at, note or '', res, now_ms())
-        log(f'[{rid}] 完成{"：" + note if note else ""}')
+            res, status, note = do_stop(rid, p, user)
+        put_state(rid, typ, status, at, note, res, None if status == 'running' else now_ms())
+        if status == 'running' and not unit_active(unit_name(typ, res['batch'], rid)):
+            finish(rid)   # 刚写完 running unit 就退出了：它的 --finish 可能跑在前面，自己补一次
+        log(f'[{rid}] {status}{"：" + note if note else ""}')
     except Reject as e:
         put_state(rid, typ, 'rejected', at, str(e), None, now_ms())
         log(f'[{rid}] 拒收：{e}')
     except Fail as e:
-        put_state(rid, typ, 'failed', at, str(e), None, now_ms())
+        prev = read_json(state_path(rid)) or {}
+        put_state(rid, typ, 'failed', at, str(e), prev.get('result'), now_ms())
         log(f'[{rid}] 失败：{e}')
     except Exception as e:  # noqa: BLE001 —— 一个请求出错不影响别的
         traceback.print_exc()
@@ -647,15 +741,20 @@ def handle(name):
 
 def cleanup():
     cut = time.time() - KEEP_S
-    for d in (DONE_DIR, SREQ_DIR):
-        try:
-            ents = [(os.lstat(os.path.join(d, n)).st_mtime, n) for n in os.listdir(d)]
-        except OSError:
-            continue
-        ents.sort()
+    try:   # done/（经目录 fd）：7 天以上的、超过 DONE_CAP 个的最旧的
+        ents = sorted((os.lstat(n, dir_fd=DFD).st_mtime, n) for n in os.listdir(DFD))
         for i, (mt, n) in enumerate(ents):
-            if mt < cut or (d == DONE_DIR and i < len(ents) - DONE_CAP):
-                rm(os.path.join(d, n))
+            if mt < cut or i < len(ents) - DONE_CAP:
+                rm_at(n, DFD)
+    except OSError:
+        pass
+    try:   # state/requests/（只有执行器写）
+        for n in os.listdir(SREQ_DIR):
+            p = os.path.join(SREQ_DIR, n)
+            if os.lstat(p).st_mtime < cut:
+                os.unlink(p)
+    except OSError:
+        pass
 
 
 def runner_json(**kw):
@@ -667,34 +766,50 @@ def runner_json(**kw):
     write_json(p, o)
 
 
+def open_dir(path):
+    """目录本身不许是符号链接（requests/ 是挂载点，容器换不了；这里再兜一层）"""
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        sys.exit(f'{path} 打不开或不是目录（符号链接？）：{e.strerror}')
+
+
 def main():
+    global RFD, DFD
     os.umask(0o022)
     if os.geteuid() != 0:
         sys.exit('要 root 跑')
+    if len(sys.argv) == 3 and sys.argv[1] == '--finish':
+        finish(sys.argv[2])
+        return
     for d, mode in ((ROOT, 0o755), (REQ_DIR, 0o700), (DONE_DIR, 0o700), (STATE_DIR, 0o755), (SREQ_DIR, 0o755)):
         os.makedirs(d, mode=mode, exist_ok=True)
+    RFD, DFD = open_dir(REQ_DIR), open_dir(DONE_DIR)
     os.makedirs(os.path.dirname(RUNNER_LOCK), exist_ok=True)
     lk = open(RUNNER_LOCK, 'w')
     fcntl.flock(lk, fcntl.LOCK_EX)   # 手工跑和 systemd 撞上时排队
     cleanup()
-    ents = [n for n in os.listdir(REQ_DIR) if n != '.done']
+    ents = os.listdir(RFD)
     if len(ents) > FLOOD_N:
-        # 扩展服务写坏了或被攻破在刷：全部拒收（直接删，不留 .done、不写每个请求的结果，免得把盘刷满）
+        # 扩展服务写坏了或被攻破在刷：全部拒收（直接删，不留 done/、不写每个请求的结果，免得把盘刷满）
         for n in ents:
-            rm(os.path.join(REQ_DIR, n))
+            rm_at(n, RFD)
         runner_json(flood=True, floodAt=now_ms(), floodCount=len(ents))
-        log(f'requests/ 里有 {len(ents)} 个文件（上限 {FLOOD_N}）：全部拒收，runner.json 记 flood')
+        log(f'requests/ 里有 {len(ents)} 个条目（上限 {FLOOD_N}）：全部拒收，runner.json 记 flood')
         return
     runner_json(flood=False)
     valid = []
     for n in sorted(ents):
-        path = os.path.join(REQ_DIR, n)
-        if n.endswith('.tmp'):   # 扩展服务先写 .tmp 再改名；放久了的是写坏的
-            try:
-                if os.lstat(path).st_mtime < time.time() - TMP_STALE_S:
-                    rm(path)
-            except OSError:
-                pass
+        try:
+            st = os.lstat(n, dir_fd=RFD)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode):   # 符号链接、目录、管道……：直接删，不跟随、不写结果
+            log(f'requests/ 里不是普通文件，删掉：{n[:80]}')
+            rm_at(n, RFD)
+        elif n.endswith('.tmp'):   # 扩展服务先写 .tmp 再改名；放久了的是写坏的
+            if st.st_mtime < time.time() - TMP_STALE_S:
+                rm_at(n, RFD)
         elif n.endswith('.json') and ID_RE.fullmatch(n[:-5]):
             valid.append(n)
         else:

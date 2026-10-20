@@ -6,8 +6,10 @@ cmd="${!#}"; host="${uh#*@}"; D="/fake/eg/$host"
 echo "$(date +%s) $host $cmd" >> /fake/calls
 read -r verb a1 _ <<< "$cmd"
 case "$verb" in
-  hello) printf 'entry=5\neg_version=%s\nfree_mb=99999\nrunning=0\nmaint=\nsig_keys=1\nsig_required=0\n' "$(cat "$D/ver")" ;;
-  put) cat > /dev/null; echo "OK put $a1" ;;
+  hello) [ -f "$D/hello_slow" ] && sleep "$(cat "$D/hello_slow")"
+    printf 'entry=5\neg_version=%s\nfree_mb=99999\nrunning=0\nmaint=\nsig_keys=%s\nsig_required=0\n' "$(cat "$D/ver")" "$([ -f "$D/nokeys" ] && echo 0 || echo 1)" ;;
+  put) got="$(sha256sum | cut -d' ' -f1)"; [ "$got" = "$a1" ] || { echo "ERR 收到的 sha256 $got 不是 $a1"; exit 2; }
+    echo "$got" > "$D/put_sha"; echo "OK put $a1" ;;
   put-sig) cat > /dev/null; echo "OK put-sig $a1" ;;
   start) rm -f "$D/donet"; echo "job-$host-$(date +%s)" > "$D/job"; date +%s > "$D/started"; cp /fake/to "$D/target"; echo "OK start $(cat "$D/job")" ;;
   status)

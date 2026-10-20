@@ -1,5 +1,6 @@
 # LSA-9600SP 网页升级 EG 执行器：oneshot，处理完 requests/ 里的请求就退出（一次只跑一个）。
 # start / resume 的批次由它 systemd-run 另起 lsa-eg-upgrade-<批次> unit 跑，不在这个 unit 的 cgroup 里，这里退出不影响批次。
+# requests/ 是容器可写的：本 unit 只读整个文件系统，只放开下面几处可写（防被链接引到别处写 / 删）。
 [Unit]
 Description=LSA-9600 EG 升级执行器（网页入口）
 After=local-fs.target
@@ -9,3 +10,7 @@ Type=oneshot
 ExecStart=/usr/bin/python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner
 TimeoutStartSec=2h
 UMask=0022
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lsa9600sp/eg-upgrade /var/log/lsa9600sp/eg-upgrade -/run/lsa9600sp
+PrivateTmp=yes
+NoNewPrivileges=yes

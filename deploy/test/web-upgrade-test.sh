@@ -17,6 +17,7 @@ for f in /usr/bin/ssh-keygen /lib/ld-musl-x86_64.so.1 /usr/lib/libcrypto.so.3; d
 echo "镜像 $IMG；ssh-keygen 取自 $KIMG"
 docker run --rm --init --pull never --entrypoint bash -u 0 -v "$ROOT/deploy:/deploy:ro" -v "$KW:/musl-src:ro" "$IMG" -c '
 set -e
+ln -sf /usr/local/bin/python3 /usr/bin/python3
 mkdir -p /opt/musl && cp /musl-src/* /opt/musl/ && ln -sf ld-musl-x86_64.so.1 /opt/musl/libc.musl-x86_64.so.1
 printf "#!/bin/sh\nexec /opt/musl/ld-musl-x86_64.so.1 --library-path /opt/musl /opt/musl/ssh-keygen \"\$@\"\n" > /usr/local/bin/ssh-keygen && chmod +x /usr/local/bin/ssh-keygen
 cp -r /deploy /d && find /d -type f \( -name "*.sh" -o -path "*/bin/*" -o -name "lsa-eg-upgrade-runner*" \) -exec sed -i "s/\r$//" {} + && chmod +x /d/test/web-upgrade/bin/*

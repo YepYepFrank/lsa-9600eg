@@ -77,10 +77,36 @@ done
 [ "$JSON" = 0 ] || { [ "$MODE" = run ] && [ "$PLAN" = 1 ]; } || { echo '--json 只配 --run … --plan 用' >&2; exit 2; }
 [ -z "$BATCH_ARG" ] || [[ "$BATCH_ARG" =~ ^[0-9]{8}-[0-9]{6}$ ]] || { echo "--batch 要 YYYYMMDD-HHMMSS：$BATCH_ARG" >&2; exit 2; }
 [ -z "$REQ" ] || [[ "$REQ" =~ ^[0-9]{8}-[0-9]{6}-[a-z0-9]{6}$ ]] || { echo "--req 格式不对：$REQ" >&2; exit 2; }
-[ -z "$BY" ] || { [ "${#BY}" -le 64 ] && [[ ! "$BY" =~ [[:cntrl:]] ]]; } || { echo '--by 要 1–64 个字、不含控制字符' >&2; exit 2; }
+[ -z "$BY" ] || [[ "$BY" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || { echo '--by 只许字母、数字、. _ @ -（1–64 个）' >&2; exit 2; }
 case "$SOURCE" in web | cli) ;; *) echo "--source 只能 web 或 cli：$SOURCE" >&2; exit 2 ;; esac
 [ -z "$EXPECT_SHA" ] || [[ "$EXPECT_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo '--expect-sha 要 64 位小写 hex' >&2; exit 2; }
-BY="${BY:-${SUDO_USER:-root}}"
+BY="${BY:-${SUDO_USER:-root}}"; [[ "$BY" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || BY=root
+UNIT_RE='^[A-Za-z0-9-]{1,24}$'   # 单元号（来自 eg-list，也就是容器）：不合格的不碰文件系统
+WORK="${LSA_EGUP_WORK:-/var/lib/lsa9600sp/eg-upgrade/work}"   # 安装文件的 root 0700 工作拷贝（sha、验签、推给 EG 都用这一份）
+ALIVE_S="${LSA_EGUP_ALIVE_S:-30}"   # 批次在跑时每这么多秒 touch 一次 <批次>/.alive（扩展服务 ≤ 90 s 判在跑）
+WORKD='' META_ON='' HB=''
+on_exit() {
+  [ -z "$HB" ] || kill "$HB" 2>/dev/null
+  [ -z "$WORKD" ] || rm -rf "$WORKD"
+  [ -z "$META_ON" ] || meta_set ended_at "$(now_ms)"
+}
+trap on_exit EXIT
+# 把安装文件（和 .sig）拷进 root 0700 的工作目录：packages/ 组可写，拷完以后 sha、验签、推给 EG 都只认这一份（堵住两次读之间被换）
+stage_copy() {
+  local src="$1" need
+  install -d -m 700 "$WORK" || { echo "建不了工作目录 $WORK" >&2; exit 1; }
+  need=$(( $(stat -c %s "$src") / 1024 + 65536 ))
+  [ "$(df -Pk "$WORK" | awk 'NR==2 { print $4 }')" -ge "$need" ] || { echo "!! $WORK 所在盘放不下安装文件的拷贝（要约 $((need / 1024)) MB）" >&2; exit 1; }
+  WORKD="$(mktemp -d "$WORK/$$.XXXXXX")" || exit 1
+  cp --reflink=auto -- "$src" "$WORKD/pkg.run" || { echo "!! 拷不了 $src" >&2; exit 1; }
+  if [ -f "$src.sig" ]; then cp -- "$src.sig" "$WORKD/pkg.run.sig" || exit 1; fi
+}
+# 心跳：批次在跑时每 ALIVE_S 秒 touch <批次>/.alive（不拿批次锁、不进 run.log；主进程没了自己退）
+start_heartbeat() {
+  touch "$BD/.alive"
+  ( exec 9>&- >/dev/null 2>&1; trap - EXIT; while kill -0 "$$" 2>/dev/null; do touch "$BD/.alive"; sleep "$ALIVE_S"; done ) &
+  HB=$!
+}
 # --plan --json：标准输出只给 JSON（fd 4），给人看的文字全进 stderr
 if [ "$JSON" = 1 ]; then exec 4>&1 1>&2; fi
 now_ms() { date +%s%3N; }
@@ -204,7 +230,9 @@ plan_json() {
   for r in "${JROWS[@]}"; do
     IFS=$'\t' read -r u st from act vs why <<< "$r"
     case "$act" in 升级) a=up; n_up=$((n_up + 1)) ;; 跳过) a=skip ;; *) a=bad; n_bad=$((n_bad + 1)) ;; esac
-    case "$vs" in 'EG 验') eg='"ok"' ;; 子站验) eg='"old-entry"' ;; 未签名 | 未验) eg='"unsigned"' ;; *) eg=null ;; esac
+    # egSig：EG 验 ok / 子站验 old-entry / 未签名 unsigned / 都验不了 nokey；跳过的行 null
+    case "$vs" in 'EG 验') eg='"ok"' ;; 子站验) eg='"old-entry"' ;; 未签名) eg='"unsigned"' ;; 未验) eg="$(jstr "$SIGST")" ;; *) eg=null ;; esac
+    [ "$a" != skip ] || eg=null
     printf '%s{"unit":%s,"state":%s,"from":%s,"action":"%s","reason":%s,"egSig":%s}' \
       "$sep" "$(jstr "$u")" "$(jstr "$st")" "$(jstr_or_null "$from")" "$a" "$(jstr "${why:-}")" "$eg"
     sep=,
@@ -213,6 +241,7 @@ plan_json() {
   for u in "${NOADDR[@]}"; do printf '%s%s' "$sep" "$(jstr "$u")"; sep=,; done
   # skip 和文字的「合计」一致：含没有地址的那几台
   [ "$BAD" = 0 ] && [ "$SIGST" = ok ] && ok=true
+  [ "$lrc" != 3 ] || n_bad=$((n_bad + 1))   # eg-list 还没读全也算一项 !!
   printf '],"summary":{"up":%s,"skip":%s,"bad":%s},"ok":%s%s}\n' "$n_up" "$(( n_skip + ${#NOADDR[@]} ))" "$n_bad" "$ok" \
     "$([ "$lrc" = 3 ] && printf ',"listNotReady":true')"
 }
@@ -252,24 +281,34 @@ if [ "$MODE" = resume ]; then
   # 续查：原来的 by / req / source / started_at 不动，记这次续查的人和 pid；ended_at 等这次做完再补
   meta_set pid "$$"; meta_set resumed_at "$(now_ms)"; meta_set resumed_by "$BY"; meta_set resumed_source "$SOURCE"
   if [ -n "$REQ" ]; then meta_set resumed_req "$REQ"; else meta_del resumed_req; fi
-  meta_del ended_at
-  trap 'meta_set ended_at "$(now_ms)"' EXIT
+  meta_del ended_at; META_ON=1
+  # 网页续查（--source web）只认签名验过的批次（方案 Q2）：命令行起的未签名批次只能命令行续
+  if [ "$SOURCE" = web ] && [ "$SIGST" != ok ]; then echo "!! 这一批不是签名包（sig=$SIGST），只能命令行续" >&2; exit 1; fi
+  [ -f "$RUN" ] || { echo "!! 安装文件 $RUN 不在了：还没开始的不能再升，已经开始的照样续查" >&2; }
+  if [ -f "$RUN" ]; then
+    stage_copy "$RUN"
+    [ "$(sha256sum "$WORKD/pkg.run" | cut -d' ' -f1)" = "$SHA" ] || { echo "!! $RUN 和这一批开始时的不是同一个（sha256 变了）—— 不续" >&2; exit 1; }
+    RUN="$WORKD/pkg.run"
+  fi
+  start_heartbeat
 else
   [ -f "$RUN" ] || { echo "没有安装文件：$RUN" >&2; exit 1; }
   [ -n "$SEL" ] || { echo '要给 --all 或 --only AH03,AH05' >&2; exit 2; }
   [ -z "$BATCH_ARG" ] || [ "$PLAN" = 1 ] || [ ! -e "$LOGROOT/$BATCH_ARG" ] || { echo "批次 $BATCH_ARG 已经有了（$LOGROOT/$BATCH_ARG）" >&2; exit 1; }
   [ -f "$KEY" ] || { echo "没有升级 key（$KEY）：先 sudo bash upgrade-egs.sh --keygen，再到各 EG 上授权" >&2; exit 1; }
-  RUN="$(readlink -f "$RUN")"
+  RUN="$(readlink -f "$RUN")"; RUN_ORIG="$RUN"
+  # 真升级用 root 0700 的工作拷贝（--plan 只看，读原文件；网页的 start 由 --expect-sha 对上这份拷贝）
+  if [ "$PLAN" = 0 ]; then stage_copy "$RUN"; RUN="$WORKD/pkg.run"; fi
   TO="$(run_eg_version "$RUN" || true)"
   [ -n "$TO" ] || { echo "$RUN 不是 LSA-9600 的一键安装文件，或者里面没有 EG 发布件" >&2; exit 1; }
   echo "安装文件：$RUN（EG $TO），算 sha256 …"
   SHA="$(sha256sum "$RUN" | cut -d' ' -f1)"; SIZE="$(stat -c %s "$RUN")"
   [ -z "$EXPECT_SHA" ] || [ "$SHA" = "$EXPECT_SHA" ] || { echo "!! 安装文件的 sha256（${SHA:0:12}…）不是确认过的那个（${EXPECT_SHA:0:12}…）：计划之后被换过 —— 整批不开始" >&2; exit 1; }
-  [ ! -f "$RUN.sha256" ] || [ "$(cut -d' ' -f1 "$RUN.sha256")" = "$SHA" ] || { echo "!! $RUN 和旁边的 .sha256 对不上：文件坏了？" >&2; exit 1; }
+  [ ! -f "$RUN_ORIG.sha256" ] || [ "$(cut -d' ' -f1 "$RUN_ORIG.sha256")" = "$SHA" ] || { echo "!! $RUN_ORIG 和旁边的 .sha256 对不上：文件坏了？" >&2; exit 1; }
   echo '验签 …'
   local_sig "$RUN"
   if [ "$SIGST" = bad ]; then
-    echo "!! 安装文件签名校验不过：不是发布方签的，或者 $(basename "$RUN") / .sig 被改过 —— 整批不开始（$SIGMSG）" >&2
+    echo "!! 安装文件签名校验不过：不是发布方签的，或者 $(basename "$RUN_ORIG") / .sig 被改过 —— 整批不开始（$SIGMSG）" >&2
     exit 1
   fi
   # 网页入口（执行器 --source web）只认子站验过签名的（方案 Q2）：.sig 在计划之后被删 / 换了也拦得住
@@ -291,28 +330,32 @@ LIST="$(eg_list)" || lrc=$?
 [ "$lrc" = 0 ] || [ "$lrc" = 3 ] || { echo '取不到 EG 清单（子站的 lsa-ext 在跑吗？）' >&2; exit 1; }
 declare -A HOST=() CUR=() CFG=() SKIP=() STATE=()
 ORDER=()
+BADU=()
 while IFS=$'\t' read -r cab name host ver tbv cfg up age skip state upok cfgok; do
   [ -n "$cab" ] || continue
+  [[ "$cab" =~ $UNIT_RE ]] || { BADU+=("$cab"); continue; }
   HOST[$cab]="$host"; CUR[$cab]="$ver"; CFG[$cab]="$cfg"; SKIP[$cab]="${skip:--}"; STATE[$cab]="${state:-?}"
   ORDER+=("$cab")
 done <<< "$LIST"
 
 if [ "$MODE" = resume ]; then
   mapfile -t TARGETS < <(cut -f1 "$BD/plan.tsv")
+  for c in "${TARGETS[@]}"; do [[ "$c" =~ $UNIT_RE ]] || { echo "批次的 plan.tsv 里有不合格的单元号：$c" >&2; exit 1; }; done
 else
   TARGETS=()
   if [ "$SEL" = all ]; then TARGETS=("${ORDER[@]}")
   else
     IFS=, read -r -a want <<< "$SEL"
     for c in "${want[@]}"; do
+      [[ "$c" =~ $UNIT_RE ]] || { echo "单元号不合格：$c" >&2; exit 2; }
       [ -n "${HOST[$c]+x}" ] || { echo "子站上没有 EG-$c" >&2; exit 1; }
       TARGETS+=("$c")
     done
   fi
-  [ -z "$CANARY" ] || [[ " ${TARGETS[*]} " == *" $CANARY "* ]] || { echo "--canary $CANARY 不在要升的清单里" >&2; exit 1; }
+  [ -z "$CANARY" ] || { [[ "$CANARY" =~ $UNIT_RE ]] && [[ " ${TARGETS[*]} " == *" $CANARY "* ]]; } || { echo "--canary $CANARY 不在要升的清单里" >&2; exit 1; }
 fi
 
-printf '\n目标 EG %s（安装文件 %s，sha256 %s…）\n签名：%s\n' "$TO" "$(basename "$RUN")" "${SHA:0:12}" "$SIGLINE"
+printf '\n目标 EG %s（安装文件 %s，sha256 %s…）\n签名：%s\n' "$TO" "$(basename "${RUN_ORIG:-$RUN}")" "${SHA:0:12}" "$SIGLINE"
 [ "$lrc" = 3 ] && echo '!! 子站扩展服务刚启动、EG 状态还没读全（eg-list 退出码 3）：等一两分钟再跑'
 printf '\n%-8s %-8s %-36s %-6s %-10s %s\n' 单元 在线 '版本（当前 → 目标）' 动作 验签 原因
 GO=() BAD=0 NOADDR=() n_skip=0
@@ -328,6 +371,14 @@ row() {
   JROWS+=("$1"$'\t'"${STATE[$1]:-?}"$'\t'"$3"$'\t'"$4"$'\t'"$VS"$'\t'"${5//$'\t'/ }")
   VS=-
 }
+# eg-list 给了不合格的单元号（--all 时）：!! 行，不碰文件系统、不连
+if [ "$MODE" != resume ] && [ "$SEL" = all ]; then
+  for c in "${BADU[@]}"; do
+    printf '%-8s %-8s %-36s %-6s %-10s %s\n' "$c" '?' "- → $TO" '!!' - '单元号不合格（只许字母、数字、-，≤ 24 个）：子站清单有问题'
+    JROWS+=("${c//$'\t'/ }"$'\t'"?"$'\t'"-"$'\t'"!!"$'\t'"-"$'\t'"单元号不合格（只许字母、数字、-，≤ 24 个）")
+    BAD=1
+  done
+fi
 for c in "${TARGETS[@]}"; do
   h="${HOST[$c]:--}"; cur="${CUR[$c]:--}"; on="$(zh_state "${STATE[$c]:-?}")"
   if [ "${SKIP[$c]:--}" != - ]; then row "$c" "$on" "$cur" 跳过 "子站上标了「${SKIP[$c]}」"; n_skip=$((n_skip + 1)); continue; fi
@@ -388,12 +439,13 @@ if [ "$MODE" != resume ]; then
   [ -n "$CANARY" ] || CANARY="${GO[0]}"
   # 第 5 列：EG 升级入口版本（≥ 5 才传 .sig）
   for c in "${GO[@]}"; do printf '%s\t%s\t%s\t%s\t%s\n' "$c" "${HOST[$c]}" "${CUR[$c]}" "${CFG[$c]}" "${ENTRY[$c]:-0}"; done > "$BD/plan.tsv"
-  printf 'run=%s\nsha=%s\nsize=%s\nto=%s\nparallel=%s\ncanary=%s\nsig=%s\nsig_note=%s\n' "$RUN" "$SHA" "$SIZE" "$TO" "$PAR" "$CANARY" "$SIGST" "$SIGMSG" > "$BD/meta.tmp"
+  printf 'run=%s\nsha=%s\nsize=%s\nto=%s\nparallel=%s\ncanary=%s\nsig=%s\nsig_note=%s\n' "${RUN_ORIG:-$RUN}" "$SHA" "$SIZE" "$TO" "$PAR" "$CANARY" "$SIGST" "$SIGMSG" > "$BD/meta.tmp"
   # 0.19.0（网页入口 §9.4）：谁发起、哪个请求、从哪发起、开始时间、pid；ended_at 做完（含出错退出）补。
   # meta 最后写、改名落地：执行器看到 meta 就当批次起来了（plan.tsv 已在）
   printf 'by=%s\nreq=%s\nsource=%s\nstarted_at=%s\npid=%s\n' "$BY" "$REQ" "$SOURCE" "$(now_ms)" "$$" >> "$BD/meta.tmp"
   mv -f "$BD/meta.tmp" "$BD/meta"
-  trap 'meta_set ended_at "$(now_ms)"' EXIT
+  META_ON=1
+  start_heartbeat
 fi
 trap 'exit 143' TERM; trap 'exit 130' INT   # systemctl stop / Ctrl-C 也走 EXIT（补 ended_at）
 exec > >(tee -a "$BD/run.log") 2>&1
