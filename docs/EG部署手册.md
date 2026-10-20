@@ -101,7 +101,7 @@
   - **总线地址与串口由 EG 统一管**：compose 给 `LSA_MQTT_URL=mqtt://127.0.0.1:1884`、`LSA_SERIAL=/dev/ttyS1`，补丁 0005 用它们覆盖 `gateway.yaml` 里写的值。现场换串口只用 `install-conv.sh --serial`，不用进容器改配置。
   - **健康检查**：进程在，并且最近 2 分钟有数据发出或写进缓存（补丁 0005 的心跳文件 `/data/heartbeat`）。`--status` 显示 healthy / unhealthy。
 - **启用只走 `install-conv.sh`**（EG 0.6.2 起，在 EG 安装目录里；同一套脚本也在单独的「转换程序接入包」里）。发布件带转换程序镜像（`CONV_IMAGE.txt`、`images-conv.tar.gz`，install.sh 导入），**缺省不启用**，现场接好 485 以后：
-  1. `sudo bash install-conv.sh`：按 `eg.yaml` 从镜像模板生成 `config/conv/`（局放、气体、温湿度、弧光打开，红外关；温湿度挂第一台 SAM、其余挂第二台；从站地址用同事的缺省 1–5）→ 选串口（`/dev/serial/by-id` 下只有一个 USB 转 485 就用它，多个让选，没有就 `/dev/ttyS1` COM2）→ 写 `.env`（`EG_CONV=on`、镜像、串口、dialout 组、`COMPOSE_PROFILES=conv`）→ 起 conv，20 s 后给一句结论（通了 / 部分通 / 没应答 / 串口打不开）。
+  1. `sudo bash install-conv.sh`：按 `eg.yaml` 从镜像模板生成 `config/conv/`（局放、气体、温湿度、弧光、红外都打开 —— 0.7.1 起红外也开（S19 五种传感器全配，子站 `samIr` 缺省已确认）；温湿度挂第一台 SAM、其余挂第二台；从站地址用同事的缺省 1–5）。**非 S19 的站 SAM 没接红外的，用 `--sensors pd,gas,temperature,arc` 关掉**，否则子站会判红外缺量；已有的 `config/conv/` 不动→ 选串口（`/dev/serial/by-id` 下只有一个 USB 转 485 就用它，多个让选，没有就 `/dev/ttyS1` COM2）→ 写 `.env`（`EG_CONV=on`、镜像、串口、dialout 组、`COMPOSE_PROFILES=conv`）→ 起 conv，20 s 后给一句结论（通了 / 部分通 / 没应答 / 串口打不开）。
   2. 现场调整：`--sensors pd,arc`、`--addr pd=7`、`--dev temperature=SAM-<柜号>-B`、`--baud`，只改给了的项、改完自动重启；也可以直接改 `config/conv/sensors/*.yaml` 后 `docker restart lsa-eg-conv`。**挂在哪台设备**决定了看护口径：EG 按这里打开的传感器推出每台的预期测点（W1，见开发计划 §6.1）。
   3. 核对：`sudo bash install-conv.sh --status`（各路配置、设备名有没有对上、最近采集）、`--check`（lsa_check 跑 2 分钟）；本地管理页「设备与通信 → 服务状态」的转换程序卡片。
   4. 读不到：`--diag [rs485|modbus]` 先停 conv、在镜像里跑同事的诊断脚本直接问从站；没有传感器时 `--sim` 在容器里跑模拟器自测。停用 `--off`。
