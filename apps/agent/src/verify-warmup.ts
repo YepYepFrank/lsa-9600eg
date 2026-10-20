@@ -71,7 +71,8 @@ function logic(): void {
   check(warmupDevice({ kind: 'sam', attrs: { warmup: true } }) && warmupDevice({ kind: 'sam', attrs: { warmupS: 40 } }) && !warmupDevice({ kind: 'sam', attrs: {} }), 'eg.yaml 属性 warmup: true / warmupS 是数 → 要；没写 → 不要（子站按规则里带预热的设备标 warmup: true）')
   const sc = warmupScope('sam')
   check(sc('smoke.ppm') && !sc('us.amp') && !sc('env.t') && warmupScope('meter')('el.Ia'), 'SAM 只有 smoke.* 归预热管（局放、温湿度不管）；别的种类整台')
-  check(!warmupDevice({ kind: 'sam', attrs: { warmupS: 0 } }) && deviceWarmupS({ warmupS: 1000 }, DEFAULT_GAS) === 900 && deviceWarmupS({}, { ...DEFAULT_GAS, warmupS: 120 }) === 120, 'warmupS: 0 = 这台不做；按设备覆盖限在 0–900；没写用站级')
+  check(warmupDevice({ kind: 'sam', attrs: { warmupS: 0 } }) && deviceWarmupS({ warmupS: 0 }, { ...DEFAULT_GAS, warmupS: 180 }) === 0 && deviceWarmupS({ warmupS: 1000 }, DEFAULT_GAS) === 900 && deviceWarmupS({}, { ...DEFAULT_GAS, warmupS: 120 }) === 120, 'warmupS: 0 = 这台不做预热、但照报 dev.warmup_s（0.7.1）；按设备覆盖限在 0–900；没写用站级')
+  check(DEFAULT_GAS.warmupS === 0 && deviceWarmupS({}, DEFAULT_GAS) === 0, '站级缺省 0（0.7.1，S19 D4：子站没下发 = 不预热）')
 
   console.log('4. 规则开关连带降级那支「预热期读数越限（原类型）」')
   const def = (alarmType: string, sev: string[]) => ({ id: alarmType, alarmType, createRules: Object.fromEntries(sev.map(s => [s, {}])) })
@@ -149,6 +150,8 @@ function samScope(): void {
     let listener: ((dev: string, entries: { ts: number; values: Record<string, unknown> }[], own: boolean) => void) | null = null
     const bus = { onTelemetry: (fn: typeof listener) => (listener = fn), publish: () => undefined, live: new Map() } as unknown as BusService
     const caps = new CapsService()
+    // 0.7.1 起站级缺省 0：这一节按现场改成 180 s 来测
+    caps.set(null, null, { warmupS: 180, gapS: 60, bootOffCabs: [] })
     const warm = new WarmupService(cfg, caps)
     // 主机刚开机（10 s < 预热 180 s）：武装，下一次读到「气体」时开始计时
     warm.uptimeS = () => 10
@@ -164,6 +167,49 @@ function samScope(): void {
       listener!(D, [{ ts: Date.now(), values: { 'smoke.ppm': 12 } }], false)
       const r = warm.remaining(D)
       check(!warm.waiting(D) && r > 35 && r <= 40, `气体读到了：开始计时（剩 ${r} s，预热 40 s）`)
+    } finally {
+      q.onModuleDestroy()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** 0.7.1（S19 D4）：预热 0 秒 = 不做预热，但标了 warmup 的设备照报 dev.warmup_s = 0 */
+function zeroWarmup(): void {
+  console.log('7b. 预热 0 秒（D4）：不预热、dev.warmup_s 照报 0')
+  const dir = mkdtempSync(join(tmpdir(), 'lsa-warmup-'))
+  try {
+    const cfg = {
+      dir,
+      cabinet: { code: 'AH99', group: 'mv' },
+      unit: { id: 'A', code: 'AH99-A', at: '', index: 0 },
+      eg: { name: 'EG-AH99-A', attrs: {} },
+      // A：子站标了 warmup（站级秒数缺省 0）；B：设备级 warmupS: 0（站级改成 180 也不做）
+      devices: [{ name: 'SAM-AH99-A', kind: 'sam', label: '', attrs: { warmup: true } }, { name: 'SAM-AH99-B', kind: 'sam', label: '', attrs: { warmupS: 0 } }, { name: 'SAM-AH99-C', kind: 'sam', label: '', attrs: { warmupS: 40 } }],
+    } as unknown as EgConfig
+    let listener: ((dev: string, entries: { ts: number; values: Record<string, unknown> }[], own: boolean) => void) | null = null
+    const sent: { dev: string; values: Record<string, unknown>; ts: number }[] = []
+    const bus = { onTelemetry: (fn: typeof listener) => (listener = fn), publish: (dev: string, values: Record<string, unknown>, ts: number) => sent.push({ dev, values, ts }), live: new Map() } as unknown as BusService
+    const caps = new CapsService()
+    const warm = new WarmupService(cfg, caps)
+    warm.uptimeS = () => 10
+    warm.onModuleInit()
+    const q = new QualityService(cfg, bus, caps, warm)
+    q.onModuleInit()
+    try {
+      const A = 'SAM-AH99-A'
+      check(!warm.waiting(A) && warm.remaining(A) === 0, '站级 0：主机刚开机（10 s）也不武装 T3')
+      check(warm.waiting('SAM-AH99-C') && warm.remaining('SAM-AH99-C') === 40, '设备级 warmupS: 40（站级 0）：刚开机照样武装、报满额 40')
+      listener!(A, [{ ts: Date.now(), values: { 'smoke.ppm': 12 } }], false)
+      const w = sent.find(x => x.dev === A && WARMUP_KEY in x.values)
+      check(!!w && w.values[WARMUP_KEY] === 0, `标了 warmup 的 SAM 照报 dev.warmup_s = 0（${String(w?.values[WARMUP_KEY])}）`)
+      listener!(A, [{ ts: Date.now(), values: { q: JSON.stringify({ 'smoke.ppm': 'warmup' }) } }], false)
+      check(q.warmupOf(A) === 0, '转换程序自报 warmup：预热 0 秒时不抬成 1（正式告警不受影响）')
+      caps.set(null, null, { warmupS: 180, gapS: 60, bootOffCabs: [] })
+      const B = 'SAM-AH99-B'
+      check(warm.has(B) && warm.seconds(B) === 0 && q.warmupOf(B) === 0, '设备级 warmupS: 0、站级改成 180：这台照样不预热、报 0')
+      check(warm.seconds(A) === 180 && q.warmupOf(A) === 1, '站级改成 180 后，A 的转换程序自报 warmup 照常生效（报 1）—— 预热两支代码留着')
     } finally {
       q.onModuleDestroy()
     }
@@ -351,6 +397,7 @@ async function main() {
   logic()
   quality()
   samScope()
+  zeroWarmup()
   if (LIVE) await live()
   if (TB_URL) await tbSafety(TB_URL)
   done()
