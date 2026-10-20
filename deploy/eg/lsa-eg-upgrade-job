@@ -78,7 +78,7 @@ if [ "$(sget kind)" = config ]; then
     problems=''
     for c in $CONTAINERS; do [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = running ] || problems+="$c 没在跑；"; done
     since="$(docker inspect -f '{{.State.StartedAt}}' lsa-eg-agent 2>/dev/null)"
-    docker logs --since "$since" lsa-eg-agent 2>&1 | grep -q '已连子站' || problems+='agent 还没连上子站；'
+    docker logs --since "$since" lsa-eg-agent 2>&1 | grep '已连子站' > /dev/null || problems+='agent 还没连上子站；'
     [ -z "$problems" ] && break
     [ $(( $(date +%s) - t1 )) -ge "$CHECK_TIMEOUT" ] && break
     sleep 10
@@ -159,7 +159,7 @@ while :; do
   [ -z "$expect_tb" ] || [ "$tb_img" = "$expect_tb" ] || problems+="本地 TB 是 ${tb_img:-?}，不是 $expect_tb；"
   [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' lsa-eg-tb 2>/dev/null)" = healthy ] || problems+='本地 TB 还没 healthy；'
   since="$(docker inspect -f '{{.State.StartedAt}}' lsa-eg-agent 2>/dev/null)"
-  docker logs --since "$since" lsa-eg-agent 2>&1 | grep -q '已连子站' || problems+='agent 还没连上子站；'
+  docker logs --since "$since" lsa-eg-agent 2>&1 | grep '已连子站' > /dev/null || problems+='agent 还没连上子站；'
   [ -z "$problems" ] && break
   [ $(( $(date +%s) - t1 )) -ge "$CHECK_TIMEOUT" ] && break
   sleep 10
