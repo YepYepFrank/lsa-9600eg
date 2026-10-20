@@ -1,0 +1,17 @@
+#!/bin/bash
+# 假 ip（子站侧）：route get = 直连；neigh flush 什么都不做；neigh show <地址> = 持有它的假 EG 的 LAN2 MAC，
+# /fake/dup250 里有 MAC 时再多一行（仿另一台也占着 .250）
+case "$1 $2" in
+  'route get') echo "$3 dev eth0 src 192.168.1.251 uid 0" ;;
+  'neigh flush') : ;;
+  'neigh show')
+    for d in /fake/eg/*/; do
+      d="${d%/}"
+      [ -f "$d/addr" ] || continue
+      nic="$(awk -v a="$3" '$2 ~ "^" a "/" { print $1; exit }' "$d/addr")"
+      [ -n "$nic" ] && echo "$3 dev eth0 lladdr $(awk -v n="$nic" '$1 == n { print $2 }' "$d/nics") REACHABLE"
+    done
+    [ "$3" = 192.168.1.250 ] && [ -s /fake/dup250 ] && echo "$3 dev eth0 lladdr $(cat /fake/dup250) STALE"
+    exit 0 ;;
+  *) echo "假 ip（子站侧）不认：$*" >&2; exit 1 ;;
+esac

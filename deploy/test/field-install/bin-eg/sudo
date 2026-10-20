@@ -1,0 +1,8 @@
+#!/bin/bash
+# 假 sudo（假 EG 上）：认 -k -S -p ''，口令从 stdin 第一行读，和 /fake/pw 比
+while [ $# -gt 0 ]; do
+  case "$1" in -k | -S) shift ;; -p) shift 2 ;; *) break ;; esac
+done
+IFS= read -r pw || pw=''
+[ "$pw" = "$(cat /fake/pw)" ] || { echo 'sudo: 1 incorrect password attempt' >&2; exit 1; }
+exec "$@"

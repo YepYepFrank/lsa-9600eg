@@ -1,0 +1,27 @@
+#!/bin/bash
+# 假 systemctl（假 EG 上）：unit 文件真的写在 $LSA_FIELD_ROOT/etc/systemd/system（持久），timer 用后台 sleep 仿计时（不持久）。
+#   enable [--now] X.timer / disable [--now] X.timer / stop X.timer / daemon-reload
+#   __crash：仿拔电 —— 所有在计时的 timer 一律丢掉（unit 文件还在）
+#   __boot：仿开机 —— timers.target.wants 里 enable 着的 timer 重新开始计时（OnActiveSec 从启动算起）
+ud="$LSA_FIELD_ROOT/etc/systemd/system"
+start_timer() {
+  local s cmd
+  s="$(sed -n 's/^OnActiveSec=//p' "$ud/$1" | tr -d 's')"
+  cmd="$(sed -n 's/^ExecStart=//p' "$ud/${1%.timer}.service")"
+  setsid nohup bash -c "sleep ${s:-1}; $cmd" > /dev/null 2>&1 < /dev/null &
+  echo $! > "$FAKE_EG/timer-$1.pid"
+}
+stop_timer() { [ -f "$FAKE_EG/timer-$1.pid" ] && kill "$(cat "$FAKE_EG/timer-$1.pid")" 2> /dev/null; rm -f "$FAKE_EG/timer-$1.pid"; return 0; }
+v="$1"; shift
+now=0; [ "${1:-}" = --now ] && { now=1; shift; }
+u="${1:-}"
+case "$v" in
+  daemon-reload) ;;
+  enable) mkdir -p "$ud/timers.target.wants"; ln -sf "../$u" "$ud/timers.target.wants/$u"; [ "$now" = 1 ] && start_timer "$u" ;;
+  disable) rm -f "$ud/timers.target.wants/$u"; [ "$now" = 1 ] && stop_timer "$u" ;;
+  stop) stop_timer "$u" ;;
+  __crash) for f in "$FAKE_EG"/timer-*.pid; do [ -f "$f" ] && kill "$(cat "$f")" 2> /dev/null; rm -f "$f"; done ;;
+  __boot) for w in "$ud"/timers.target.wants/*.timer; do [ -e "$w" ] && start_timer "$(basename "$w")"; done ;;
+  *) echo "假 systemctl 不认：$v $*" >&2; exit 1 ;;
+esac
+exit 0

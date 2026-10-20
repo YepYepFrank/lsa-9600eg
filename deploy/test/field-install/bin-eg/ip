@@ -1,0 +1,11 @@
+#!/bin/bash
+# 假 ip（假 EG 上）：只认 ip -br link、ip -br -4 addr show dev <网口>、ip neigh show <地址>；网口在 $FAKE_EG/nics（名字 MAC），地址在 $FAKE_EG/addr（网口 地址/前缀）
+case "$*" in
+  '-br link') while read -r n m; do echo "$n UP $m <BROADCAST,MULTICAST,UP,LOWER_UP>"; done < "$FAKE_EG/nics" ;;
+  '-br -4 addr show dev '*)
+    dev="${!#}"; a="$(awk -v d="$dev" '$1 == d { printf " %s", $2 }' "$FAKE_EG/addr" 2>/dev/null)"
+    [ -z "$a" ] || echo "$dev UP$a" ;;
+  'neigh show '*)   # 网关应不应答：/fake/gwdead 里列的地址不应答（FAILED）
+    if grep -qx "$3" /fake/gwdead 2>/dev/null; then echo "$3 dev eth0 FAILED"; else echo "$3 dev eth0 lladdr 02:00:00:00:00:01 REACHABLE"; fi ;;
+  *) echo "假 ip 不认：$*" >&2; exit 1 ;;
+esac

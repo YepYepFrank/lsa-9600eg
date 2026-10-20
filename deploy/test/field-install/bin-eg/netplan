@@ -1,0 +1,13 @@
+#!/bin/bash
+# 假 netplan（假 EG 上）：generate 只查文件里有 network:（$FAKE_EG/badgen 时报错）；apply 把 yaml 里各网口的 addresses 写进 $FAKE_EG/addr
+np="$LSA_FIELD_ROOT/etc/netplan"
+case "$1" in
+  generate)
+    [ -f "$FAKE_EG/badgen" ] && { echo "$np/50-lsa-eg.yaml:5:7: Error in network definition: 假的错误" >&2; exit 1; }
+    cat "$np"/*.yaml 2>/dev/null | grep -q '^network:' || { echo 'no network definition' >&2; exit 1; } ;;
+  apply)
+    cat "$np"/*.yaml | awk '/^    [^ ].*:$/ { n = $1; sub(/:$/, "", n) } /addresses:/ { gsub(/[][]/, ""); print n, $2 }' > "$FAKE_EG/addr.new"
+    mv "$FAKE_EG/addr.new" "$FAKE_EG/addr"
+    echo "$(date +%s) apply" >> "$FAKE_EG/netplan.log" ;;
+  *) echo "假 netplan 不认：$*" >&2; exit 1 ;;
+esac

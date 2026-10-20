@@ -161,6 +161,8 @@ writeFileSync(join(B, 'setup.sh'), readFileSync(resolve(ROOT, 'deploy/bundle/set
 writeFileSync(join(B, 'upgrade-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/upgrade-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
 // 0.17.4：子站一条命令加柜（--role sp 时装到 /opt/lsa9600sp/join-egs.sh）
 writeFileSync(join(B, 'join-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/join-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
+// S19：现场批量装 EG（新机 .250 → 改地址 → 推 .run → --role eg --join-key；--role sp 时装到 /opt/lsa9600sp/field-install-egs.sh）
+writeFileSync(join(B, 'field-install-egs.sh'), readFileSync(resolve(ROOT, 'deploy/sp/field-install-egs.sh'), 'utf8').replace(/\r\n/g, '\n'))
 // 0.18.1：发布公钥（子站 --role sp 时装到 /opt/lsa9600sp/release-signers，upgrade-egs.sh 先在子站验一遍签名；EG 那份在 eg/ 里）
 writeFileSync(join(B, 'release-signers'), readFileSync(resolve(ROOT, 'deploy/eg/release-signers'), 'utf8').replace(/\r\n/g, '\n'))
 writeFileSync(join(B, 'VERSION'), VERSION + '\n')

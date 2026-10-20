@@ -1,0 +1,19 @@
+#!/bin/bash
+# 假「端口通不通」（LSA_FIELD_TCP）：tcp <地址> <端口>。192.168.1.250 上没人时，把机架队列 /fake/rack 里的下一台「插上」（出厂地址 .250）
+host="$1"
+holder() {
+  local d
+  for d in /fake/eg/*/; do
+    d="${d%/}"
+    [ -f "$d/addr" ] && grep -q " $1/" "$d/addr" || continue
+    [ -f "$d/badnet" ] && [ "$1" != 192.168.1.250 ] && continue
+    echo "$d"; return 0
+  done
+  return 1
+}
+if [ "$host" = 192.168.1.250 ] && ! holder "$host" > /dev/null && [ -s /fake/rack ]; then
+  next="$(head -1 /fake/rack)"; sed -i 1d /fake/rack
+  cp "/fake/eg/$next/addr.init" "/fake/eg/$next/addr"
+  echo "$(date +%s) 插上 $next" >> /fake/rack.log
+fi
+holder "$host" > /dev/null
