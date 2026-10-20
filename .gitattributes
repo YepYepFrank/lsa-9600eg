@@ -18,3 +18,5 @@ deploy/test/join-egs/bin/* text eol=lf
 release-signers text eol=lf
 lsa-eg-upgrade text eol=lf
 lsa-eg-upgrade-job text eol=lf
+deploy/sp/lsa-eg-upgrade-runner* text eol=lf
+deploy/test/web-upgrade/bin/* text eol=lf

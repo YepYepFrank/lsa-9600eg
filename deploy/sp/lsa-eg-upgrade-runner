@@ -1,0 +1,869 @@
+#!/usr/bin/python3
+# LSA-9600SP 子站「网页升级 EG」的主机侧执行器（0.19.0，方案 v0.3 §3、§9）。
+#
+# 子站主机上 root 跑，systemd：lsa-eg-upgrade-runner.path 监 requests/*.json → lsa-eg-upgrade-runner.service（oneshot，一次只一个）。
+# 容器里的扩展服务（lsa-ext）没有升级 key、没有 root，只能往 requests/ 写白名单请求；这里严格校验后：
+#   scan    扫安装包目录（版本、大小、sha256、签名、盘剩余）→ state/packages.json
+#   plan    upgrade-egs.sh --run <包> --plan --json …（网页入口只认 sig=ok 的包）
+#   start   只照计划原样（包、范围、--force、--skip-offline 不能改；只给 canary / parallel），
+#           先定批次号，systemd-run --unit lsa-eg-upgrade-<批次> --collect 另起 unit 跑 upgrade-egs.sh
+#   resume  同上另起 unit 跑 upgrade-egs.sh --resume <批次>
+#   stop    在批次目录放 STOP（不再开新的，在升的做完）
+# 结果写 state/requests/<请求号>.json；请求文件处理完移到 done/（不在挂载目录里）。
+# 容器不可信：requests/ 是 rw 挂进容器的（容器里是 root），里面的一切都可能是符号链接 / 目录 / 半路被换 ——
+#   只经 requests/ 的目录 fd 操作，每个条目先 lstat，不是普通文件就删掉（不跟随），打开用 O_NOFOLLOW。
+# start / resume 起的 unit 退出时（ExecStopPost）再调一次本程序 --finish <请求号>，把还是 running 的结果补成 done / failed。
+# 只用 python3 标准库（Ubuntu 24.04 自带，子站离线也有）。手工跑一遍：sudo python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+import traceback
+
+ROOT = '/var/lib/lsa9600sp/eg-upgrade'
+REQ_DIR = ROOT + '/requests'
+DONE_DIR = ROOT + '/done'               # root 0700，不挂进容器（方案 v0.3 §9.2 复审改）
+STATE_DIR = ROOT + '/state'
+SREQ_DIR = STATE_DIR + '/requests'
+PKG_DIR = ROOT + '/packages'
+CACHE = ROOT + '/.cache.json'          # 包的 sha256 / 版本 / 签名缓存（按 inode、大小、mtime、ctime；不挂进容器）
+LOGROOT = '/var/log/lsa9600sp/eg-upgrade'
+SCRIPT = '/opt/lsa9600sp/upgrade-egs.sh'
+LOCK = '/run/lsa9600sp/eg-upgrade.lock'            # upgrade-egs.sh 的批次锁（这里只试一下，提前告诉人）
+RUNNER_LOCK = '/run/lsa9600sp/eg-upgrade-runner.lock'
+SIGNERS = os.environ.get('LSA_RELEASE_SIGNERS', '/opt/lsa9600sp/release-signers')
+SIG_ID = SIG_NS = 'lsa9600-release'                # 和 upgrade-egs.sh、EG 的 lsa-eg-upgrade、sign-release.mjs 一致
+
+MAX_BYTES = 16 * 1024      # 请求文件上限
+BATCH_N = 20               # 每次只处理最新的这么多个
+FLOOD_N = 100              # requests/ 里超过这么多个文件就全部拒收
+KEEP_S = 7 * 86400         # done/ 与 state/requests/ 留 7 天
+DONE_CAP = 2000            # done/ 最多留这么多个（7 天内也删最旧的）
+TMP_STALE_S = 600          # 没改名的 .tmp 放 10 分钟就删
+PLAN_TTL_S = 600           # 计划 10 分钟内有效
+PLAN_TIMEOUT_S = 1800
+START_WAIT_S = int(os.environ.get('LSA_EGUP_START_WAIT', '180'))  # start / resume 后等批次 meta 出来的时间
+GIB = 1024 ** 3
+
+ID_RE = re.compile(r'[0-9]{8}-[0-9]{6}-[a-z0-9]{6}', re.A)
+UNIT_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,23}', re.A)   # §9.2 的正则，再加 v0.4：不能以 - 开头（. / .. 本来就不合）
+RUN_RE = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}\.run', re.A)
+BATCH_RE = re.compile(r'[0-9]{8}-[0-9]{6}', re.A)
+SHA_RE = re.compile(r'[0-9a-f]{64}', re.A)
+USER_RE = re.compile(r'[A-Za-z0-9._@-]{1,64}', re.A)   # 会进 systemd-run 的命令行：不许 $ % 空白
+SELF = os.path.abspath(__file__)
+RFD = DFD = None           # requests/、done/ 的目录 fd（main 里打开）
+TYPES = ('scan', 'plan', 'start', 'stop', 'resume')
+TOP_KEYS = {'id', 'type', 'at', 'user', 'params'}
+
+
+class Reject(Exception):
+    """请求不合格 / 条件不满足：status=rejected"""
+
+
+class Fail(Exception):
+    """执行出错：status=failed"""
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def write_json(path, obj):
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=1)
+        f.write('\n')
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def read_json(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def read_meta(batch):
+    """批次 meta（key=value 每行一个）；没有就 None"""
+    try:
+        with open(os.path.join(LOGROOT, batch, 'meta'), encoding='utf-8', errors='replace') as f:
+            return dict(line.rstrip('\n').split('=', 1) for line in f if '=' in line)
+    except OSError:
+        return None
+
+
+# ---------------- 请求文件 ----------------
+def _no_dup(pairs):
+    d = {}
+    for k, v in pairs:
+        if k in d:
+            raise ValueError(f'字段重复：{k}')
+        d[k] = v
+    return d
+
+
+def _no_const(c):
+    raise ValueError(f'不认 {c}')
+
+
+def read_request(name):
+    """读 requests/<name>（经目录 fd）：不跟符号链接、只认普通文件、≤ 16 KB、严格 JSON（不许重复字段、NaN）"""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=RFD)
+    except OSError as e:
+        raise Reject('请求文件是符号链接，拒收' if e.errno == errno.ELOOP else f'请求文件打不开：{e.strerror}')
+    with os.fdopen(fd, 'rb') as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            raise Reject('请求不是普通文件（或有别的硬链接），拒收')
+        if st.st_size > MAX_BYTES:
+            raise Reject(f'请求文件太大（{st.st_size} 字节，上限 16 KB）')
+        data = f.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise Reject('请求文件太大（上限 16 KB）')
+    try:
+        obj = json.loads(data.decode('utf-8'), object_pairs_hook=_no_dup, parse_constant=_no_const)
+    except (UnicodeDecodeError, ValueError) as e:
+        raise Reject(f'请求不是合法 JSON：{str(e)[:120]}')
+    if not isinstance(obj, dict):
+        raise Reject('请求要是一个 JSON 对象')
+    return obj
+
+
+def _bool(v):
+    return isinstance(v, bool)
+
+
+def _int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _str_re(v, r):
+    return isinstance(v, str) and r.fullmatch(v) is not None
+
+
+def check_keys(o, want, what):
+    extra = sorted(set(o) - want)
+    if extra:
+        raise Reject(f'{what}有不认识的字段：{", ".join(extra)[:120]}')
+    miss = sorted(want - set(o))
+    if miss:
+        raise Reject(f'{what}缺字段：{", ".join(miss)}')
+
+
+def validate(obj, rid):
+    """§9.2 白名单：未知 type / 字段、格式不对一律拒。返回 (type, params, user)"""
+    check_keys(obj, TOP_KEYS, '请求')
+    if obj['id'] != rid:
+        raise Reject('请求里的 id 和文件名不一致')
+    typ = obj['type']
+    if typ not in TYPES:
+        raise Reject(f'不认识的请求类型：{str(typ)[:40]}')
+    if not _int(obj['at']) or obj['at'] <= 0:
+        raise Reject('at 要是毫秒时间戳（整数）')
+    user = obj['user']
+    if not _str_re(user, USER_RE):
+        raise Reject('user 只许字母、数字、. _ @ -（1–64 个）')
+    p = obj['params']
+    if not isinstance(p, dict):
+        raise Reject('params 要是 JSON 对象')
+    if typ == 'scan':
+        check_keys(p, set(), 'params ')
+    elif typ == 'plan':
+        check_keys(p, {'run', 'sel', 'force', 'skipOffline'}, 'params ')
+        if not _str_re(p['run'], RUN_RE):
+            raise Reject('run 只许安装包目录里的文件名（字母、数字、. _ -，以 .run 结尾），不许带路径')
+        sel = p['sel']
+        if sel != 'all':
+            if not isinstance(sel, list) or not 1 <= len(sel) <= 200:
+                raise Reject('sel 要是 "all" 或 1–200 个单元号的数组')
+            for u in sel:
+                if not _str_re(u, UNIT_RE):
+                    raise Reject(f'单元号格式不对：{str(u)[:40]}')
+            if len(set(sel)) != len(sel):
+                raise Reject('sel 里单元号重复')
+        if not _bool(p['force']) or not _bool(p['skipOffline']):
+            raise Reject('force、skipOffline 要是 true / false')
+    elif typ == 'start':
+        check_keys(p, {'plan', 'sha', 'canary', 'parallel'}, 'params ')
+        if not _str_re(p['plan'], ID_RE):
+            raise Reject('plan 要是计划请求的请求号')
+        if not _str_re(p['sha'], SHA_RE):
+            raise Reject('sha 要是 64 位小写 hex')
+        if p['canary'] is not None and not _str_re(p['canary'], UNIT_RE):
+            raise Reject('canary 要是单元号或 null')
+        if not _int(p['parallel']) or not 1 <= p['parallel'] <= 4:
+            raise Reject('parallel 要是 1–4')
+    else:  # stop / resume
+        check_keys(p, {'batch'}, 'params ')
+        if not _str_re(p['batch'], BATCH_RE):
+            raise Reject('batch 要是批次号（YYYYMMDD-HHMMSS）')
+    return typ, p, user
+
+
+# ---------------- 安装包 ----------------
+def _stat_key(st):
+    return f'{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}'
+
+
+def _open_reg(path):
+    """不跟符号链接打开普通文件；不是就 None"""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    f = os.fdopen(fd, 'rb')
+    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+        f.close()
+        return None
+    return f
+
+
+def _sha256(f):
+    h = hashlib.sha256()
+    f.seek(0)
+    for b in iter(lambda: f.read(4 << 20), b''):
+        h.update(b)
+    return h.hexdigest()
+
+
+MARK = b'\n__LSA_PAYLOAD_BELOW__\n'
+
+
+def _eg_version(f):
+    """负载（标记行之后的 tar）里 lsa9600sp-bundle/eg/VERSION 的第一行；同 upgrade-egs.sh 的 run_eg_version，不执行安装文件"""
+    f.seek(0)
+    head = f.read(1 << 20)   # 安装文件头的脚本远小于 1 MB
+    i = head.find(MARK)
+    if i < 0:
+        return None
+    f.seek(i + len(MARK))
+    try:
+        with tarfile.open(fileobj=f, mode='r|*') as tf:
+            for m in tf:
+                if m.name in ('lsa9600sp-bundle/eg/VERSION', './lsa9600sp-bundle/eg/VERSION') and m.isfile():
+                    raw = tf.extractfile(m).read(256).decode('utf-8', 'replace')
+                    v = ''.join(raw.split('\n', 1)[0].split())
+                    return v if re.fullmatch(r'[A-Za-z0-9._+-]{1,64}', v) else None
+    except (tarfile.TarError, OSError, EOFError):
+        return None
+    return None
+
+
+def _signers_n():
+    try:
+        with open(SIGNERS, encoding='utf-8', errors='replace') as f:
+            return sum(1 for line in f if line.strip() and not line.lstrip().startswith('#'))
+    except OSError:
+        return 0
+
+
+def _sig(f, name):
+    """同 upgrade-egs.sh 的 local_sig：ok / unsigned / nokey / bad 和说明。.sig 先拷到执行器自己的目录再验（不跟符号链接）"""
+    sf = _open_reg(os.path.join(PKG_DIR, name + '.sig'))
+    if sf is None:
+        if os.path.lexists(os.path.join(PKG_DIR, name + '.sig')):
+            return 'bad', f'{name}.sig 不是普通文件'
+        return 'unsigned', f'旁边没有 {name}.sig'
+    with sf:
+        sig = sf.read(65537)
+    if len(sig) > 65536:
+        return 'bad', f'{name}.sig 太大'
+    if _signers_n() == 0:
+        return 'nokey', f'子站没有发布公钥 {SIGNERS}（子站先用 0.18.1 起的安装文件 --role sp 升级）'
+    tmp = os.path.join(ROOT, '.sig-check')
+    with open(tmp, 'wb') as t:
+        t.write(sig)
+    try:
+        f.seek(0)
+        r = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', SIGNERS, '-I', SIG_ID, '-n', SIG_NS, '-s', tmp],
+                           stdin=f, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 'bad', f'验签没跑成：{e}'[:160]
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        m = re.search(r'SHA256:[A-Za-z0-9+/=]*', out)
+        return 'ok', m.group(0) if m else '已验'
+    return 'bad', ' '.join(out.split())[:160]
+
+
+def _sig_key(name):
+    try:
+        s = _stat_key(os.lstat(os.path.join(PKG_DIR, name + '.sig')))
+    except OSError:
+        s = '-'
+    try:
+        g = _stat_key(os.stat(SIGNERS))
+    except OSError:
+        g = '-'
+    return s + '|' + g
+
+
+def pkg_info(name, cache, want_version=True):
+    """包目录里一个安装文件的信息（缓存按 stat 判断有没有变）；不在 / 不是普通文件就 None"""
+    path = os.path.join(PKG_DIR, name)
+    f = _open_reg(path)
+    if f is None:
+        return None
+    with f:
+        st = os.fstat(f.fileno())
+        key = _stat_key(st)
+        c = cache.get(name)
+        if not isinstance(c, dict) or c.get('key') != key:
+            c = {'key': key, 'sha256': _sha256(f)}
+        if want_version and 'egVersion' not in c:
+            c['egVersion'] = _eg_version(f)
+        skey = _sig_key(name)
+        if c.get('sigKey') != skey:
+            c['sig'], c['sigNote'] = _sig(f, name)
+            c['sigKey'] = skey
+        cache[name] = c
+    return {'file': name, 'egVersion': c.get('egVersion'), 'size': st.st_size, 'mtime': st.st_mtime_ns // 1000000,
+            'sha256': c['sha256'], 'sig': c['sig'], 'sigNote': c['sigNote']}
+
+
+def load_cache():
+    c = read_json(CACHE)
+    return c if isinstance(c, dict) else {}
+
+
+def save_cache(cache):
+    try:
+        names = set(os.listdir(PKG_DIR))
+    except OSError:
+        names = set()
+    write_json(CACHE, {k: v for k, v in cache.items() if k in names})
+    os.chmod(CACHE, 0o600)
+
+
+def do_scan():
+    cache = load_cache()
+    pk, warn = [], []
+    try:
+        names = sorted(os.listdir(PKG_DIR))
+    except OSError as e:
+        raise Fail(f'读不了安装包目录 {PKG_DIR}：{e.strerror}')
+    for n in names:
+        if not n.endswith('.run'):
+            continue
+        if not RUN_RE.fullmatch(n):
+            warn.append(f'{n[:80]}：文件名只许字母、数字、. _ -，网页上不列，改名后重新扫描')
+            continue
+        info = pkg_info(n, cache)
+        if info is None:
+            warn.append(f'{n}：不是普通文件（符号链接？），跳过')
+            continue
+        if not info['egVersion']:
+            warn.append(f'{n}：读不出 EG 版本（不是 LSA-9600 的一键安装文件，或者没拷完）')
+        pk.append(info)
+    save_cache(cache)
+    pk.sort(key=lambda p: p['mtime'], reverse=True)
+    vs = os.statvfs(PKG_DIR)
+    free, total = vs.f_bavail * vs.f_frsize, vs.f_blocks * vs.f_frsize
+    if len(pk) > 3:
+        warn.append(f'包目录里有 {len(pk)} 个安装文件，建议只留最近 3 个')
+    one = max([p['size'] for p in pk] + [3 * GIB])
+    if free < 2 * one:
+        warn.append(f'子站盘剩余 {free / GIB:.1f} GB，不够再放 2 个安装包')
+    res = {'at': now_ms(), 'dir': PKG_DIR, 'disk': {'freeBytes': free, 'totalBytes': total}, 'warn': warn, 'packages': pk}
+    write_json(os.path.join(STATE_DIR, 'packages.json'), res)
+    return res
+
+
+def need_signed(name, cache):
+    info = pkg_info(name, cache, want_version=False)
+    if info is None:
+        raise Reject(f'安装包目录里没有 {name}（scp 到 {PKG_DIR}/ 后重新扫描）')
+    if info['sig'] != 'ok':
+        raise Reject(f'网页入口只认签名验过的安装包，{name} 是 {info["sig"]}（{info["sigNote"]}）；'
+                     '未签名或验不过的只能在子站主机上用命令行 upgrade-egs.sh 升')
+    return info
+
+
+# ---------------- 批次 ----------------
+def lock_busy():
+    """upgrade-egs.sh 的锁现在有没有人拿着（试一下马上放开；真正的互斥以脚本自己的 flock 为准）"""
+    os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+ALIVE_S = 90   # upgrade-egs.sh 每 30 s touch <批次>/.alive；90 s 内动过算在跑（三库约定）
+
+
+def batch_alive(b):
+    try:
+        return time.time() - os.lstat(os.path.join(LOGROOT, b, '.alive')).st_mtime <= ALIVE_S
+    except OSError:
+        return False
+
+
+def running_batch():
+    """在跑的批次（没 ended_at、.alive 90 s 内动过；给人看的提示）"""
+    try:
+        for b in sorted(os.listdir(LOGROOT), reverse=True):
+            m = read_meta(b) if BATCH_RE.fullmatch(b) else None
+            if m is not None and 'ended_at' not in m and batch_alive(b):
+                return b
+    except OSError:
+        pass
+    return None
+
+
+def busy_reason():
+    b = running_batch()
+    return f'已有批次在跑{f"（{b}）" if b else ""}，等它做完再来'
+
+
+def new_batch():
+    t = time.time()
+    while True:
+        b = time.strftime('%Y%m%d-%H%M%S', time.localtime(t))
+        if not os.path.lexists(os.path.join(LOGROOT, b)):
+            return b
+        t += 1
+
+
+def unit_active(unit):
+    return subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0
+
+
+def journal_tail(unit):
+    r = subprocess.run(['journalctl', '-u', unit, '-n', '8', '--no-pager', '-o', 'cat'], capture_output=True, text=True)
+    return ' / '.join(line.strip() for line in r.stdout.splitlines() if line.strip())[-400:]
+
+
+def sd_arg(a):
+    """systemd 会展开命令行里的 $：一律写成 $$（参数本来都校验过，这里再兜一层）"""
+    return a.replace('$', '$$')
+
+
+def ready_fn(typ, rid):
+    if typ == 'start':
+        return lambda m: m.get('req') == rid
+    return lambda m: m.get('resumed_req') == rid
+
+
+def unit_name(typ, batch, rid):
+    return f'lsa-eg-upgrade-{batch}' + (f'-resume-{rid[-6:]}' if typ == 'resume' else '')
+
+
+def not_started_reason(unit, extra=''):
+    j = journal_tail(unit)
+    if '没有要升的' in j:
+        return '没有要升的：计划里要升的现在都已是目标版本或要跳过（重新生成计划看看）'
+    return f'批次没起来{extra}：{j or "（journalctl -u " + unit + " 看原因）"}'
+
+
+def launch(rid, typ, argv, desc, batch):
+    """systemd-run 另起 unit（执行器 oneshot 退出时不会被一起杀掉），等批次 meta 写出来。
+    unit 退出时 ExecStopPost 再调本程序 --finish，补上这里等不到的结果。返回 (status, reason)"""
+    unit = unit_name(typ, batch, rid)
+    post = f'ExecStopPost=/usr/bin/python3 -I {SELF} --finish {rid}'
+    cmd = ['systemd-run', '--unit', unit, '--collect', '--quiet', '--description', desc, '--property', post,
+           '--', '/bin/bash', SCRIPT] + [sd_arg(a) for a in argv]
+    log('  ' + ' '.join(cmd))
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise Fail(f'systemd-run 起不来（{r.returncode}）：{(r.stderr or r.stdout).strip()[:300]}')
+    ready = ready_fn(typ, rid)
+    end = time.time() + START_WAIT_S
+    while time.time() < end:
+        m = read_meta(batch)
+        if m is not None and ready(m):
+            return 'done', ''
+        if not unit_active(unit):
+            m = read_meta(batch)
+            if m is not None and ready(m):
+                return 'done', ''
+            raise Fail(not_started_reason(unit))
+        time.sleep(1)
+    # 等不到：照实写 running（带批次号），unit 退出时 --finish 补结果；扩展服务接着看批次目录
+    return 'running', f'{START_WAIT_S} s 了还在预检（批次 meta 还没写出来）：结果出来后这里会更新，也可以 journalctl -u {unit}'
+
+
+def finish(rid):
+    """--finish <请求号>（unit 的 ExecStopPost）：结果还是 running 的补成 done / failed"""
+    if not ID_RE.fullmatch(rid):
+        return
+    st = read_json(state_path(rid))
+    if not isinstance(st, dict) or st.get('status') != 'running' or st.get('type') not in ('start', 'resume'):
+        return
+    batch = (st.get('result') or {}).get('batch')
+    if not isinstance(batch, str) or not BATCH_RE.fullmatch(batch):
+        return
+    m = read_meta(batch)
+    if m is not None and ready_fn(st['type'], rid)(m):
+        st.update(status='done', reason='', endedAt=now_ms())
+    else:
+        code = os.environ.get('EXIT_STATUS', '')
+        st.update(status='failed', reason=not_started_reason(unit_name(st['type'], batch, rid), f'（退出码 {code}）' if code else ''),
+                  endedAt=now_ms())
+    write_json(state_path(rid), st)
+    log(f'[{rid}] --finish：{st["status"]}')
+
+
+def check_plan_units(plan):
+    """计划里的单元号来自 eg-list（容器）：不合格的只能是 bad 行"""
+    for r in plan.get('rows', []):
+        if not isinstance(r, dict) or (not _str_re(r.get('unit'), UNIT_RE) and r.get('action') != 'bad'):
+            raise Fail('计划里有不合格的单元号（子站清单有问题），不能用')
+
+
+def do_plan(rid, p, user):
+    cache = load_cache()
+    try:
+        info = need_signed(p['run'], cache)
+    finally:
+        save_cache(cache)
+    argv = ['/bin/bash', SCRIPT, '--run', os.path.join(PKG_DIR, p['run']), '--plan', '--json']
+    argv += ['--all'] if p['sel'] == 'all' else ['--only', ','.join(p['sel'])]
+    if p['force']:
+        argv.append('--force')
+    if p['skipOffline']:
+        argv.append('--skip-offline')
+    log('  ' + ' '.join(argv))
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=PLAN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise Fail(f'生成计划超过 {PLAN_TIMEOUT_S} s 没出来')
+    try:
+        plan = json.loads(r.stdout)
+        assert isinstance(plan, dict) and isinstance(plan.get('rows'), list)
+    except (ValueError, AssertionError):
+        tail = ' / '.join(line.strip() for line in r.stderr.splitlines() if line.strip())[-400:]
+        raise Fail(f'生成计划失败（upgrade-egs.sh 退出码 {r.returncode}）：{tail}')
+    if plan.get('sha') != info['sha256']:
+        raise Fail('生成计划时安装包变了（sha256 和刚才的不一样）：重新扫描后再生成')
+    check_plan_units(plan)
+    plan['ok'] = bool(plan.get('ok')) and plan.get('sig') == 'ok'
+    plan.update(req=rid, run=p['run'], params=p)
+    return plan
+
+
+def do_start(rid, p, user):
+    pp_path = state_path(p['plan'])
+    ps = read_json(pp_path)
+    if not isinstance(ps, dict) or ps.get('type') != 'plan':
+        raise Reject(f'没有这个计划（请求号 {p["plan"]}）')
+    if ps.get('status') != 'done' or not isinstance(ps.get('result'), dict):
+        raise Reject('这个计划没有生成成功')
+    if ps.get('consumedBy'):
+        raise Reject(f'这个计划已经用过（请求 {ps["consumedBy"]}）：重新生成计划再开始')
+    plan = ps['result']
+    ended = ps.get('endedAt')
+    if not _int(ended) or now_ms() - ended > PLAN_TTL_S * 1000:
+        raise Reject('计划已超过 10 分钟：重新生成计划再开始')
+    if not plan.get('ok'):
+        raise Reject('计划不能开始（有 !! 项，或安装包没验签）')
+    if p['sha'] != plan.get('sha'):
+        raise Reject('页面确认的安装包 sha256 和计划里的不一致')
+    pp, run = plan.get('params') or {}, plan.get('run')
+    if not _str_re(run, RUN_RE) or not isinstance(pp, dict):
+        raise Fail('计划记录不完整')
+    sel = pp.get('sel')
+    if sel != 'all' and not (isinstance(sel, list) and sel and all(_str_re(u, UNIT_RE) for u in sel)):
+        raise Fail('计划记录里的范围不对')
+    check_plan_units(plan)
+    ups = [r.get('unit') for r in plan.get('rows', []) if r.get('action') == 'up']
+    if not ups:
+        raise Reject('计划里没有要升级的单元')
+    if p['canary'] is not None and p['canary'] not in ups:
+        raise Reject(f'先升的那台（{p["canary"]}）不是计划里要升级的单元')
+    cache = load_cache()
+    try:
+        info = need_signed(run, cache)
+    finally:
+        save_cache(cache)
+    if info['sha256'] != plan['sha']:
+        raise Reject('安装包在生成计划之后被换过（sha256 变了）：重新扫描、重新生成计划')
+    if lock_busy():
+        raise Reject(busy_reason())
+    batch = new_batch()
+    # 计划只用一次：起 unit 之前就标上（起不来也要重新生成计划：情况变了）
+    ps.update(consumedBy=rid, consumedAt=now_ms())
+    write_json(pp_path, ps)
+    # 范围、包、--force / --skip-offline 照计划原样；只加 canary / 并发 / 批次号 / 谁 / 哪个请求；
+    # --expect-sha：脚本拷进 root 工作目录以后对这份拷贝核 sha，计划之后换包不开始
+    argv = ['--run', os.path.join(PKG_DIR, run)]
+    argv += ['--all'] if sel == 'all' else ['--only', ','.join(sel)]
+    if pp.get('force') is True:
+        argv.append('--force')
+    if pp.get('skipOffline') is True:
+        argv.append('--skip-offline')
+    argv += ['--parallel', str(p['parallel'])]
+    if p['canary'] is not None:
+        argv += ['--canary', p['canary']]
+    argv += ['--batch', batch, '--by', user, '--req', rid, '--source', 'web', '--expect-sha', plan['sha']]
+    put_state(rid, 'start', 'running', now_ms(), '', {'batch': batch})
+    status, note = launch(rid, 'start', argv, f'LSA-9600 EG 批量升级 {batch}（网页，{user}）', batch)
+    return {'batch': batch}, status, note
+
+
+def need_batch(b):
+    m = read_meta(b)
+    if m is None:
+        raise Reject(f'没有批次 {b}')
+    return m
+
+
+def do_resume(rid, p, user):
+    b = p['batch']
+    m = need_batch(b)
+    if m.get('sig') != 'ok':
+        raise Reject(f'这一批不是签名包，只能命令行续（sudo bash /opt/lsa9600sp/upgrade-egs.sh --resume {b}）')
+    # v0.4：安装包现在的 sha / 签名也要对（还没开始的那几台要用它）
+    run = m.get('run', '')
+    name = os.path.basename(run)
+    if os.path.dirname(run) != PKG_DIR or not _str_re(name, RUN_RE):
+        raise Reject(f'这一批的安装文件不在安装包目录（{run[:120]}），只能命令行续')
+    cache = load_cache()
+    try:
+        info = pkg_info(name, cache, want_version=False)
+    finally:
+        save_cache(cache)
+    if info is None:
+        raise Reject(f'这一批的安装文件 {name} 已不在安装包目录，只能命令行续')
+    if info['sha256'] != m.get('sha'):
+        raise Reject(f'{name} 和这一批开始时的不是同一个（sha256 变了），网页不能续')
+    if info['sig'] != 'ok':
+        raise Reject(f'{name} 现在验签不过（{info["sig"]}：{info["sigNote"]}），网页不能续')
+    if lock_busy():
+        raise Reject(busy_reason())
+    put_state(rid, 'resume', 'running', now_ms(), '', {'batch': b})
+    status, note = launch(rid, 'resume', ['--resume', b, '--by', user, '--req', rid, '--source', 'web'],
+                          f'LSA-9600 EG 批量升级 {b} 续查（网页，{user}）', b)
+    return {'batch': b}, status, note
+
+
+def do_stop(rid, p, user):
+    b = p['batch']
+    m = need_batch(b)
+    if 'ended_at' in m:
+        raise Reject(f'批次 {b} 已经结束，不用停')
+    stop = os.path.join(LOGROOT, b, 'STOP')
+    if not os.path.lexists(stop):
+        os.close(os.open(stop, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
+    return {'batch': b}, 'done', ''
+
+
+# ---------------- 主流程 ----------------
+def state_path(rid):
+    return os.path.join(SREQ_DIR, rid + '.json')
+
+
+def put_state(rid, typ, status, at, reason='', result=None, ended=None):
+    write_json(state_path(rid), {'id': rid, 'type': typ, 'status': status, 'at': at, 'endedAt': ended,
+                                 'reason': reason, 'result': result})
+
+
+def rm_req(name):
+    """拒掉 requests/ 里的一个条目：不跟随、不递归（v0.4 §9.2）—— 链接 / 文件 / FIFO unlink；
+    目录（可能不空）整个改名进 done/（rename 不跟随，对不空的目录也行；留在原地 path 单元会反复触发）"""
+    try:
+        st = os.lstat(name, dir_fd=RFD)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        to_done(name)
+        return
+    try:
+        os.unlink(name, dir_fd=RFD)
+    except OSError as e:
+        log(f'  删不掉 {name[:80]}：{e.strerror}')
+
+
+def rm_done(name):
+    """清 done/ 里的一个条目。done/ 不挂进容器，挪进来的目录容器已经碰不到了：rmtree 的 dir_fd 版（不跟随链接）整个删"""
+    try:
+        if stat.S_ISDIR(os.lstat(name, dir_fd=DFD).st_mode):
+            shutil.rmtree(name, dir_fd=DFD)
+        else:
+            os.unlink(name, dir_fd=DFD)
+    except OSError as e:
+        log(f'  done/ 里删不掉 {name[:80]}：{e.strerror}')
+
+
+def to_done(name):
+    """requests/ 里的条目改名进 done/（两边都经目录 fd；改名不跟随，半路被换成链接也只是挪走链接本身）"""
+    dst = name
+    try:
+        os.lstat(dst, dir_fd=DFD)
+        dst += f'.{now_ms()}'
+    except FileNotFoundError:
+        pass
+    try:
+        os.rename(name, dst, src_dir_fd=RFD, dst_dir_fd=DFD)
+    except OSError as e:
+        log(f'  移不进 done/：{name[:80]}：{e.strerror}')
+        try:
+            if not stat.S_ISDIR(os.lstat(name, dir_fd=RFD).st_mode):
+                os.unlink(name, dir_fd=RFD)
+        except OSError:
+            pass
+
+
+def handle(name):
+    rid = name[:-5]
+    at = now_ms()
+    if os.path.lexists(state_path(rid)):   # 同一个请求号只做一次（不覆盖已有结果）
+        log(f'[{rid}] 请求号已处理过，丢弃')
+        to_done(name)
+        return
+    typ = None
+    try:
+        obj = read_request(name)
+        if isinstance(obj.get('type'), str) and obj['type'] in TYPES:
+            typ = obj['type']
+        typ, p, user = validate(obj, rid)
+        put_state(rid, typ, 'running', at)
+        log(f'[{rid}] {typ}（{user}）')
+        status, note = 'done', ''
+        if typ == 'scan':
+            res = do_scan()
+        elif typ == 'plan':
+            res = do_plan(rid, p, user)
+        elif typ == 'start':
+            res, status, note = do_start(rid, p, user)
+        elif typ == 'resume':
+            res, status, note = do_resume(rid, p, user)
+        else:
+            res, status, note = do_stop(rid, p, user)
+        put_state(rid, typ, status, at, note, res, None if status == 'running' else now_ms())
+        if status == 'running' and not unit_active(unit_name(typ, res['batch'], rid)):
+            finish(rid)   # 刚写完 running unit 就退出了：它的 --finish 可能跑在前面，自己补一次
+        log(f'[{rid}] {status}{"：" + note if note else ""}')
+    except Reject as e:
+        put_state(rid, typ, 'rejected', at, str(e), None, now_ms())
+        log(f'[{rid}] 拒收：{e}')
+    except Fail as e:
+        prev = read_json(state_path(rid)) or {}
+        put_state(rid, typ, 'failed', at, str(e), prev.get('result'), now_ms())
+        log(f'[{rid}] 失败：{e}')
+    except Exception as e:  # noqa: BLE001 —— 一个请求出错不影响别的
+        traceback.print_exc()
+        put_state(rid, typ, 'failed', at, f'执行器出错：{type(e).__name__}: {e}'[:300], None, now_ms())
+    finally:
+        to_done(name)
+
+
+def cleanup():
+    cut = time.time() - KEEP_S
+    try:   # done/（经目录 fd）：7 天以上的、超过 DONE_CAP 个的最旧的
+        ents = sorted((os.lstat(n, dir_fd=DFD).st_mtime, n) for n in os.listdir(DFD))
+        for i, (mt, n) in enumerate(ents):
+            if mt < cut or i < len(ents) - DONE_CAP:
+                rm_done(n)
+    except OSError:
+        pass
+    try:   # state/requests/（只有执行器写）
+        for n in os.listdir(SREQ_DIR):
+            p = os.path.join(SREQ_DIR, n)
+            if os.lstat(p).st_mtime < cut:
+                os.unlink(p)
+    except OSError:
+        pass
+
+
+def runner_json(**kw):
+    p = os.path.join(STATE_DIR, 'runner.json')
+    o = read_json(p)
+    o = o if isinstance(o, dict) else {}
+    o.setdefault('version', 'unknown')
+    o.update(at=now_ms(), pkgDir=PKG_DIR, **kw)
+    write_json(p, o)
+
+
+def open_dir(path):
+    """目录本身不许是符号链接（requests/ 是挂载点，容器换不了；这里再兜一层）"""
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        sys.exit(f'{path} 打不开或不是目录（符号链接？）：{e.strerror}')
+
+
+def main():
+    global RFD, DFD
+    os.umask(0o022)
+    if os.geteuid() != 0:
+        sys.exit('要 root 跑')
+    if len(sys.argv) == 3 and sys.argv[1] == '--finish':
+        finish(sys.argv[2])
+        return
+    for d, mode in ((ROOT, 0o755), (REQ_DIR, 0o700), (DONE_DIR, 0o700), (STATE_DIR, 0o755), (SREQ_DIR, 0o755)):
+        os.makedirs(d, mode=mode, exist_ok=True)
+    RFD, DFD = open_dir(REQ_DIR), open_dir(DONE_DIR)
+    os.makedirs(os.path.dirname(RUNNER_LOCK), exist_ok=True)
+    lk = open(RUNNER_LOCK, 'w')
+    fcntl.flock(lk, fcntl.LOCK_EX)   # 手工跑和 systemd 撞上时排队
+    cleanup()
+    ents = os.listdir(RFD)
+    if len(ents) > FLOOD_N:
+        # 扩展服务写坏了或被攻破在刷：全部拒收（直接删，不留 done/、不写每个请求的结果，免得把盘刷满）
+        for n in ents:
+            rm_req(n)
+        runner_json(flood=True, floodAt=now_ms(), floodCount=len(ents))
+        log(f'requests/ 里有 {len(ents)} 个条目（上限 {FLOOD_N}）：全部拒收，runner.json 记 flood')
+        return
+    runner_json(flood=False)
+    valid = []
+    # 先把所有条目 lstat 一遍再删：硬链接的两个名字删掉一个以后另一个的链接数就变回 1 了
+    sts = {}
+    for n in sorted(ents):
+        try:
+            sts[n] = os.lstat(n, dir_fd=RFD)
+        except FileNotFoundError:
+            pass
+    for n, st in sts.items():
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:   # 符号链接、目录、FIFO、设备、硬链接数 > 1：不打开、不跟随，直接删
+            log(f'拒收：不是普通文件，删掉（目录挪进 done/）：{n[:80]}')
+            rm_req(n)
+        elif n.endswith('.tmp'):   # 扩展服务先写 .tmp 再改名；放久了的是写坏的
+            if st.st_mtime < time.time() - TMP_STALE_S:
+                rm_req(n)
+        elif n.endswith('.json') and ID_RE.fullmatch(n[:-5]):
+            valid.append(n)
+        else:
+            log(f'文件名不对（要 <请求号>.json）：{n[:80]}，拒收')
+            to_done(n)
+    for n in valid[:-BATCH_N]:
+        rid = n[:-5]
+        if not os.path.lexists(state_path(rid)):
+            t = now_ms()
+            put_state(rid, None, 'rejected', t, f'积压过多（一次只处理最新的 {BATCH_N} 个），已丢弃', None, t)
+        log(f'[{rid}] 积压过多，丢弃')
+        to_done(n)
+    for n in valid[-BATCH_N:]:
+        handle(n)
+
+
+if __name__ == '__main__':
+    main()

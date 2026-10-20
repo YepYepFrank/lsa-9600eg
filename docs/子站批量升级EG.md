@@ -1,4 +1,4 @@
-# 子站主机上批量升级 EG（0.17.2 起；0.18.1 起验发布签名）
+# 子站主机上批量升级 EG（0.17.2 起；0.18.1 起验发布签名；0.19.0 起有网页入口，见 §8）
 
 > **0.18.0 舱室 EG**：一个电气舱室一台 EG，`--only` / `--canary` 给**单元号**（`EG-AH01-A` 的单元号 `AH01-A`）；照旧一柜一台的单元号就是柜号（`AH03`），用法不变。表头「单元」即单元号。
 
@@ -165,3 +165,50 @@ LSA-9600SP-0.18.1-<日期>-r1-offline.run.sig      ← 0.18.1 起
   3. 再下一版起用新 key 签，删掉旧公钥那行。
   - 泄露时：旧 key 签的东西 EG 都会认，所以尽快出一版只含新公钥的发布件，用旧 key 签、逐台升上去（或现场手工 `--role eg` 装）。
 
+
+## 8. 网页入口（0.19.0 起）
+
+子站网页「系统 → 网关升级」做的事和上面的命令行完全一样：网页（扩展服务 lsa-ext，容器里、没有升级 key）只往请求目录写白名单请求，由子站主机上 root 的**执行器** `lsa-eg-upgrade-runner` 校验后调同一个 `upgrade-egs.sh`。批次、日志、`--list` / `--resume` 两边通用；同一时间只允许一个批次（`upgrade-egs.sh` 自己拿 `/run/lsa9600sp/eg-upgrade.lock`，命令行和网页谁后来谁报「已有批次在跑」）。
+
+**目录**（一键安装文件 `--role sp` 建，升级时重跑会把属主 / 权限改回约定）：
+
+| 路径 | 属主 / 权限 | 用途 |
+|---|---|---|
+| `/var/lib/lsa9600sp/eg-upgrade/packages/` | root:lsa-upgrade 2775 | 安装包目录：维护人员 scp 进来 |
+| `/var/lib/lsa9600sp/eg-upgrade/requests/` | root 0700 | 扩展服务写请求（挂进容器 rw）；里面不是普通文件的（链接、目录）执行器直接删 |
+| `/var/lib/lsa9600sp/eg-upgrade/done/`、`work/` | root 0700 | 处理完的请求（留 7 天）、安装文件的工作拷贝（升级时拷一份，做完删）；都不挂进容器 |
+| `/var/lib/lsa9600sp/eg-upgrade/state/` | root 0755 | 执行器写结果（`runner.json`、`packages.json`、`requests/<请求号>.json`，挂进容器 ro） |
+| `/var/log/lsa9600sp/eg-upgrade/<批次>/` | root 0755 | 批次目录（同命令行；`meta` 多了 `by` / `req` / `source` / `started_at` / `ended_at` / `pid`，每台多一个 `<单元号>.phase`；在跑时每 30 s 动一下 `.alive`） |
+
+**准备（每个子站一次）**：维护人员的账号加进 `lsa-upgrade` 组，重新登录后才生效：
+
+```bash
+sudo usermod -aG lsa-upgrade <维护账号>
+```
+
+**放安装包**：安装文件和它的签名 `.sig` 一起 scp 进安装包目录，再到网页上点「重新扫描」：
+
+```bash
+scp LSA-9600SP-<版本>-offline.run LSA-9600SP-<版本>-offline.run.sig <维护账号>@<子站>:/var/lib/lsa9600sp/eg-upgrade/packages/
+```
+
+- **网页只认签名验过（✓）的安装包**；没签名、验不过的灰掉，只能照 §2 用命令行升。
+- 目录只留最近 3 个包（每个约 3 GB），多了扫描时提示、不自动删；盘剩余不够再放 2 个时也提示。旧的自己删：`rm /var/lib/lsa9600sp/eg-upgrade/packages/<旧的>.run*`。
+- 文件名只许字母、数字、`.` `_` `-`。
+- 真升级时（命令行也一样）先把安装文件和 `.sig` 拷进 root 的 `work/`，算 sha256、验签、推给 EG 都用这份拷贝：`work/` 所在盘要能再放下一个安装包。
+
+**网页上的「开始」只照计划原样**：包、范围、`--force`、「连不上的跳过」都以生成计划时为准，开始时只能再选先升哪台、并发几台（1–4）；计划 10 分钟内有效、**只能用一次**，包在计划之后被换过（sha256 变了）或签名没了就拒绝，要重新扫描、重新生成计划。
+
+**网页上的「续查」只认签名包的批次**：命令行起的未签名批次只能命令行 `--resume`。
+
+**查问题**（子站主机上）：
+
+```bash
+journalctl -u lsa-eg-upgrade-runner -n 50          # 执行器：每个请求做了什么、为什么拒
+journalctl -u lsa-eg-upgrade-<批次>                  # 网页起的批次（续查是 lsa-eg-upgrade-<批次>-resume-…）
+sudo python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner  # 手工再跑一遍执行器（平时 lsa-eg-upgrade-runner.path 发现新请求自动跑）
+systemctl status lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.timer   # timer 每 5 min 兜底跑一次：清 flood、7 天清理
+```
+
+- 扩展服务写坏了或被攻破在刷请求：每次只处理最新的 20 个；请求目录里超过 100 个文件时全部丢掉，`state/runner.json` 记 `flood: true`，网页上会提示；刷过去以后定时器（每 5 min）跑一次就清掉。请求目录里不是普通文件的（链接、FIFO）直接删，目录整个挪进 `done/`。
+- 没用 0.19.0 起的安装文件 `--role sp` 装过 / 升过的老子站没有执行器：网页显示「本机没装升级执行器」和命令行用法。

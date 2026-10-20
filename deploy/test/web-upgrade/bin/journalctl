@@ -1,0 +1,4 @@
+#!/bin/bash
+# 假 journalctl -u <名>：假 systemd-run 的输出末尾
+u=''; while [ $# -gt 0 ]; do [ "$1" = -u ] && u="$2"; shift; done
+tail -n 8 "/fake/units/$u.log" 2>/dev/null
