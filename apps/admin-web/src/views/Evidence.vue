@@ -61,7 +61,7 @@ const STATUS: Record<string, [string, 'success' | 'info' | 'warning' | 'danger' 
   MISSING: ['缺证', 'danger'],
   DELETED: ['已清理', 'info'],
 }
-const REASON: Record<string, string> = { stream_down: '录像断流', gap: '部分缺口', no_data: '没有数据', camera_unreachable: '摄像机不通', disk_full: '数据盘满', expired: '晚于循环覆盖' }
+const REASON: Record<string, string> = { stream_down: '录像断流', gap: '部分缺口', no_data: '没有数据', camera_unreachable: '摄像机不通', no_camera: '没有配摄像机', disk_full: '数据盘满', expired: '晚于循环覆盖' }
 const size = (b: number | null) => (b === null ? '—' : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`)
 const secs = (a: number | null, b: number | null) => (a === null || b === null ? '—' : `${Math.round((b - a) / 1000)} s`)
 
