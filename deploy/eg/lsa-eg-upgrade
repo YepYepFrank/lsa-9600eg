@@ -76,6 +76,11 @@ maintenance() {
   true
 }
 # ---- 一键加柜：读 eg.yaml / join.json ----
+# 配置文件的指纹：eg.yaml 去掉 generatedAt 那一行再算（子站每次 up.sh 都重新生成、只有它变）；文件不在为 none
+cfg_sum() {
+  [ -f "$1" ] || { echo none; return 0; }
+  case "$1" in *eg.yaml) { grep -v '^generatedAt:' "$1" || true; } | sha256sum | cut -c1-64 ;; *) sha256sum < "$1" | cut -c1-64 ;; esac
+}
 yaml_sp() { sed -n 's#^  mqtt: *mqtts\{0,1\}://\([^:/]*\).*#\1#p' "$1" 2>/dev/null | head -1 || true; }
 yaml_cab() { awk '/^cabinet:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="code:"{gsub(/["'\'']/,"",$2);print $2;exit}' "$1" 2>/dev/null || true; }
 # 本 EG 的身份（0.18.0 舱室 EG）：eg.yaml 顶层 unit 段的 code；没有（schema 1，照旧一柜一台）= 柜号
@@ -274,10 +279,10 @@ case "$VERB" in
       conv_parse "$d/eg.yaml" "${cw[@]}" || adeny "conv.args：$CONV_ERR"
       printf '%s\n' "${CONV_ARGS[@]}" > "$d/conv.argv"
     fi
-    # 和现在的配置一样：不用换
+    # 和现在的配置一样：不用换。eg.yaml 不比 generatedAt 那一行（子站每次 up.sh 都重新生成、只有它变，0.7.1）
     same=1
     for x in eg.yaml sp-ca.pem; do
-      a="$( (sha256sum "$d/$x" 2>/dev/null || echo none) | cut -c1-64)"; b="$( (sha256sum "$EG/config/$x" 2>/dev/null || echo none) | cut -c1-64)"
+      a="$(cfg_sum "$d/$x")"; b="$(cfg_sum "$EG/config/$x")"
       [ "$a" = "$b" ] || same=0
     done
     if [ "$same" = 1 ]; then
