@@ -1,0 +1,5 @@
+# LSA-9600 发布公钥（0.18.1 起）：一键安装文件 LSA-9600SP-<版本>-offline.run 的分离签名 <run>.sig 用这里的 key 验
+#   （ssh-keygen -Y verify -f release-signers -I lsa9600-release -n lsa9600-release -s <run>.sig < <run>）。
+# 格式是 ssh-keygen 的 allowed_signers：一行一把 key；换 key 时新旧两行并存一个版本（旧 key 签的包装上新公钥，之后新 key 签的才认），
+#   可加 valid-before="YYYYMMDD" 让旧 key 到期作废。私钥只在打包机（不进仓库、不进包），见 docs/子站批量升级EG.md §6。
+lsa9600-release namespaces="lsa9600-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICNgsghlgn+3NKWbKumLGYHGxHoZEzM04ec4BRt9f37g lsa9600-release-2026

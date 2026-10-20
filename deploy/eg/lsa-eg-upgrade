@@ -8,11 +8,17 @@
 # 不管子站发什么，sshd 都只运行上面的 command=；子站发的命令行整句作为第 1 个参数传进来，这里自己解析，只认：
 #   hello                       入口版本、EG 版本、可用空间、当前任务、正在做的别的维护（预检用）
 #   put <sha256> <字节数>        从 stdin 收安装文件到 /var/lib/lsa-upg/incoming/<sha256>.run：先查空间，收完核对字节数与 sha256，不对就删
-#   start <sha256>              核对后开始升级（后台任务，SSH 断了照跑）：文件在、sha256 对、是 LSA 的一键安装文件（带 EG 发布件）、版本不比现在的低；
-#                               同时只跑一个
+#   put-sig <sha256> <字节数>    （0.18.1）从 stdin 收那个安装文件的分离签名（ssh-keygen -Y sign 出的 <run>.sig，≤ 16 KB）到 incoming/<sha256>.run.sig；
+#                               先 put 再 put-sig（put 会清掉 incoming 里的旧文件）
+#   start <sha256>              核对后开始升级（后台任务，SSH 断了照跑）：文件在、sha256 对、签名（见下）、是 LSA 的一键安装文件（带 EG 发布件）、
+#                               版本不比现在的低；同时只跑一个
+#     验签（0.18.1 起）：用本机发布件里的发布公钥 /opt/lsa-eg/release-signers（上一次安装带来的，不是这个新安装文件里的）
+#     ssh-keygen -Y verify。结果写进 state 的 sig=：ok（验过）/ unsigned（没有 .sig）/ nokey（有 .sig 但本机没有发布公钥）；
+#     bad（签名不对：不是发布方签的或文件被改过）一律拒绝、删掉收到的文件。
+#     过渡期（0.18.1）：没有 .sig 照装、记 unsigned；下一版起 SIG_REQUIRED=1（没签名 / 没公钥也拒）。现场要提前强制：.env 里 EG_UPG_SIG_REQUIRED=1
 #   status                      当前 / 最近一次任务的状态（key=value）
 #   log [行数]                  任务日志最后几行（缺省 50，最多 500）
-#   drop <sha256>               删掉收到的安装文件
+#   drop <sha256>               删掉收到的安装文件（连同签名）
 # 一键加柜（0.17.4，子站 join-egs.sh 用）：
 #   put-config <sha256> <字节数>  从 stdin 收配置包（tar.gz，≤ 1 MB）到 /var/lib/lsa-upg/config-in/<sha256>.tgz（600）：
 #                               核对 sha256；包里只许 eg.yaml、sp-ca.pem、conv.args 三个普通文件（没有目录 / 链接 / ..），否则删掉并拒绝
@@ -27,7 +33,8 @@
 set -euo pipefail
 umask 077
 # 4 = 0.18.0 舱室 EG（EG 0.7.0）：hello 报 unit=，apply-config 按单元、认 force
-ENTRY_VERSION=4
+# 5 = 0.18.1：put-sig、start 验签、hello 报 sig_keys / sig_required（子站 upgrade-egs.sh 看到 ≥ 5 才传 .sig）
+ENTRY_VERSION=5
 EG=/opt/lsa-eg
 ST=/var/lib/lsa-upg
 IN="$ST/incoming"
@@ -37,6 +44,14 @@ MAX_BYTES=$((8 * 1024 * 1024 * 1024))
 CFG_IN="$ST/config-in"
 CFG_NEW="$ST/config-new"
 MAX_CFG=$((1024 * 1024))
+# 发布签名（0.18.1）：公钥随 EG 发布件装在 $EG/release-signers；身份与命名空间和打包侧（scripts/sign-release.mjs）一致
+SIGNERS="$EG/release-signers"
+SIG_ID=lsa9600-release
+SIG_NS=lsa9600-release
+MAX_SIG=16384
+# 过渡期 0：没签名照装（记 unsigned）；下一版改 1
+SIG_REQUIRED=0
+grep -qx 'EG_UPG_SIG_REQUIRED=1' "$EG/.env" 2>/dev/null && SIG_REQUIRED=1
 
 say() { echo "$*"; }
 audit() { echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null || true; }
@@ -130,6 +145,21 @@ conv_parse() {
     esac
   done
 }
+# 发布公钥有几把（注释、空行不算）
+sig_keys() { awk '!/^[[:space:]]*(#|$)/ { n++ } END { print n + 0 }' "$SIGNERS" 2>/dev/null || echo 0; }
+# 验签：sig_check <安装文件> → SIG=ok / unsigned / nokey / bad，SIG_MSG=说明（ok 时是 key 指纹）
+sig_check() {
+  local f="$1" out
+  SIG=unsigned SIG_MSG='没有签名文件'
+  [ -f "$f.sig" ] || return 0
+  if [ "$(sig_keys)" = 0 ]; then SIG=nokey; SIG_MSG="本机没有发布公钥（$SIGNERS）"; return 0; fi
+  command -v ssh-keygen >/dev/null || { SIG=nokey; SIG_MSG='本机没有 ssh-keygen'; return 0; }
+  if out="$(ssh-keygen -Y verify -f "$SIGNERS" -I "$SIG_ID" -n "$SIG_NS" -s "$f.sig" < "$f" 2>&1)"; then
+    SIG=ok; SIG_MSG="$(grep -o 'SHA256:[A-Za-z0-9+/=]*' <<< "$out" | head -1 || true)"
+  else
+    SIG=bad; SIG_MSG="$(tr '\n' ' ' <<< "$out" | cut -c1-160 || true)"
+  fi
+}
 # 一键安装文件里 EG 发布件的版本（不执行它：只读负载里的 tar）
 run_eg_version() {
   local f="$1" skip
@@ -148,6 +178,8 @@ case "$VERB" in
     say "phase=$(state_get phase || true)"
     say "running=$(running && echo 1 || echo 0)"
     say "maint=$(maintenance | awk 'NR > 1 { printf "；" } { printf "%s", $0 }')"
+    say "sig_keys=$(sig_keys)"
+    say "sig_required=$SIG_REQUIRED"
     # 一键加柜：接入了没有、单元号（0.18.0；照旧一柜一台的 = 柜号）、柜号、接的子站（已接入看 eg.yaml，待接入看 join.json）
     if [ -f "$EG/config/eg.yaml" ]; then say 'joined=1'; say "unit=$(yaml_unit "$EG/config/eg.yaml")"; say "cabinet=$(yaml_cab "$EG/config/eg.yaml")"; say "sp=$(yaml_sp "$EG/config/eg.yaml")"
     else say 'joined=0'; say 'unit='; say 'cabinet='; say "sp=$(join_sp)"; fi
@@ -172,20 +204,41 @@ case "$VERB" in
     audit "收到安装文件 $A1（$A2 字节）"
     say "OK put $A1"
     ;;
+  put-sig)
+    is_sha "${A1:-}" && [ -n "${A2:-}" ] || deny 'put-sig <sha256> <字节数>'
+    [ "$A2" -gt 0 ] && [ "$A2" -le "$MAX_SIG" ] || deny "签名文件不能超过 $MAX_SIG 字节"
+    running && deny '有升级任务正在跑'
+    [ -f "$IN/$A1.run" ] || deny "没有收到 $A1 这个安装文件（先 put 再 put-sig）"
+    part="$IN/.sig.part"
+    head -c "$A2" > "$part"
+    got="$(stat -c %s "$part")"
+    [ "$got" = "$A2" ] || { rm -f "$part"; deny "签名只收到 $got 字节（应为 $A2）"; }
+    [ "$(head -1 "$part")" = '-----BEGIN SSH SIGNATURE-----' ] || { rm -f "$part"; deny '不是 ssh-keygen -Y sign 出的签名文件'; }
+    mv "$part" "$IN/$A1.run.sig"
+    audit "收到签名 $A1.run.sig（$A2 字节）"
+    say "OK put-sig $A1"
+    ;;
   start)
     is_sha "${A1:-}" && [ -z "${A2:-}" ] || deny 'start <sha256>'
     f="$IN/$A1.run"
     [ -f "$f" ] || deny "没有收到 $A1 这个安装文件（先 put）"
     running && deny '有升级任务正在跑'
     maintenance | grep -q '安装 / 升级在跑' && deny '这台 EG 上有人在跑安装 / 升级，等它完了再来'
-    [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$A1" ] || { rm -f "$f"; deny 'sha256 对不上（文件被改过？已删）'; }
+    [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$A1" ] || { rm -f "$f" "$f.sig"; deny 'sha256 对不上（文件被改过？已删）'; }
+    sig_check "$f"
+    case "$SIG" in
+      bad) rm -f "$f" "$f.sig"; deny "签名校验不过：安装文件不是发布方签的，或者安装文件 / 签名被改过（已删；$SIG_MSG）" ;;
+      unsigned) [ "$SIG_REQUIRED" = 1 ] && deny '安装文件没有签名：这台 EG 要求发布件签名（把 <run>.sig 和安装文件放一起再传）' ;;
+      nokey) [ "$SIG_REQUIRED" = 1 ] && deny "验不了签名：$SIG_MSG（这台 EG 要求验签）" ;;
+    esac
+    audit "验签 $A1：$SIG（$SIG_MSG）"
     to="$(run_eg_version "$f" || true)"
     [ -n "$to" ] || deny '不是 LSA-9600 的一键安装文件，或者里面没有 EG 发布件'
     from="$(cat "$EG/VERSION" 2>/dev/null || echo 0)"
     # 只升不降（同版本可以重装）；回退走 install.sh --rollback，不经这里
     [ "$(printf '%s\n%s\n' "${from%%-*}" "${to%%-*}" | sort -V | head -1)" = "${from%%-*}" ] || deny "安装文件里的 EG 是 $to，比现在的 $from 旧：不降级（回退用 install.sh --rollback）"
     job="$(date +%Y%m%d-%H%M%S)"
-    printf 'job=%s\nsha=%s\nfrom=%s\nto=%s\nphase=queued\nstarted=%s\nreason=\n' "$job" "$A1" "$from" "$to" "$(date +%s)" > "$ST/state.tmp"
+    printf 'job=%s\nsha=%s\nfrom=%s\nto=%s\nphase=queued\nstarted=%s\nreason=\nsig=%s\nsig_note=%s\n' "$job" "$A1" "$from" "$to" "$(date +%s)" "$SIG" "$SIG_MSG" > "$ST/state.tmp"
     mv "$ST/state.tmp" "$ST/state"
     : > "$JOBS/$job.log"
     # 脱离 SSH 会话：有 systemd 用 systemd-run（独立的 unit，SSH 断了不受影响），没有就 setsid nohup
@@ -194,7 +247,7 @@ case "$VERB" in
     else
       setsid nohup /usr/local/sbin/lsa-eg-upgrade-job "$job" > /dev/null 2>&1 < /dev/null &
     fi
-    audit "开始升级任务 $job：$from → $to（$A1）"
+    audit "开始升级任务 $job：$from → $to（$A1，签名 $SIG）"
     say "OK start $job $from $to"
     ;;
   status)
@@ -213,7 +266,7 @@ case "$VERB" in
   drop)
     is_sha "${A1:-}" && [ -z "${A2:-}" ] || deny 'drop <sha256>'
     running && [ "$(state_get sha)" = "$A1" ] && deny '这个文件的升级任务正在跑'
-    rm -f "$IN/$A1.run"
+    rm -f "$IN/$A1.run" "$IN/$A1.run.sig"
     audit "删掉安装文件 $A1"
     say "OK drop $A1"
     ;;
@@ -315,5 +368,5 @@ case "$VERB" in
     (cd "$EG" && bash install.sh --drop-sp-key < /dev/null 2>&1)
     audit '撤掉 provision 隧道账号 lsa-sp'
     ;;
-  *) deny "不认识的命令「$VERB」（只认 hello / put / start / status / log / drop / put-config / apply-config / conv / drop-tunnel）" ;;
+  *) deny "不认识的命令「$VERB」（只认 hello / put / put-sig / start / status / log / drop / put-config / apply-config / conv / drop-tunnel）" ;;
 esac

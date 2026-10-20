@@ -1,7 +1,8 @@
 #!/bin/bash
 # LSA-9600EG 升级任务（0.17.2）：由 lsa-eg-upgrade start 在后台起（systemd-run 或 setsid nohup），脱离 SSH 会话 ——
 # 子站断开、网络断了，这里照样做完；安装失败就自己回退，不会停在半路。不经 sudoers，子站调不到它。
-#   验签（下一版起）：verify 阶段预留了 verify_signature；现在发布件还没有签名，只记「未验签」（state 的 sig=unsigned），不拦。
+#   验签（0.18.1 起）：入口 lsa-eg-upgrade start 在起任务前就验了（签名不对直接拒绝、不起任务），结果写在 state 的 sig= / sig_note=；
+#   这里 verify 阶段只核对 sha256、把验签结果记进任务日志。
 #   阶段（/var/lib/lsa-upg/state 的 phase）：
 #     verify → install → check → done
 #     install 失败（安装文件非 0 退出 / 超时）→ rollback → rolled-back（回退也失败：rollback-failed）
@@ -108,20 +109,14 @@ fi
 F="$ST/incoming/$SHA.run"
 echo "== $(date '+%F %T') 升级任务 $JOB：$FROM → $TO（$SHA）"
 
-# 发布件签名校验（下一版做：出包时 ssh-keygen -Y sign，EG 用随发布件预置的发布公钥 ssh-keygen -Y verify）。
-# 接口先留好：签名文件将来放 $ST/incoming/<sha256>.run.sig（入口另加 putsig）；没有签名时返回 unsigned、不拦
-verify_signature() {
-  if [ -f "$F.sig" ]; then echo 'present-unchecked'; else echo 'unsigned'; fi
-}
-
 phase verify
 [ -f "$F" ] || fail failed '安装文件不见了'
 [ "$(sha256sum "$F" | cut -d' ' -f1)" = "$SHA" ] || fail failed 'sha256 对不上'
-sig="$(verify_signature)"
-sset sig "$sig"
+sig="$(sget sig)"
 case "$sig" in
-  unsigned) echo '未验签：这个安装文件没有签名（下一版起要求发布件签名，现在只核对 sha256）' ;;
-  present-unchecked) echo '有签名文件，但这一版还不校验（下一版起校验）' ;;
+  ok) echo "已验签：发布方签名（$(sget sig_note)）" ;;
+  nokey) echo "未验签：有签名文件，但$(sget sig_note)（下一版起这样会被拒绝）" ;;
+  *) sset sig unsigned; echo '未验签：这个安装文件没有签名（0.18.1 过渡期照装；下一版起要求发布件签名）' ;;
 esac
 
 phase install
@@ -132,7 +127,7 @@ LSA_TMP="$ST/tmp" timeout "$INSTALL_TIMEOUT" bash "$F" --role eg --yes < /dev/nu
 rc=$?
 sset install_rc "$rc"
 sset install_s "$(( $(date +%s) - t0 ))"
-rm -f "$F"
+rm -f "$F" "$F.sig"
 if [ "$rc" != 0 ]; then
   # 安装输出里最后一条像报错的（太短的是折行剩下的半截，不要）
   last="$(tail -n 40 "$LOGF" | grep -E '不对|错误|失败|✗|!!|没有' | awk 'length($0) > 12' | tail -1 | tr -d '\r' | cut -c1-200 || true)"

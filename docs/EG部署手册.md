@@ -357,10 +357,11 @@ sudo bash /opt/lsa-eg/test/test.sh down
 - **授权**（每台一次，用维护账号）：子站上 `sudo bash /opt/lsa9600sp/upgrade-egs.sh --keygen` 会打印公钥和要在每台 EG 上执行的命令：`sudo bash /opt/lsa-eg/install.sh --upgrade-key '<公钥>'`。
   - 会建一个专用账号 `lsa-upg`：锁口令；key 只认来自子站的连接（`from=`，地址缺省取 `eg.yaml` 的 `station.mqtt`，要改加 `--upgrade-from <地址>`）。
   - 不管子站发什么，都只进升级入口 `/usr/local/sbin/lsa-eg-upgrade`（`authorized_keys` 的 `command=`）。sudoers 只放行这一个入口。
-- **入口只认 6 个动作**，其余一律拒绝，并记进 `/var/log/lsa-upg.log`：
+- **入口只认这几个动作**，其余一律拒绝，并记进 `/var/log/lsa-upg.log`：
   - `hello`：版本、可用空间、正在做的别的维护（lsa-sp 隧道开着、有安装在跑）：子站据此跳过这台；
   - `put`：从 SSH 收安装文件，收之前查空间，收完核对字节数和 sha256；
-  - `start`：开始升级。只认 LSA 的一键安装文件、里面要有 EG 发布件，版本不低于现装版本，同时只跑一个，有人在手工跑安装时拒绝；
+  - `put-sig`（0.18.1，入口版本 5）：收这个安装文件的分离签名 `<run>.sig`（≤ 16 KB，要是 `ssh-keygen -Y sign` 出的格式）；
+  - `start`：开始升级。先验签（见下），再看是不是 LSA 的一键安装文件、里面要有 EG 发布件，版本不低于现装版本，同时只跑一个，有人在手工跑安装时拒绝；
   - `status` / `log`：查进度和日志；
   - `drop`：删掉拷过来的文件。
   - 沙箱里试过都被拒的：执行任意命令、命令串接 / 替换、空登录、sudo 别的程序、scp / sftp、端口转发、换一台机器用同一把 key、sha256 不对、不是安装文件。
@@ -368,8 +369,15 @@ sudo bash /opt/lsa-eg/test/test.sh down
   - 安装文件失败：自动 `install.sh --rollback`；本地 TB 版本变了时加 `--restore-tb`。
   - 装完但自查不过（版本、7 个容器 60 s 不重启、本地 TB 镜像、连上子站）：**不自动回退**（可能是子站或网络的问题），由子站停下来、给出回退命令。
 - **撤销**：`sudo bash install.sh --drop-upgrade-key`（账号、key、sudoers 条目、入口一并删掉）。`--status` 和「安全提醒」里能看到授权在不在、最近一次任务。
-- **注意**：持子站这把 key 的人能让 EG 装他给的任意安装文件，等于 root —— 入口只防得住「拿 key 乱执行命令」，防不住「恶意安装包」。key 只放在子站主机 root 下，不用时撤销。
-- **验签（下一版）**：任务的 verify 阶段已经留了验签步骤。现在发布件没有签名，日志写「未验签」（state 里 `sig=unsigned`），不拦。下一版起出包时签名，EG 用预置的发布公钥校验。
+- **验签（0.18.1 起）**：一键安装文件出包时签名，旁边多一个 `<run>.sig`（ed25519，`ssh-keygen -Y sign`）；EG 发布件带发布公钥 `/opt/lsa-eg/release-signers`。
+  - `start` 用**本机已经装着的**发布公钥验（不是新安装文件里带的那份），验过才起任务；`/var/lib/lsa-upg/state` 的 `sig=` 记结果：
+    `ok`（验过，`sig_note=` 是 key 指纹）/ `unsigned`（没有 .sig）/ `nokey`（有 .sig，但本机没有发布公钥）。
+  - 签名不对（不是发布方签的，或安装文件 / 签名被改过）：**一律拒绝**，收到的文件当场删掉，子站汇总写「EG 没开始升级：签名校验不过 …」。
+  - **过渡期（0.18.1）**：没有 .sig 照装，记「未验签」；**下一版起**入口改成 `SIG_REQUIRED=1`，没签名 / 没公钥都拒。现场想提前强制：`/opt/lsa-eg/.env` 加一行 `EG_UPG_SIG_REQUIRED=1`（`hello` 会报 `sig_required=1`，子站 `--plan` 遇到没签名的直接 !!）。
+  - 从 0.18.1 之前的版本**升到 0.18.1 的那一次**，EG 上跑的还是老入口（版本 4），收不了 .sig：只有子站验过（子站汇总会写明）。升上去以后的每次升级 EG 都验。
+  - `install.sh --status` 的「子站批量升级」下面多一行「升级验签」：发布公钥几把、指纹、最近一次任务的签名结果。
+  - 手工核对一个安装文件：`ssh-keygen -Y verify -f /opt/lsa-eg/release-signers -I lsa9600-release -n lsa9600-release -s <run>.sig < <run>`（打印 `Good "lsa9600-release" signature …` 就对）。
+- **注意**：持子站那把升级 key 的人能让 EG 装安装文件、等于 root。有了签名以后，他只能让 EG 装**发布方签过**、版本不低于现装的安装文件；过渡期里没签名的安装文件照样能装（汇总会写「未验签」）。key 只放在子站主机 root 下，不用时撤销。
 - 0.17.2 之前的 EG 没有 `--upgrade-key`：先手工升到 0.17.2（§6），以后才能批量升。
 
 ## 6d. 安全
@@ -378,7 +386,7 @@ sudo bash /opt/lsa-eg/test/test.sh down
 |---|---|
 | 本地维护账号 maint | 初始口令随机，在 `config/initial-password.txt`；登录后到「系统」改口令，再删这个文件。文件还在时管理页每页顶上有提醒条，install.sh 的「安全提醒」也会列 |
 | 隧道账号 lsa-sp | 只在部署 / 改设备清单时需要；用完 `install.sh --drop-sp-key` |
-| 批量升级账号 lsa-upg（0.17.2） | `install.sh --upgrade-key` 授权，只认子站、只能进升级入口（§6c）；持子站那把 key 等于能装任意安装文件，不用时 `--drop-upgrade-key` |
+| 批量升级账号 lsa-upg（0.17.2） | `install.sh --upgrade-key` 授权，只认子站、只能进升级入口（§6c）；0.18.1 起安装文件要验发布签名（过渡期没签名照装、记「未验签」，下一版起强制），不用时 `--drop-upgrade-key` |
 | 一键加柜（0.17.4） | `--join-key` 一次给两把 key，都只认子站地址；隧道接入完由子站撤掉，升级授权留着（§4a）。能推配置的人也能改 EG 的配置，所以入口要求子站地址和 join.json 一致、已接入的单元不能改（拆柜、`force` 例外，见 §4a） |
 | SSH | 维护账号改用密钥登录后，建议关掉口令登录（`/etc/ssh/sshd_config.d/` 下写 `PasswordAuthentication no`，`systemctl reload ssh`）。install.sh 只提醒、不替你改（免得把自己锁在外面）；防火墙可只放子站主机与维护笔记本访问 22 |
 | LAN1 防火墙 | `--lan1` 时自动加（见 §1）：摄像机网上 22 / 80 / 8554 都连不上。实测（无 AVX 样机）：从摄像机网全部超时；EG 主动连摄像机网、经 LAN1 拉 RTSP（TCP）照常；重启后 28 s 内规则在；回退到老版本清掉、再升回来又加上 |
