@@ -43,7 +43,10 @@ ok() { echo "  ✓ $*"; }
 bad() { echo "  ✗ $*"; fail=1; }
 os() { docker exec "$D" "$@"; }
 cleanup() {
-  [ -d "$BAK/orig" ] && { rm -rf "$OUT"; cp -a "$BAK/orig" "$OUT"; echo "后端库 out/eg/$CAB 已原样还原"; }
+  if [ -d "$BAK/orig" ]; then rm -rf "$OUT"; cp -a "$BAK/orig" "$OUT"; echo "后端库 out/eg/$CAB 已原样还原"
+  # 跑之前没有这个目录：provision:eg 新建的（eg.yaml、改过的 sysadmin 口令 tb-sysadmin.json）一并删掉 ——
+  # 不删的话下一次 fresh-install 会拿这台已删沙箱的口令去登新沙箱的本地 TB，401（0.18.1 r1 kiosk 版连续三次就是这么挂的）
+  elif [ "${PROV_STARTED:-0}" = 1 ]; then rm -rf "$OUT"; echo "后端库 out/eg/$CAB 是这次新建的，已删"; fi
   rm -rf "$BAK"
   if [ "$KEEP" = 1 ]; then echo "沙箱留着：docker exec -it $D bash（删：docker rm -f -v $D）"
   else docker rm -f -v "$D" >/dev/null 2>&1 && echo "沙箱已删（docker rm -f -v $D）"; fi
@@ -99,6 +102,7 @@ os docker run -d --name egfresh-fwd --network host "lsa-eg-app:$VER" node -e \
   'const n=require("net");n.createServer(c=>{const u=n.connect(18080,"127.0.0.1");c.pipe(u).pipe(c);u.on("error",()=>c.destroy());c.on("error",()=>u.destroy())}).listen(38080,"0.0.0.0")' >/dev/null
 sleep 2
 [ -d "$OUT" ] && cp -a "$OUT" "$BAK/orig"
+PROV_STARTED=1
 ( cd "$BE" && pnpm -s provision:eg -- "$PROV_KEY" "$CAB" --url http://127.0.0.1:38080 --sp 192.0.2.1 --hook http://host.docker.internal/hooks/alarm --thresholds model --no-cleanup ) > "$BAK/prov.log" 2>&1; rc=$?
 tail -6 "$BAK/prov.log" | sed 's/^/    /'
 [ "$rc" = 0 ] && ok 'provision:eg rc 0' || { bad "provision:eg rc $rc"; exit 1; }

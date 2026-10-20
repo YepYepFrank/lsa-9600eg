@@ -53,7 +53,11 @@ async function main() {
     }, 150_000, 3000)
     return { status: r.status, cfg: ok }
   }
-  const localTs = async () => (await tb.latest(sam, [KEY]))[KEY]?.ts ?? 0
+  // TB 对没有的 key 也回 { ts: 现在, value: null }：value 有值才算本地有数（不然没接转换程序时这项也会过）
+  const localTs = async () => {
+    const p = (await tb.latest(sam, [KEY]))[KEY]
+    return p && p.value !== null && p.value !== undefined ? p.ts : 0
+  }
   const spPoint = async () => ((await X<{ dev: string; key: string; changedAt?: number }[]>('GET', `/ext/rt/points/${CAB}`)).body ?? []).find(p => p.dev === sam && p.key === KEY)
   const trend = async (from: number) => {
     const b = (await X<{ step?: number; series: { data: [number, unknown][]; cap?: string; error?: string }[] }>('POST', '/ext/trend', { ids: [`${CAB}/${sam}/${KEY}`], from, to: Date.now() })).body
