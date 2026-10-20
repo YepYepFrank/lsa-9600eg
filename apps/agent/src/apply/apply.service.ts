@@ -73,6 +73,9 @@ export interface Applied {
   meters?: Record<string, Partial<Ratio>> | null
   /** 0.17：传感器预热参数（extras 里的 gasWarmupS / gasGapS / gasBootWarmupOffCabs；都没带为 null = 缺省） */
   gas?: GasParams | null
+  /** 0.7.1：这台 EG 不认识、跳过了的规则的开关（本柜生效后的 { id, on }）。EG 升级后开机重算时按它，不违背子站的开关；
+   *  0.7.0 及以前没有这个字段（被跳过的规则开关没记，见 regenRules） */
+  ignoredRules?: { id: string; on: boolean }[]
 }
 
 /** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别；alias = 改名前的类型（@lsa/model 的模板还没跟上时照样认） */
@@ -281,7 +284,7 @@ export class ApplyService {
       return { version, status: 'FAILED', error, errorCode, ...rid }
     }
     const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}`, errorCode: 'LOCAL_NOT_READY', ...rid })
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; ignoredRules: { id: string; on: boolean }[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null }
     try {
       input = this.parse(body)
     } catch (e) {
@@ -325,7 +328,7 @@ export class ApplyService {
       return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`, 'INTERNAL')
     }
 
-    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas }
+    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas, ignoredRules: input.ignoredRules }
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
     this.caps.set(input.caps, input.devComm, input.gas)
     this.meters.set(input.meters)
@@ -390,14 +393,18 @@ export class ApplyService {
 
   /** 开机按已生效的配置重算一遍告警规则（0.7.1）：EG 升级后 @lsa/model 生成的规则可能变了（如 0.7.1 起 SAM 有 EG-smoke 烟雾两级），
    *  而子站的配置版本没变、不会重发 —— 不重算的话新规则要等子站下一次改阈值才有。重算结果与本地 TB 现有的不同就写进去。
-   *  老 EG 存的规则开关里没有它当时不认识的规则（列进了 ignored），这些按「开」算（子站缺省也是开），子站下次下发再以子站为准。
+   *  规则开关一律以已生效配置里子站给的为准（regenRules）：当时被跳过的规则 0.7.1 起也记了开关；0.7.0 及以前存的没记，
+   *  这些规则保持本地 TB 现状（现在有就算开、没有就算停）—— 不会把子站关掉的告警打开，子站下次下发再以子站为准。
    *  有排着的配置时不动（它应用时会整份重写）；阈值表缺项只记警告；本地 TB 暂时写不进抛出，清扫下一轮再来 */
   private async regenerate(profiles: TbProfile[]): Promise<TbProfile[]> {
     const a = this.applied
     if (!a || this.pending) return profiles
     let plan: { before: TbProfile; after: TbProfile }[]
     try {
-      plan = planProfiles(profiles, a)
+      const present = new Set(profiles.flatMap(x => (x.profileData.alarms ?? []).map(y => y.alarmType)))
+      const { rules, unknown } = regenRules(a, present)
+      if (unknown.length) this.log.log(`开机重算：已生效配置 ${a.version} 是老 EG 存的，没记它当时跳过的规则的开关 —— ${unknown.map(r => `${r.id} 按本地现状${r.on ? '开' : '停'}`).join('、')}，子站下次下发再以子站为准`)
+      plan = planProfiles(profiles, { ...a, rules })
     } catch (e) {
       if (!(e instanceof Invalid)) throw e
       this.log.warn(`开机按已生效配置 ${a.version} 重算告警规则失败：${e.message}（等子站下次下发）`)
@@ -465,6 +472,7 @@ export class ApplyService {
     if (!Array.isArray(rawRules)) throw new Invalid('rules 要是数组')
     const rules: { id: string; on: boolean }[] = []
     const ignored: string[] = []
+    const ignoredRules: { id: string; on: boolean }[] = []
     // offCabs 按哪个键看：caps 里有本单元号的键就只看单元号，没有才看柜号（见 offCabsKey）
     const offKey = offCabsKey(b, this.cfg.unit.code, this.cfg.cabinet.code)
     for (const r of rawRules) {
@@ -477,6 +485,8 @@ export class ApplyService {
       // 不认识的（子站比这台 EG 新）：跳过，回执里列出来，不让整份配置失败
       if (!RULE_ALARM[r['id']]) {
         ignored.push(r['id'])
+        // 0.7.1：开关也记下（存进 applied-config.json），以后 EG 升级认得它了，开机重算按子站给的开关
+        ignoredRules.push({ id: r['id'], on: r['on'] && !offCabs.includes(offKey) })
         continue
       }
       // 存与算哈希的都是本柜生效后的 { id, on }：别的柜进出 offCabs 对本柜不算新内容；不带 offCabs 与老哈希一致
@@ -534,18 +544,37 @@ export class ApplyService {
     } catch (e) {
       throw new Invalid((e as Error).message)
     }
-    return { version, thresholds, rules, extras, ignored, caps, devComm, meters, gas }
+    return { version, thresholds, rules, extras, ignored, ignoredRules, caps, devComm, meters, gas }
   }
 }
 
 /** 配置内容哈希（判重复下发）。老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，
  *  升级后同一份配置不会被当成新内容；meters（I3）、gas（0.17 预热参数）也是带了才计进去 */
-export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown }): string {
+export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown; ignoredRules?: { id: string; on: boolean }[] }): string {
   const parts: unknown[] = [i.thresholds, i.rules, i.extras]
   if (i.caps || i.devComm) parts.push(i.caps, i.devComm)
   if (i.meters) parts.push({ meters: i.meters })
   if (i.gas) parts.push({ gas: i.gas })
+  // 0.7.1：被跳过的规则的开关也算内容（子站只改了它也要重新记下）；没有被跳过的与老哈希一致
+  if (i.ignoredRules?.length) parts.push({ ignoredRules: i.ignoredRules })
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
+}
+
+/** 开机重算用的规则开关（0.7.1，协调 10-20）：以已生效配置里子站给的为准 ——
+ *   1. rules（当时认得的）与 ignoredRules（当时跳过的，0.7.1 起才记）里有的，照它的 on；
+ *   2. 都没有的：已生效配置是 0.7.1 起存的（有 ignoredRules 字段）= 子站根本没发这条，按缺省开；
+ *      是 0.7.0 及以前存的（没有这个字段）= 可能被跳过了、开关没记，不知道 —— 保持本地 TB 现状（presentTypes 里有这条的告警类型算开，没有算停），
+ *      免得把子站关掉的告警（如 EG-pm 关、迁成 EG-smoke 关）重新打开。unknown 列出这一类，给日志用 */
+export function regenRules(a: Pick<Applied, 'rules' | 'ignoredRules'>, presentTypes: ReadonlySet<string>): { rules: { id: string; on: boolean }[]; unknown: { id: string; on: boolean }[] } {
+  const given = [...a.rules, ...(a.ignoredRules ?? [])]
+  const ids = new Set(given.map(r => r.id))
+  const missing = Object.keys(RULE_ALARM).filter(id => !ids.has(id))
+  if (a.ignoredRules) return { rules: given, unknown: [] }
+  const unknown = missing.map(id => {
+    const m = RULE_ALARM[id]!
+    return { id, on: [m.type, ...(m.alias ?? [])].some(t => presentTypes.has(t)) }
+  })
+  return { rules: [...given, ...unknown], unknown }
 }
 
 /** 按阈值表与规则开关算本地 TB 各设备配置的告警规则，只列出与现有不同的；阈值表缺项抛 Invalid（BAD_THRESHOLD） */
