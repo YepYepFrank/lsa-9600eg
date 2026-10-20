@@ -81,7 +81,7 @@ done
 case "$SOURCE" in web | cli) ;; *) echo "--source 只能 web 或 cli：$SOURCE" >&2; exit 2 ;; esac
 [ -z "$EXPECT_SHA" ] || [[ "$EXPECT_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo '--expect-sha 要 64 位小写 hex' >&2; exit 2; }
 BY="${BY:-${SUDO_USER:-root}}"; [[ "$BY" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || BY=root
-UNIT_RE='^[A-Za-z0-9-]{1,24}$'   # 单元号（来自 eg-list，也就是容器）：不合格的不碰文件系统
+UNIT_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,23}$'   # 单元号（来自 eg-list，也就是容器）：不合格的（含 - 开头、. / ..）不碰文件系统
 WORK="${LSA_EGUP_WORK:-/var/lib/lsa9600sp/eg-upgrade/work}"   # 安装文件的 root 0700 工作拷贝（sha、验签、推给 EG 都用这一份）
 ALIVE_S="${LSA_EGUP_ALIVE_S:-30}"   # 批次在跑时每这么多秒 touch 一次 <批次>/.alive（扩展服务 ≤ 90 s 判在跑）
 WORKD='' META_ON='' HB=''
@@ -290,6 +290,12 @@ if [ "$MODE" = resume ]; then
     [ "$(sha256sum "$WORKD/pkg.run" | cut -d' ' -f1)" = "$SHA" ] || { echo "!! $RUN 和这一批开始时的不是同一个（sha256 变了）—— 不续" >&2; exit 1; }
     RUN="$WORKD/pkg.run"
   fi
+  # 网页续查（v0.4）：安装包现在也要在、要验得过签名
+  if [ "$SOURCE" = web ]; then
+    [ -f "$RUN" ] || { echo "!! 安装文件不在了：网页不能续，只能命令行续" >&2; exit 1; }
+    local_sig "$RUN"
+    [ "$SIGST" = ok ] || { echo "!! 安装文件现在验签不过（$SIGST：$SIGMSG）：网页不能续" >&2; exit 1; }
+  fi
   start_heartbeat
 else
   [ -f "$RUN" ] || { echo "没有安装文件：$RUN" >&2; exit 1; }
@@ -374,7 +380,7 @@ row() {
 # eg-list 给了不合格的单元号（--all 时）：!! 行，不碰文件系统、不连
 if [ "$MODE" != resume ] && [ "$SEL" = all ]; then
   for c in "${BADU[@]}"; do
-    printf '%-8s %-8s %-36s %-6s %-10s %s\n' "$c" '?' "- → $TO" '!!' - '单元号不合格（只许字母、数字、-，≤ 24 个）：子站清单有问题'
+    printf '%-8s %-8s %-36s %-6s %-10s %s\n' "$c" '?' "- → $TO" '!!' - '单元号不合格（只许字母、数字、-，不能以 - 开头，≤ 24 个）：子站清单有问题'
     JROWS+=("${c//$'\t'/ }"$'\t'"?"$'\t'"-"$'\t'"!!"$'\t'"-"$'\t'"单元号不合格（只许字母、数字、-，≤ 24 个）")
     BAD=1
   done

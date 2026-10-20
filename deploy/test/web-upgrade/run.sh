@@ -134,14 +134,19 @@ chk '--expect-sha 不符：整批不开始' grep -q '计划之后被换过' /tmp
 chk '上面几次都没留下批次目录' [ -z "$(ls -A "$LOGROOT" 2>/dev/null)" ]
 chk '也没留下工作拷贝' [ -z "$(ls -A "$E/work" 2>/dev/null)" ]
 
-say "2b. 单元号来自 eg-list（容器）：带 ../ 的不碰文件系统"
-printf '../../tmp/pwn\tEG-x\teg1\t%s\t4.2.2.6\tcfg1\tok\t5\t-\tonline\ttrue\ttrue\n' "$OLD" > /fake/extra.tsv
+say "2b. 单元号来自 eg-list（容器）：带 ../、- 开头、.. 的不碰文件系统"
+for u in '../../tmp/pwn' '-xpwn' '..'; do printf '%s\tEG-x\teg1\t%s\t4.2.2.6\tcfg1\tok\t5\t-\tonline\ttrue\ttrue\n' "$u" "$OLD"; done > /fake/extra.tsv
 out="$(bash "$UP" --run /w/a.run --plan --json --all --skip-offline 2>/dev/null)"; rc=$?
-chk "--plan --json：那一行 action bad（$(J '[r["unit"]+"="+r["action"] for r in o["rows"] if "pwn" in r["unit"]]')）、rc $rc、ok false" [ "$(J '[r["action"] for r in o["rows"] if "pwn" in r["unit"]][0]+" "+str(o["ok"])')/$rc" = 'bad False/1' ]
+chk "--plan --json：这三行都是 bad（$(J '[r["unit"]+"="+r["action"] for r in o["rows"] if "pwn" in r["unit"] or r["unit"]==".."]')）、rc $rc、ok false" \
+  [ "$(J '" ".join(r["action"] for r in o["rows"] if "pwn" in r["unit"] or r["unit"]=="..")+" "+str(o["ok"])')/$rc" = 'bad bad bad False/1' ]
 bash "$UP" --run /w/a.run --all --skip-offline > /tmp/o 2>&1; rc=$?
 chk "真升级：预检 !!、整批不开始（rc $rc）" grep -q '整批不开始' /tmp/o
 bash "$UP" --run /w/a.run --only '../../tmp/pwn' > /tmp/o 2>&1; rc=$?
 chk "--only ../../tmp/pwn：拒（rc $rc）" [ "$rc" = 2 ]
+bash "$UP" --run /w/a.run --only '-xpwn' > /tmp/o 2>&1; rc=$?
+chk "--only -xpwn：拒（rc $rc）" [ "$rc" = 2 ]
+bash "$UP" --run /w/a.run --only AH01-A --canary '-xpwn' > /tmp/o 2>&1; rc=$?
+chk "--canary -xpwn：拒（rc $rc）" [ "$rc" != 0 ]
 { [ -z "$(ls /tmp | grep pwn)" ] && [ -z "$(ls -A "$LOGROOT")" ]; } && ok '没有在批次目录外写任何东西（/tmp/pwn.*）、没留批次' || bad "写到外面去了：$(ls /tmp | grep pwn) / $(ls "$LOGROOT")"
 rm -f /fake/extra.tsv
 
@@ -229,22 +234,29 @@ i13=$(req stop '{"batch":"../../etc"}')
 i14=$(req scan '{}' "$(printf 'a\\nb')")
 i16=$(req scan '{}' 'adm$(id)')
 i17=$(req scan '{}' 'a b')
+i18=$(req plan '{"run":"a.run","sel":["-xpwn"],"force":false,"skipOffline":false}')
+i19=$(req start '{"plan":"20261020-000000-aaaaaa","sha":"'"$(printf 'a%.0s' {1..64})"'","canary":"-x","parallel":1}')
 # 容器能做的：requests/ 里放指向主机文件的链接、目录、管道，把（以前的）.done 换成指向主机目录的链接
 mkdir -p /tmp/victim2 && echo keep > /tmp/victim2/old && touch -d '-30 days' /tmp/victim2/old
 i15="$(nextid)"; ln -s /etc/shadow "$R/$i15.json"
-ln -s /tmp/victim2 "$R/.done"; ln -s /tmp/victim2 "$R/done"
-dj="$(nextid).json"; mkdir -p "$R/$dj/sub" && echo x > "$R/$dj/sub/f"
+ln -s /tmp/victim2 "$R/.done"; ln -s /tmp/victim2 "$R/done"; ln -s /tmp/victim2/old "$R/$(nextid).json"
+dj="$(nextid).json"; mkdir "$R/$dj"                                       # 空目录：rmdir
+dk="$(nextid).json"; mkdir -p "$R/$dk/sub" && echo x > "$R/$dk/sub/f"    # 不空的目录：不递归删，留着
 mkfifo "$R/$(nextid).json"
+h1="$(nextid)"; h2="$(nextid)"; printf '{"id":"%s","type":"scan","at":1,"user":"admin","params":{}}' "$h1" > "$R/$h1.json"; ln "$R/$h1.json" "$R/$h2.json"   # 硬链接
 echo '{}' > "$R/hello.json"
 cp /etc/shadow /tmp/shadow.before
 runner
 for x in "$i1 不许带路径" "$i2 不许带路径" "$i3 不认识的请求类型" "$i4 不认识的字段：cmd" "$i5 不认识的字段：x" "$i6 parallel 要是 1–4" "$i7 parallel 要是 1–4" \
-         "$i8 单元号格式不对" "$i9 字段重复" "$i10 id 和文件名不一致" "$i11 太大" "$i12 不是合法 JSON" "$i13 batch 要是批次号" "$i14 user 只许" "$i16 user 只许" "$i17 user 只许"; do
+         "$i8 单元号格式不对" "$i9 字段重复" "$i10 id 和文件名不一致" "$i11 太大" "$i12 不是合法 JSON" "$i13 batch 要是批次号" "$i14 user 只许" "$i16 user 只许" "$i17 user 只许"          "$i18 单元号格式不对" "$i19 canary 要是单元号"; do
   read -r id want <<< "$x"
   rejected "$id" "$want" && ok "拒收：$want（$(reason "$id" | cut -c1-60)）" || { bad "没按预期拒（要「$want」）"; show "$id"; }
 done
 chk '/etc/shadow 没被动过' cmp -s /etc/shadow /tmp/shadow.before
-chk "requests/ 里的链接 / 目录 / 管道都删了，requests/ 空了（剩：$(ls -A "$R" | tr '\n' ' ')）" [ -z "$(ls -A "$R")" ]
+chk "requests/ 里的链接 / 空目录 / FIFO / 硬链接都删了，只剩不空的目录（剩：$(ls -A "$R" | tr '\n' ' ')）" [ "$(ls -A "$R")" = "$dk" ]
+chk '不空的目录没递归删（里面的文件还在）' [ -f "$R/$dk/sub/f" ]
+{ [ ! -e "$SR/$h1.json" ] && [ ! -e "$SR/$h2.json" ]; } && ok '硬链接的请求（两个名字）不处理、不写结果' || bad '硬链接的请求被处理了'
+rm -rf "${R:?}/$dk"
 chk '链接指向的主机目录没被动（/tmp/victim2/old 还在、没多东西）' [ "$(ls -A /tmp/victim2)" = old ]
 chk '指向 /etc/shadow 的链接请求：删掉、不写结果' [ ! -e "$SR/$i15.json" ]
 { [ -f "$DN/$i1.json" ] && [ -f "$DN/hello.json" ]; } && ok "处理完的请求在 $DN（不在挂载目录里）" || bad "done/ 里没有处理完的请求"
@@ -351,6 +363,20 @@ for _ in $(seq 30); do kill -0 "$(cat "/fake/units/$U.pid")" 2>/dev/null || brea
 chk "meta resumed_req / resumed_by，原来的 req 不变" [ "$(mB resumed_req) $(mB resumed_by) $(mB req)" = "$r1 admin $g1" ]
 { [ "$(cat /fake/eg/eg1/ver)" = "$OLD" ] && grep -q '只续查已经开始的' "/fake/units/$U.log"; } && ok "停过的批次续查不开新的（eg1 还是 $OLD）" || { bad '续查开了新的？'; tail -5 "/fake/units/$U.log"; }
 chk "续查做完补了 ended_at" [ -n "$(mB ended_at)" ]
+# v0.4：网页续查还要安装包现在的 sha / 签名对
+cp "$P/a.run" /tmp/a.keep2; cp "$P/a.run.sig" /tmp/a.sig.keep2
+mkrun "$P/a.run" "$NEW" 5000 && sign "$P/a.run"
+r3=$(req resume "{\"batch\":\"$BATCH\"}"); runner
+rejected "$r3" 'sha256 变了' && ok '包在批次之后被换（换成另一个签过名的）：网页续查拒收' || { bad '换了包还能续'; show "$r3"; }
+cp /tmp/a.keep2 "$P/a.run"; rm -f "$P/a.run.sig"
+r4=$(req resume "{\"batch\":\"$BATCH\"}"); runner
+rejected "$r4" '现在验签不过' && ok '.sig 没了：网页续查拒收' || { bad '.sig 没了还能续'; show "$r4"; }
+bash "$UP" --resume "$BATCH" --source web > /tmp/o 2>&1
+chk '脚本自己也拒（--resume --source web，包验签不过）' grep -q '现在验签不过' /tmp/o
+mv "$P/a.run" /tmp/a.away
+r5=$(req resume "{\"batch\":\"$BATCH\"}"); runner
+rejected "$r5" '已不在安装包目录' && ok '包不在了：网页续查拒收' || { bad '包不在还能续'; show "$r5"; }
+mv /tmp/a.away "$P/a.run"; cp /tmp/a.sig.keep2 "$P/a.run.sig"
 
 say "9b. 网页续查未签名的批次：拒"
 reset_egs

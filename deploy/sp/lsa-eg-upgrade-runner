@@ -20,7 +20,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -54,7 +53,7 @@ START_WAIT_S = int(os.environ.get('LSA_EGUP_START_WAIT', '180'))  # start / resu
 GIB = 1024 ** 3
 
 ID_RE = re.compile(r'[0-9]{8}-[0-9]{6}-[a-z0-9]{6}', re.A)
-UNIT_RE = re.compile(r'[A-Za-z0-9-]{1,24}', re.A)
+UNIT_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,23}', re.A)   # §9.2 的正则，再加 v0.4：不能以 - 开头（. / .. 本来就不合）
 RUN_RE = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}\.run', re.A)
 BATCH_RE = re.compile(r'[0-9]{8}-[0-9]{6}', re.A)
 SHA_RE = re.compile(r'[0-9a-f]{64}', re.A)
@@ -129,8 +128,8 @@ def read_request(name):
         raise Reject('请求文件是符号链接，拒收' if e.errno == errno.ELOOP else f'请求文件打不开：{e.strerror}')
     with os.fdopen(fd, 'rb') as f:
         st = os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode):
-            raise Reject('请求不是普通文件，拒收')
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            raise Reject('请求不是普通文件（或有别的硬链接），拒收')
         if st.st_size > MAX_BYTES:
             raise Reject(f'请求文件太大（{st.st_size} 字节，上限 16 KB）')
         data = f.read(MAX_BYTES + 1)
@@ -640,6 +639,22 @@ def do_resume(rid, p, user):
     m = need_batch(b)
     if m.get('sig') != 'ok':
         raise Reject(f'这一批不是签名包，只能命令行续（sudo bash /opt/lsa9600sp/upgrade-egs.sh --resume {b}）')
+    # v0.4：安装包现在的 sha / 签名也要对（还没开始的那几台要用它）
+    run = m.get('run', '')
+    name = os.path.basename(run)
+    if os.path.dirname(run) != PKG_DIR or not _str_re(name, RUN_RE):
+        raise Reject(f'这一批的安装文件不在安装包目录（{run[:120]}），只能命令行续')
+    cache = load_cache()
+    try:
+        info = pkg_info(name, cache, want_version=False)
+    finally:
+        save_cache(cache)
+    if info is None:
+        raise Reject(f'这一批的安装文件 {name} 已不在安装包目录，只能命令行续')
+    if info['sha256'] != m.get('sha'):
+        raise Reject(f'{name} 和这一批开始时的不是同一个（sha256 变了），网页不能续')
+    if info['sig'] != 'ok':
+        raise Reject(f'{name} 现在验签不过（{info["sig"]}：{info["sigNote"]}），网页不能续')
     if lock_busy():
         raise Reject(busy_reason())
     put_state(rid, 'resume', 'running', now_ms(), '', {'batch': b})
@@ -670,10 +685,10 @@ def put_state(rid, typ, status, at, reason='', result=None, ended=None):
 
 
 def rm_at(name, dfd):
-    """删目录 fd 下的一个条目，不跟随符号链接（目录用 rmtree 的 dir_fd 版：防符号链接攻击）"""
+    """删目录 fd 下的一个条目：不跟随、不递归（v0.4 §9.2）—— 链接 / 文件 unlink，目录只 rmdir（不空就留着、下次再说）"""
     try:
         if stat.S_ISDIR(os.lstat(name, dir_fd=dfd).st_mode):
-            shutil.rmtree(name, dir_fd=dfd)
+            os.rmdir(name, dir_fd=dfd)
         else:
             os.unlink(name, dir_fd=dfd)
     except OSError as e:
@@ -799,13 +814,16 @@ def main():
         return
     runner_json(flood=False)
     valid = []
+    # 先把所有条目 lstat 一遍再删：硬链接的两个名字删掉一个以后另一个的链接数就变回 1 了
+    sts = {}
     for n in sorted(ents):
         try:
-            st = os.lstat(n, dir_fd=RFD)
+            sts[n] = os.lstat(n, dir_fd=RFD)
         except FileNotFoundError:
-            continue
-        if not stat.S_ISREG(st.st_mode):   # 符号链接、目录、管道……：直接删，不跟随、不写结果
-            log(f'requests/ 里不是普通文件，删掉：{n[:80]}')
+            pass
+    for n, st in sts.items():
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:   # 符号链接、目录、FIFO、设备、硬链接数 > 1：不打开、不跟随，直接删
+            log(f'拒收：不是普通文件，删掉：{n[:80]}')
             rm_at(n, RFD)
         elif n.endswith('.tmp'):   # 扩展服务先写 .tmp 再改名；放久了的是写坏的
             if st.st_mtime < time.time() - TMP_STALE_S:
