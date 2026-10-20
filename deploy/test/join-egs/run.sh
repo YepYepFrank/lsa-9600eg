@@ -98,7 +98,7 @@ check 'grep -q "^legacyEg: \[AH09\]" $SPB/tb/model.site.yaml && grep -q "unitInd
 check 'ls /var/log/lsa9600sp/eg-join/split-AH01-*/model.site.yaml.before >/dev/null' '原文件备份在日志目录'
 check 'awk "/up.sh --prod/{u=NR} /provision-eg.sh --unit AH01-A/{p=NR} END{exit !(u && p && u < p)}" /fake/calls' '先 up.sh，再接单元'
 check 'grep -q "lsa-upg@10.0.1.9 apply-config [0-9a-f]* force" /fake/calls && grep -q "lsa-upg@10.0.1.2 apply-config [0-9a-f]*$" /fake/calls' '原来那台带 force（改作单元），新机不带'
-check '[ -f /fake/applied/AH01-A ] && [ -f /fake/applied/AH01-B ] && grep -q "断数窗口：[0-9]* s" <<< "$out"' '两个单元都接上，报了断数窗口'
+check '[ -f /fake/applied/AH01-A ] && [ -f /fake/applied/AH01-B ] && grep -q "断数窗口：[0-9]* s（up.sh 开始 → 最后一台第一次上送正常；各台：AH01-A [0-9]* s AH01-B [0-9]* s" <<< "$out" && grep -q "全部配置生效：[0-9]* s" <<< "$out"' '两个单元都接上，断数窗口按「第一次上送正常」报、各台分开，全部配置生效另报'
 
 echo '12. --from-file --plan'
 reset; printf 'legacyEg: [AH09]\n' > $SPB/tb/model.site.yaml; hello 10.0.5.1 4 0 '' '' tunnel; hello 10.0.0.9 3 0 - '' tunnel

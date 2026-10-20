@@ -91,6 +91,17 @@ grep -q 'local.yaml 里还没有摄像机地址' <<<"$(cam_ntp_status)" && ok "-
 [ ! -f "$CAM_NTP_CONF" ] && grep -q '还没有 IPv4 地址' <<<"$out" && ok "LAN1 没地址：先不开、说清楚" || bad "LAN1 没地址：$out"
 rm -f /etc/lsa-eg/lan1-fw.nft; out="$(cam_ntp_apply '')"; [ ! -f "$CAM_NTP_CONF" ] && ok "没给过 --lan1：不开" || bad "没 --lan1：$out"
 
+echo "== 7. 还没开时 --status 的说法（0.7.1）"
+rm -f "$CAM_NTP_CONF" config/eg.yaml; echo 'EG_LAN1=eth1' > .env; echo 192.168.100.1/24 > /tmp/ipaddr
+printf 'camera:\n  driver: restv1\n  restv1: http://192.168.100.64\n' > config/local.yaml
+s="$(cam_ntp_status)"
+grep -q '摄像机对时：待接入，接入子站后自动打开（LAN1 eth1；防火墙已为摄像机 192.168.100.64 放行）' <<<"$s" && ! grep -q 'IPv4' <<<"$s" && ok "待接入（没有 eg.yaml）：说接入后自动打开，不问 IPv4" || bad "待接入：$s"
+echo 'schema: 2' > config/eg.yaml; : > /tmp/ipaddr
+grep -q '没有 IPv4 地址：netplan' <<<"$(cam_ntp_status)" && ok "已接入、LAN1 真没地址：提示配 netplan" || bad "已接入没地址：$(cam_ntp_status)"
+echo 192.168.100.1/24 > /tmp/ipaddr
+s="$(cam_ntp_status)"; grep -q '没开（sudo bash install.sh --cam-ntp-on 打开）' <<<"$s" && ok "已接入、有地址、还没开：提示 --cam-ntp-on" || bad "$s"
+rm -f config/eg.yaml
+
 echo
 [ "$fail" = 0 ] && echo "== 通过（$n 项）" || { echo "== 有失败项"; exit 1; }
 EOS
