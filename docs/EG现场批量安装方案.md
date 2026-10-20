@@ -272,6 +272,19 @@ LAN1 地址缺省 `192.168.100.1/24`、`ignore-carrier: true`（手册 §2a：�
 
 **小问题（没改脚本，已报给改脚本的会话）**：换回跑完后 `systemctl list-timers --all` 里还挂着这个 timer —— `Loaded: not-found`、`Active: active (running)`、NEXT「-」，到下次重启才消失。文件和链接都删了、不会再触发，不影响功能；原因是换回脚本里的 `drop()` 只 `disable`、没停 timer（confirm 那条用的是 `disable --now`，没这个问题）。改成 `systemctl disable --now` 或补一句 `systemctl stop` 就干净。
 
+> **已修（2026-10-20，分支 fix/field-revert-drop-now）**：`drop()` 改成 `systemctl disable --now`。在 LSA-FIELDEG1 上把 A 路径重走了一遍（令牌 `179248041712639`）：
+> - 15:13:38 改地址；15:15:08 脚本报连不回来；15:15:11 复位（离原定换回 15:16:44 还有 93 s）；
+> - 15:15:12 开机，15:15:14 timer 起，15:18:14 换回 service 起，15:18:15 写 revert.log，15:18:18 回到 `.250`；
+> - 换回完整做完：`eth0` 只剩 192.168.1.250/24，`revert.log` 一行，有 `reverted-<令牌>`，unit 文件和 wants 链接都删了；
+> - 新核的一条：`systemctl list-timers --all` 里没有 `lsa-field-revert-*`，`list-units 'lsa-field*'` 也是 0。
+>
+> 在 timer 触发的 service 里停掉自己的 timer，**不会打断正在跑的换回**。journal 里的顺序是：
+> 1. 先写完 revert.log；
+> 2. `drop()` 停 timer：15:18:15.216 `…timer: Deactivated successfully / Stopped`；
+> 3. service 正常结束：15:18:15.348 `…service: Deactivated successfully`。
+>
+> 换回在 `drop()` 之前就做完了，停 timer 只停计时，不停 service。沙箱 58 项全过。
+
 **B. 正常路径：地址对，确认后马上重启**
 
 分配表 `VMTEST0001 192.168.77.71/24 192.168.77.1 T1-A -`。
