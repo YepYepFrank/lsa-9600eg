@@ -1,0 +1,10 @@
+# LSA-9600SP 网页升级 EG：扩展服务往 requests/ 写 <请求号>.json 就触发执行器（setup.sh --role sp 装，0.19.0）
+[Unit]
+Description=LSA-9600 EG 升级请求目录监视（网页入口）
+
+[Path]
+PathExistsGlob=/var/lib/lsa9600sp/eg-upgrade/requests/*.json
+Unit=lsa-eg-upgrade-runner.service
+
+[Install]
+WantedBy=multi-user.target

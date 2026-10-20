@@ -1,0 +1,9 @@
+#!/bin/bash
+# 假 eg-list（upgrade-egs.sh 的 EG_LIST_CMD）：/fake/list/<单元号>/{host,state}，版本取 /fake/eg/<host>/ver（没有就 /fake/list/<单元号>/ver）
+for d in /fake/list/*/; do
+  u="$(basename "$d")"; h="$(cat "$d/host")"; st="$(cat "$d/state")"
+  v="$(cat "/fake/eg/$h/ver" 2>/dev/null || cat "$d/ver" 2>/dev/null || echo -)"
+  # /fake/eglist-lag：EG 装完后 3 s 内子站还报旧版本（测 spcheck 阶段）
+  if [ -f /fake/eglist-lag ] && [ -f "/fake/eg/$h/donet" ] && [ $(( $(date +%s) - $(cat "/fake/eg/$h/donet") )) -lt 3 ]; then v="$(cat "/fake/eg/$h/prev")"; fi
+  printf '%s\tEG-%s\t%s\t%s\t4.2.2.6\tcfg1\tok\t5\t-\t%s\ttrue\ttrue\n' "$u" "$u" "$h" "$v" "$st"
+done

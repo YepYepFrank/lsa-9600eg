@@ -314,6 +314,34 @@ sp_prune_app_images() {
   return 0
 }
 
+# 网页升级 EG 的主机侧（方案 v0.3 §9.1）：sp_egup_runner <放执行器与 systemd 单元的目录>。幂等，升级时重跑：
+#   packages/ root:lsa-upgrade 2775（维护账号加进 lsa-upgrade 组后 scp 进来）、requests/ root 0700（扩展服务容器里是 root）、
+#   state/ 0755（执行器写，扩展服务只读挂）、/var/log/lsa9600sp/eg-upgrade 0755；已有的包、请求、结果不动。
+#   state/runner.json：扩展服务看它在不在判断「装没装执行器」，version 是本安装文件的版本，at 执行器每次运行刷新。
+sp_egup_runner() {
+  local src="$1" E=/var/lib/lsa9600sp/eg-upgrade d ver
+  say '网页升级 EG：执行器 lsa-eg-upgrade-runner'
+  getent group lsa-upgrade >/dev/null || groupadd --system lsa-upgrade
+  install -d -m 755 /var/lib/lsa9600sp "$E" /var/log/lsa9600sp /var/log/lsa9600sp/eg-upgrade
+  install -d -m 2775 -g lsa-upgrade "$E/packages"
+  install -d -m 700 "$E/requests" "$E/requests/.done"
+  install -d -m 755 "$E/state" "$E/state/requests"
+  # install -d 不改已有目录的属主 / 权限：老子站上（或手工建过的）一律按约定改回来
+  chown root:lsa-upgrade "$E/packages" && chmod 2775 "$E/packages"
+  for d in "$E/requests" "$E/requests/.done"; do chown root:root "$d" && chmod 700 "$d"; done
+  for d in "$E" "$E/state" "$E/state/requests" /var/log/lsa9600sp/eg-upgrade; do chown root:root "$d" && chmod 755 "$d"; done
+  install -m 755 "$src/lsa-eg-upgrade-runner" "$SP_DEST/lsa-eg-upgrade-runner"
+  install -d -m 755 /etc/systemd/system
+  install -m 644 "$src/lsa-eg-upgrade-runner.path" "$src/lsa-eg-upgrade-runner.service" /etc/systemd/system/
+  ver="$(cat "$src/VERSION" 2>/dev/null || echo unknown)"
+  printf '{"version": "%s", "at": %s, "pkgDir": "%s/packages"}\n' "$ver" "$(date +%s%3N)" "$E" > "$E/state/runner.json.tmp"
+  chmod 644 "$E/state/runner.json.tmp" && mv -f "$E/state/runner.json.tmp" "$E/state/runner.json"
+  systemctl daemon-reload
+  systemctl enable lsa-eg-upgrade-runner.path >/dev/null 2>&1 || true
+  systemctl restart lsa-eg-upgrade-runner.path || echo '！ lsa-eg-upgrade-runner.path 没起来（systemctl status lsa-eg-upgrade-runner.path）：网页升级 EG 用不了，命令行 upgrade-egs.sh 照常'
+  echo "  安装包目录 $E/packages（维护账号先加组：sudo usermod -aG lsa-upgrade <账号>，重新登录后 scp 进来），请求 / 结果在 $E/requests、$E/state"
+}
+
 install_sp() {
   local mem_gb ver ip img_id
   mem_gb=$(( $(awk '/MemTotal/ { print $2 }' /proc/meminfo) / 1024 / 1024 ))
@@ -355,6 +383,8 @@ install_sp() {
   [ -f join-egs.sh ] && install -m 755 join-egs.sh "$SP_DEST/join-egs.sh"
   # 0.18.1 发布公钥：upgrade-egs.sh 传给 EG 之前先在子站验一遍安装文件的签名（<run>.sig）
   [ -f release-signers ] && install -m 644 release-signers "$SP_DEST/release-signers"
+  # 0.19.0 网页升级 EG：目录、lsa-upgrade 组、执行器（要在 up.sh 之前：扩展服务的挂载要目录已在）
+  [ -f lsa-eg-upgrade-runner ] && sp_egup_runner .
 
   ver="$(envget "$SP_B/docker/.env.prod.example" APP_VERSION)"
   if [ -f "$SP_ENV" ]; then
