@@ -1,0 +1,57 @@
+#!/bin/bash
+# 假 ssh（field-install-test）：按地址找假 EG（/fake/eg/<id>/addr 里有这个地址的那台），仿主机密钥核对（HostKeyAlias + UserKnownHostsFile +
+# StrictHostKeyChecking）、口令认证（调 SSH_ASKPASS，和 /fake/pw 比；ControlPath 文件在 = 已认证过）、远端命令（env -i：本机环境变量不带过去）。
+# 故障注入：<EG>/badnet（正式地址上连不上，仿网关 / 网段不对）、cut_once（推送时只收这么多字节就断）、wrongsha_once（推送多收 1 个字节）
+ctl='' kh='' hka='' strict='' op='' uh='' rest=()
+args=("$@"); i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -o) kv="${args[$((i + 1))]}"; v="${kv#*=}"
+        case "${kv%%=*}" in ControlPath) ctl="$v" ;; UserKnownHostsFile) kh="$v" ;; HostKeyAlias) hka="$v" ;; StrictHostKeyChecking) strict="$v" ;; esac
+        i=$((i + 2)) ;;
+    -O) op="${args[$((i + 1))]}"; i=$((i + 2)) ;;
+    *@*) uh="$a"; rest=("${args[@]:$((i + 1))}"); break ;;
+    *) i=$((i + 1)) ;;
+  esac
+done
+if [ "$op" = exit ]; then rm -f "$ctl"; exit 0; fi
+host="${uh#*@}"
+D=''
+for d in /fake/eg/*/; do
+  d="${d%/}"
+  [ -f "$d/addr" ] && grep -q " $host/" "$d/addr" || continue
+  [ -f "$d/badnet" ] && [ "$host" != 192.168.1.250 ] && continue
+  D="$d"; break
+done
+[ -n "$D" ] || { echo "ssh: connect to host $host port 22: No route to host" >&2; exit 255; }
+key="$(cat "$D/hostkey")"
+line="$(awk -v a="$hka" '$1 == a { print $2, $3; exit }' "$kh" 2>/dev/null)"
+if [ -n "$line" ]; then
+  [ "$line" = "$key" ] || { echo '@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@' >&2; echo 'Host key verification failed.' >&2; exit 255; }
+elif [ "$strict" = yes ]; then echo "No $hka host key is known and you have requested strict checking." >&2; echo 'Host key verification failed.' >&2; exit 255
+else echo "$hka $key" >> "$kh"; fi
+if ! { [ -n "$ctl" ] && [ "$(cat "$ctl" 2>/dev/null)" = "$D" ]; }; then
+  pw="$("$SSH_ASKPASS")"
+  [ "$pw" = "$(cat /fake/pw)" ] || { echo "${uh}: Permission denied (publickey,password)." >&2; exit 255; }
+  echo "$(date +%s) auth $host" >> "$D/auth.log"
+  [ -n "$ctl" ] && echo "$D" > "$ctl"
+fi
+cmd="${rest[*]}"
+echo "$(date +%s) $host ${cmd:0:120}" >> "$D/calls"
+# <EG>/real：这台「EG」就是沙箱本身（field-install-real.sh，真 .run 装在真的 /opt/lsa-eg）：不设假根目录
+if [ -f "$D/real" ]; then
+  run() { cd /root && env -i PATH="/fake/bin-real:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" HOME=/root FAKE_EG="$D" LSA_FIELD_RUN_FORCE=1 bash -c "$1"; }
+  run "${rest[*]}"; exit $?
+fi
+run() { cd "$D/home" && env -i PATH="$(cd "$(dirname "$0")/../bin-eg" && pwd):/usr/sbin:/usr/bin:/sbin:/bin" HOME="$D/home" LSA_FIELD_ROOT="$D/root" FAKE_EG="$D" bash -c "$1"; }
+if [[ "$cmd" == *'cat >>'* ]] && [ -f "$D/cut_once" ]; then
+  n="$(cat "$D/cut_once")"; rm -f "$D/cut_once"
+  head -c "$n" | run "$cmd"
+  echo 'Connection reset by peer' >&2; exit 255
+fi
+if [[ "$cmd" == *'cat >>'* ]] && [ -f "$D/wrongsha_once" ]; then
+  rm -f "$D/wrongsha_once"
+  run "$cmd; printf X | $cmd"; exit $?
+fi
+run "$cmd"

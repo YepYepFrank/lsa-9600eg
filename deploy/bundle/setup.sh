@@ -353,6 +353,8 @@ install_sp() {
   [ -f upgrade-egs.sh ] && install -m 755 upgrade-egs.sh "$SP_DEST/upgrade-egs.sh"
   # 0.17.4 子站一条命令加柜（EG 库 deploy/sp/join-egs.sh）
   [ -f join-egs.sh ] && install -m 755 join-egs.sh "$SP_DEST/join-egs.sh"
+  # S19 现场批量装 EG（EG 库 deploy/sp/field-install-egs.sh，docs/EG现场批量安装方案.md）
+  [ -f field-install-egs.sh ] && install -m 755 field-install-egs.sh "$SP_DEST/field-install-egs.sh"
   # 0.18.1 发布公钥：upgrade-egs.sh 传给 EG 之前先在子站验一遍安装文件的签名（<run>.sig）
   [ -f release-signers ] && install -m 644 release-signers "$SP_DEST/release-signers"
 
