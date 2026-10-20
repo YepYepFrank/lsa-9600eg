@@ -19,6 +19,8 @@ const BY_TYPE: Record<string, string[]> = {
   partial_discharge: ['us.amp', 'us.cnt', 'us.type', 'us.level', 'tev.amp', 'tev.level', 'uhf.amp', 'uhf.level'],
   arc_light: ['uv.int'],
   smoke: ['smoke.ppm'],
+  // 0.7.2：同事的 infrared.yaml 寄存器不写 key（按 base_address 连读）—— 以前不认识，红外打开了也不看护、485 清单里也漏了从站 1
+  infrared: ['ir.t_max', 'ir.t_avg'],
 }
 
 /** 485 总线清单（0.17.4，舱室 EG 方案 §4）：打开的传感器各占一个从站地址。EG 作为自己的客户端属性 conv.bus 报给子站（JSON 串） */

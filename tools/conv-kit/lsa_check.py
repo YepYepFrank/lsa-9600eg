@@ -306,6 +306,72 @@ def read_eg_yaml(path):
     return ident, devs
 
 
+# 转换程序配置推出的每台设备预期测点（W1，用户 2026-10-20 选 ①：与 EG 0.6.2 的 ConvExpectService 同一口径，
+# packages/config/src/conv-expect.ts）：<conv>/sensors/*.yaml 里 enabled: true 的传感器按 device 归到设备，
+# 预期测点 = registers 里写的 key；没写 key 的按 type 兜底。没有配置 / 某台没有传感器挂它：照旧按点表全量期望。
+CONV_BY_TYPE = {
+    'temperature_humidity': ['env.t', 'env.rh'],
+    'partial_discharge': ['us.amp', 'us.cnt', 'us.type', 'us.level', 'tev.amp', 'tev.level', 'uhf.amp', 'uhf.level'],
+    'arc_light': ['uv.int'],
+    'smoke': ['smoke.ppm'],
+    'infrared': ['ir.t_max', 'ir.t_avg'],   # 同事的 infrared.yaml 寄存器不写 key
+}
+
+
+def _yaml_scalar(v):
+    v = re.sub(r'\s+#.*$', '', v).strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in '"\'':
+        v = v[1:-1]
+    return v
+
+
+def read_conv_expect(path):
+    """转换程序配置目录（config/conv，或直接给它下面的 sensors/）→ ({设备名: set(key)}, [问题])；一个能读的文件都没有返回 (None, 问题)。
+    只认同事配置文件的固定写法（顶层 sensor: / registers:，两格缩进），不是通用 YAML 解析（本工具只用标准库）。"""
+    d = os.path.join(path, 'sensors') if os.path.isdir(os.path.join(path, 'sensors')) else path
+    if not os.path.isdir(d):
+        return None, ['没有转换程序配置目录 %s' % path]
+    by, problems, read = {}, [], 0
+    for f in sorted(os.listdir(d)):
+        if not re.search(r'\.ya?ml$', f):
+            continue
+        try:
+            with open(os.path.join(d, f), encoding='utf-8') as fh:
+                lines = fh.read().splitlines()
+        except OSError as e:
+            problems.append('%s：%s' % (f, e))
+            continue
+        read += 1
+        sec, sensor, keys = None, {}, []
+        for line in lines:
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            m = re.match(r'^([A-Za-z_][\w-]*):\s*(.*)$', line)
+            if m:
+                sec = m.group(1)
+                continue
+            if sec == 'sensor':
+                m = re.match(r'^  ([A-Za-z_][\w-]*):\s*(.*)$', line)
+                if m:
+                    sensor[m.group(1)] = _yaml_scalar(m.group(2))
+            elif sec == 'registers':
+                m = re.match(r'^\s{4,}key:\s*(.+)$', line)
+                if m and _yaml_scalar(m.group(1)):
+                    keys.append(_yaml_scalar(m.group(1)))
+        if sensor.get('enabled', '').lower() != 'true':
+            continue
+        dev = sensor.get('device', '')
+        if not dev:
+            problems.append('%s：打开了但没写 device' % f)
+            continue
+        lst = keys or CONV_BY_TYPE.get(sensor.get('type', ''), [])
+        if not lst:
+            problems.append('%s：类型「%s」没有 key，也不认识' % (f, sensor.get('type', '?')))
+            continue
+        by.setdefault(dev, set()).update(lst)
+    return (by if read else None), problems
+
+
 def devices_for(cab, group, pm2=False):
     devs = {'SAM-%s-%s' % (cab, r): 'sam' for r in ROOMS[group]}
     devs['PM-' + cab] = 'meter'
@@ -358,8 +424,9 @@ class Dev:
 
 
 class Checker:
-    def __init__(self, args, devices):
+    def __init__(self, args, devices, expect=None):
         self.args = args
+        self.expect = expect or {}   # 设备名 → 预期测点（--conv，W1）；不在里面的设备按点表全量
         self.devs = {}
         self.listed = devices is not None
         for name, kind in (devices or {}).items():
@@ -659,9 +726,13 @@ class Checker:
                 continue
             if dev.kind == 'eg':
                 continue
+            exp = self.expect.get(dev.name)
             for key, d in keydefs(dev.kind).items():
                 p = d.get('periodMs')
                 if not p or d['optional']:
+                    continue
+                # W1：转换程序配置里这台只挂了哪些传感器，就只等它们的量（别的量在本单元另一个设备名下发）
+                if exp is not None and key not in exp:
                     continue
                 if d.get('capState') not in (None, 'confirmed') and d.get('cap') not in dev.caps_seen:
                     continue
@@ -746,7 +817,17 @@ def run_check(args):
         print('设备清单（%s %s）：%s' % (args.cab, ROOM_NAMES[args.group], '、'.join(devices)))
     else:
         print('没给设备清单（--cab / --eg-yaml）：按设备名前缀自动认设备，不检查「缺哪台」')
-    ck = Checker(args, devices)
+    expect = None
+    if args.conv:
+        expect, problems = read_conv_expect(args.conv)
+        for p in problems:
+            print('  转换程序配置：%s' % p)
+        if expect:
+            for n in sorted(expect):
+                print('预期测点（%s，按转换程序配置）：%s' % (n, '、'.join(sorted(expect[n]))))
+        else:
+            print('转换程序配置里没有能读的传感器：照旧按点表全量期望')
+    ck = Checker(args, devices, expect)
     deadline = time.time() + args.duration if args.duration else None
     next_tick = time.time() + 5
     next_sum = time.time() + args.every if args.every else None
@@ -932,6 +1013,7 @@ def main():
     ap.add_argument('--group', default='mv', choices=list(ROOMS), help='柜型：mv 中压开关柜（SAM A/B）/ tr 干式变压器（A/B/C）/ lv 低压柜（A）')
     ap.add_argument('--pm2', action='store_true', help='这面柜有第二块电表 PM2-<柜号>')
     ap.add_argument('--eg-yaml', help='按这台 EG 的 eg.yaml 取设备清单（EG 上 /opt/lsa-eg/config/eg.yaml）')
+    ap.add_argument('--conv', help='转换程序配置目录（EG 上 /opt/lsa-eg/config/conv）：每台设备只等挂在它下面的传感器的量（与 EG 同一口径；不给按点表全量）')
     ap.add_argument('--duration', type=float, default=0, help='跑多少秒后自动结束（缺省一直跑到 Ctrl+C）')
     ap.add_argument('--every', type=float, default=0, help='每隔多少秒打印一次汇总')
     ap.add_argument('--report', help='结束时把汇总写成 Markdown 文件')
