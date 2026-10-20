@@ -349,6 +349,7 @@ async function download(id: string, label: string) {
             <div v-else class="ev-note">{{ it.err || (it.kind === 'wave' ? '事件前后数据曲线（JSON，按各量实际采样周期），点「下载」查看' : '加载中…') }}</div>
           </div>
         </div>
+        <div v-else-if="!demo && !cam" class="monitor-empty"><span class="empty-symbol">▷</span><strong>{{ here }}没有配置双光摄像机</strong><span>没有循环录像，告警证据只有事件前后的数据曲线（在上表点「关联录像」下载）。</span></div>
         <div v-else class="monitor-empty"><span class="empty-symbol">▷</span><strong>{{ demo ? '尚未连接本地录像服务' : '在上表点「关联录像」回放' }}</strong><span>{{ demo ? '接入后可按时间回看，并从事件定位前后录像片段。' : '告警发生时 EG 自动锁定双光视频、抓图与事件前后数据曲线（循环录像留 24 h）。' }}</span></div>
       </section>
     </template>
