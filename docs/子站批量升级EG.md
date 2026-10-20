@@ -147,7 +147,18 @@ LSA-9600SP-0.18.1-<日期>-r1-offline.run.sig      ← 0.18.1 起
 - 只在打包机上：缺省 `~/.lsa9600/release-sign/lsa9600-release_ed25519`（Windows：`C:\Users\<打包账号>\.lsa9600\release-sign\`，ACL 只给打包账号）。**不进任何仓库、不进包**（bundle-all 打包前后都扫，见到 `*_ed25519` / `id_*` 一律失败）。
 - 出包：`pnpm bundle -- --sp … --eg …` 出完 .run 自动签（`scripts/sign-release.mjs`），签完马上用仓库里的 `deploy/eg/release-signers` 验一遍，私钥和公钥对不上就失败、不留 .sig。私钥换了位置用 `--sign-key <路径>` 或 `LSA_RELEASE_SIGN_KEY`；测试包不签用 `--no-sign`。
 - 老的 .run 补签：`node scripts/sign-release.mjs <run>`。
-- **备份**：私钥另存一份离线介质（U 盘、保险柜），丢了只能换 key。
+- **备份（必须有，出 0.18.1 之前做好）**：私钥加密后另存一份到离线介质（U 盘），**由用户指定的保管人收着，跟打包机分开放**；打包机上那份照旧只给打包账号读（Linux `chmod 600`、Windows ACL 只给打包账号），只在打包时用。
+  - **为什么非备份不可**：EG 只认它本机已装的公钥（`/opt/lsa-eg/release-signers`），不信新包里带来的。换 key 也只能用**旧 key 签**的那一版把新公钥带过去（见下面「换 key」）。私钥一旦丢了，下一版起（`SIG_REQUIRED=1`）现场的 EG 就再也不能远程批量升级，**只能逐台到现场手工重装**。
+  - **做法**（在打包机上，备份那份加口令；口令不写进任何文件，交给保管人另记）：
+    ```bash
+    K=~/.lsa9600/release-sign/lsa9600-release_ed25519
+    cp "$K" /media/<U盘>/lsa9600-release_ed25519.bak
+    ssh-keygen -p -f /media/<U盘>/lsa9600-release_ed25519.bak          # 给备份那份设口令（打包机上那份不动）
+    ssh-keygen -y -f /media/<U盘>/lsa9600-release_ed25519.bak          # 输口令，打出来的公钥要和 deploy/eg/release-signers 里那一行的公钥一致
+    ```
+    Windows 打包机：同样的 `ssh-keygen` 命令（OpenSSH 自带），U 盘路径换成 `E:\…`。
+  - **每次出包前**核一下备份还在、口令还记得（上面最后一条能打出同一把公钥）；换 key 以后新旧两把都要有备份，旧那把等新公钥装遍现场再销毁。
+  - 保管人：由用户指定（2026-10-19 协调汇报里请用户定）。U 盘本身不放打包机旁边，也不放在任何一个现场。
 - **换 key / 私钥泄露**：
   1. 生成新 key（`ssh-keygen -t ed25519 -N '' -C lsa9600-release-<年份> -f …`），把新公钥**加一行**到 `deploy/eg/release-signers`（旧的先留着；泄露时给旧那行加 `valid-before="<日期>"` 或直接删）；
   2. 用**旧 key** 签下一版（EG 上还是旧公钥，只认旧 key）；这一版装上以后 EG 有了新公钥；
