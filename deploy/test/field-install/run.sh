@@ -13,14 +13,14 @@ chk() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 rm -rf /fake; mkdir -p /fake/eg /fake/sd
 printf '%s\n' "$PW" > /fake/pw; : > /fake/rack
-export PATH="$H/bin:$PATH" LSA_FIELD_TCP="$H/bin/tcp" LSA_FIELD_REVERT_S=4 LSA_FIELD_RECONNECT_S=8 LSA_FIELD_POLL_S=1 LSA_FIELD_ONCE_WAIT_S=3
+export PATH="$H/bin:$PATH" LSA_FIELD_TCP="$H/bin/tcp" LSA_FIELD_REVERT_S=4 LSA_FIELD_RECONNECT_S=8 LSA_FIELD_POLL_S=1 LSA_FIELD_ONCE_WAIT_S=3 LSA_FIELD_HOLD_MARGIN_S=3
 JK_BODY='LSAJOIN1 192.168.10.2 ssh-ed25519 AAAAtunnelkeyfake ssh-ed25519 AAAAupgradekeyfake'
 JK="$JK_BODY $(printf '%s' "$JK_BODY" | sha256sum | cut -c1-8)"
 
 # mk_eg <id> <SN> [主机密钥]：假 EG（出厂状态：两个网口 enp1s0 / enp2s0，LAN2 = enp2s0 192.168.1.250/24，没插上）
 mk_eg() {
   local d="/fake/eg/$1"
-  mkdir -p "$d/home" "$d/root/etc/netplan" "$d/root/var/tmp"
+  mkdir -p "$d/home" "$d/root/etc/netplan" "$d/root/var/tmp" "$d/root/run/systemd/system"   # run/systemd/system：假 EG 有 systemd（假 systemctl）
   echo "lsaeg-$2" > "$d/hostname"
   echo "ssh-ed25519 ${3:-AAAAC3Nza$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')}" > "$d/hostkey"
   printf 'enp1s0 00:11:22:%s:01\nenp2s0 00:11:22:%s:02\n' "${1: -2}" "${1: -2}" > "$d/nics"
@@ -41,6 +41,7 @@ cat > "$W/lsa9600sp-bundle/setup.sh" <<'EOF'
 R="${LSA_FIELD_ROOT:-}"
 echo "假 setup.sh $*"
 [ -f "$FAKE_EG/fail-install" ] && { echo '错误：假装这一步装失败了'; exit 1; }
+[ -f "$FAKE_EG/slow" ] && sleep 12
 while [ $# -gt 0 ]; do case "$1" in --lan1) L1="$2"; shift ;; --join-key) JK="$2"; shift ;; esac; shift; done
 mkdir -p "$R/opt/lsa-eg/config"
 printf '%s\n' "lan1=$L1" "jk=$JK" > "$R/opt/lsa-eg/args"
@@ -99,6 +100,7 @@ chk "SNA002 推送断了以后续传" 'grep -q "续传" /fake/sd/SNA002/log'
 chk "SNA003 sha 不对删掉重推" 'grep -q "sha256 不对.*删掉重推" /fake/sd/SNA003/log'
 chk "EG 上的 .run 拷贝装完删掉" '! ls /fake/eg/a*/root/var/tmp/lsa-field/*.run 2>/dev/null | grep -q .'
 chk "自动换回没触发（确认后撤了）" 'sleep 5; ! ls /fake/eg/a*/root/var/lib/lsa-field/revert.log 2>/dev/null | grep -q .'
+chk "确认后持久的换回 unit（/etc/systemd/system）和 enable 链接都删了" '! ls /fake/eg/a*/root/etc/systemd/system/lsa-field-revert-* /fake/eg/a*/root/etc/systemd/system/timers.target.wants/* 2>/dev/null | grep -q .'
 chk "每台只口令认证一次（ControlMaster），.250 与正式地址各一次" '[ "$(grep -c " 192.168.1.250$" /fake/eg/a1/auth.log)" = 1 ] && [ "$(grep -c " 192.168.10.31$" /fake/eg/a1/auth.log)" -le 2 ]'
 chk "主机密钥按 SN 钉住" 'grep -q "^lsaeg-SNA001 ssh-ed25519 " /fake/sd/SNA001/known_hosts'
 chk "join 清单 3 行" '[ "$(grep -vc "^#" /fake/sd/join-list.txt)" = 3 ] && grep -qx "1G-B 192.168.10.32" /fake/sd/join-list.txt'
@@ -189,6 +191,73 @@ out="$(fis --plan /fake/plan.tsv --run $RUN --yes --once 2>&1)"; rc=$?
 chk "提醒网关没应答、照样待接入" '[ "$rc" = 0 ] && [[ "$out" == *"网关 192.168.10.254 在 EG 上没应答"* ]] && [ "$(phase SNC003)" = pending ]'
 chk "网关正常的不提醒" '! grep -q "没应答" /fake/sd/SNC002/log'
 rm -f /fake/gwdead
+
+# egctl <EG> <假 systemctl 参数>：在这台假 EG 上仿拔电（__crash）/ 开机（__boot）
+egctl() { local d="/fake/eg/$1"; shift; env FAKE_EG="$d" LSA_FIELD_ROOT="$d/root" PATH="$H/bin-eg:$PATH" bash "$H/bin-eg/systemctl" "$@"; }
+wait_for() { local i=0; while [ "$i" -lt "$2" ]; do grep -q -- "$1" "$3" 2>/dev/null && return 0; sleep 1; i=$((i + 1)); done; return 1; }
+alive_fis() { local f; for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' < "$f" 2>/dev/null | grep -q 'sp/field-install-egs.sh' && echo "${f//[!0-9]/}"; done; return 0; }
+
+echo; echo '== 13. 改地址后连不回来，换回窗口里拔电重启：开机后照样换回（协调审 #73-1）'
+mk_eg r1 SNR101; touch /fake/eg/r1/badnet; plug r1; echo 'SNR101 192.168.10.61/24 192.168.10.1 R-A -' >> /fake/plan.tsv
+LSA_FIELD_REVERT_S=15 LSA_FIELD_RECONNECT_S=4 fis --plan /fake/plan.tsv --run $RUN --yes --once > /fake/t13.out 2>&1; rc=$?; out="$(cat /fake/t13.out)"
+U=/fake/eg/r1/root/etc/systemd/system
+chk "连不回来：换回 unit 落在 /etc/systemd/system、enable 着" '[ "$rc" != 0 ] && ls $U/lsa-field-revert-*.timer $U/lsa-field-revert-*.service >/dev/null 2>&1 && ls $U/timers.target.wants/lsa-field-revert-*.timer >/dev/null 2>&1 && grep -q "^OnActiveSec=15s" $U/lsa-field-revert-*.timer'
+egctl r1 __crash; sleep 14
+chk "拔电（计时丢了）：过了原来的换回时间还在新地址上" 'grep -qx "enp2s0 192.168.10.61/24" /fake/eg/r1/addr'
+egctl r1 __boot; sleep 18
+chk "开机后照样换回 .250、留 reverted 标记、unit 删掉" 'grep -qx "enp2s0 192.168.1.250/24" /fake/eg/r1/addr && ls /fake/eg/r1/root/var/lib/lsa-field/reverted-* >/dev/null 2>&1 && ! ls $U/lsa-field-revert-* $U/timers.target.wants/* 2>/dev/null | grep -q .'
+# 换回过的令牌不能再确认（#73-7）：直接跑脚本里那段 EG 侧 helper
+awk '/^HELPER="\$\(cat <<.HELPER_EOF.$/ { f = 1; next } /^HELPER_EOF$/ { f = 0 } f' "$T" > /tmp/helper.sh
+tok="$(ls /fake/eg/r1/root/var/lib/lsa-field/reverted-* | sed 's/.*reverted-//')"
+out="$(env FAKE_EG=/fake/eg/r1 LSA_FIELD_ROOT=/fake/eg/r1/root PATH="$H/bin-eg:$PATH" bash /tmp/helper.sh confirm "$tok" 2>&1)"
+chk "换回过的令牌 confirm 判失败、不留 confirmed" '[[ "$out" == ERR*已经自动换回过* ]] && [ ! -f /fake/eg/r1/root/var/lib/lsa-field/confirmed-$tok ]'
+rm -f /fake/eg/r1/addr
+
+echo; echo '== 14. 没确认的那台换回 .250 之前，.250 空着也不算拔走（协调审 #73-2）'
+mk_eg h1 SNH001; touch /fake/eg/h1/badnet; mk_eg h2 SNH002; plug h1
+printf '%s\n' 'SNH001 192.168.10.62/24 192.168.10.1 H-A -' 'SNH002 192.168.10.63/24 192.168.10.1 H-B -' >> /fake/plan.tsv
+( LSA_FIELD_REVERT_S=8 LSA_FIELD_RECONNECT_S=4 fis --plan /fake/plan.tsv --run $RUN --yes --count 1 > /fake/t14.out 2>&1; echo "rc=$?" >> /fake/t14.out ) &
+wait_for '等刚才没确认的那台换回' 40 /fake/t14.out; out="$(cat /fake/t14.out)"
+chk "改地址失败后（这时 .250 是空的）提示先别插、等它回来；不说「已拿走」" '[[ "$out" == *"等刚才没确认的那台换回"* ]] && ! grep -q 已拿走 /fake/t14.out && ! grep -q 192.168.1.250 /fake/eg/h1/addr'
+wait_for '已换回 192.168.1.250' 30 /fake/t14.out; out="$(cat /fake/t14.out)"
+chk "它换回 .250 后提示现在可以拔走" '[[ "$out" == *"已换回 192.168.1.250"* ]] && ! grep -q "\[SNH002\]" /fake/t14.out'
+rm -f /fake/eg/h1/addr; wait_for "已拿走" 15 /fake/t14.out; plug h2   # 真人拔一台、插下一台中间总有几秒 .250 是空的
+wait_for '^rc=' 90 /fake/t14.out; out="$(cat /fake/t14.out)"
+chk "拔走以后才接下一台：SNH002 待接入" '[ "$(phase SNH002)" = pending ] && [ "$(grep -n "已拿走" /fake/t14.out | head -1 | cut -d: -f1)" -lt "$(grep -n "\[SNH002\] 在 192.168.1.250 上" /fake/t14.out | cut -d: -f1)" ]'
+
+echo; echo '== 15. 同一个状态目录只能跑一个（协调审 #73-4）'
+flock -o /fake/sd/.lock sleep 15 & lpid=$!; sleep 1   # -o：锁不传给 sleep，杀掉 flock 就放锁
+out="$(fis --plan /fake/plan.tsv --run $RUN --resume 2>&1)"; rc=$?
+chk "第二个被锁拒绝" '[ "$rc" != 0 ] && [[ "$out" == *"正在用状态目录"* ]]'
+kill "$lpid" 2>/dev/null; wait "$lpid" 2>/dev/null
+
+echo; echo '== 16. Ctrl-C：后台的推送 / 查进度一起停，--resume 接着做（协调审 #73-4）'
+mk_eg k1 SNK001; touch /fake/eg/k1/slow; plug k1; echo 'SNK001 192.168.10.64/24 192.168.10.1 K-A -' >> /fake/plan.tsv
+( fis --plan /fake/plan.tsv --run $RUN --yes --count 1 > /fake/t16.out 2>&1 ) &
+wait_for '\[SNK001\] EG 上开始装' 40 /fake/t16.out
+main="$(for p in $(alive_fis); do pp="$(awk '{ print $4 }' /proc/$p/stat)"; [ "$(cat /proc/$pp/comm 2>/dev/null)" = timeout ] && echo "$p"; done | head -1)"
+# 后台起的进程忽略 SIGINT（bash 规矩），仿 Ctrl-C 用 TERM：脚本对 INT / TERM 一样处理
+kill -TERM "$main"; sleep 4
+holders="$(for p in /proc/[0-9]*; do ls -l "$p/fd" 2>/dev/null | grep -q '/fake/sd/.lock' && echo "${p#/proc/} $(tr '\0' ' ' < "$p/cmdline" | cut -c1-120)"; done)"
+[ -z "$holders" ] || echo "    还占着锁的进程：$holders"
+chk "退出后锁放了" '[ -z "$holders" ]'
+out="$(cat /fake/t16.out)"
+chk "主程序和后台的 stage_b 都退了、说清 EG 上的安装照跑" '[ -z "$(alive_fis)" ] && [[ "$out" == *"已停掉后台 1 台"* ]] && [ "$(phase SNK001)" != pending ]'
+out="$(fis --plan /fake/plan.tsv --run $RUN --resume 2>&1)"; rc=$?
+chk "--resume：EG 上那次安装接着查完、待接入（没重推、没重装）" '[ "$rc" = 0 ] && [ "$(phase SNK001)" = pending ] && [[ "$out" == *"安装已在跑，接着查"* || "$out" == *"已经装过"* ]]'
+
+echo; echo '== 17. EG 回的时间不是数字（协调审 #73-5）'
+mk_eg e1 SNE001; printf '%s\n' '1+$(id)' > /fake/eg/e1/epoch; plug e1; echo 'SNE001 192.168.10.65/24 192.168.10.1 E-A -' >> /fake/plan.tsv
+out="$(fis --plan /fake/plan.tsv --yes --once --readdress-only 2>&1)"; rc=$?
+chk "提醒读不到时间、不做算术、照常改地址" '[ "$rc" = 0 ] && [[ "$out" == *"读不到 EG 的时间"* ]] && [ "$(phase SNE001)" = readdressed ]'
+
+echo; echo '== 18. 克隆机：主机名、主机密钥都一样，machine-id 不同（协调审 #73-6）'
+mk_eg m1 SNM001; plug m1; echo 'SNM001 192.168.10.66/24 192.168.10.1 M-A -' >> /fake/plan.tsv
+out="$(fis --plan /fake/plan.tsv --yes --once --readdress-only 2>&1)"
+mk_eg m2 SNM001 "$(cut -d' ' -f2 /fake/eg/m1/hostkey)"; plug m2
+out="$(fis --plan /fake/plan.tsv --yes --once --readdress-only 2>&1)"; rc=$?
+chk "第二台停下、说 machine-id、不改地址" '[ "$rc" != 0 ] && [[ "$out" == *"machine-id"* ]] && grep -q 192.168.1.250 /fake/eg/m2/addr'
+rm -f /fake/eg/m2/addr
 
 echo; echo '== 12. 口令没落盘'
 hits="$(grep -rlF -- "$PW" /fake /tmp /var /root /home /etc /rel 2>/dev/null | grep -vx /fake/pw || true)"

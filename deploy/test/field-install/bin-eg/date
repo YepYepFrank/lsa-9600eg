@@ -1,0 +1,4 @@
+#!/bin/bash
+# 假 date（假 EG 上）：$FAKE_EG/epoch 在时，date +%s 回它的内容（仿 EG 回怪东西）；其余照真 date
+if [ "$*" = +%s ] && [ -f "$FAKE_EG/epoch" ]; then cat "$FAKE_EG/epoch"; exit 0; fi
+exec /usr/bin/date "$@"

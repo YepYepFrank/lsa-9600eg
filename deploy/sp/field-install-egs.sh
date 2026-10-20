@@ -188,6 +188,16 @@ if [ "$MODE" != readdress ]; then
   JOINKEY_B64="$(printf '%s' "$JOINKEY" | base64 -w0)"
 fi
 
+# ---------- 单实例（协调审 #73-4）：同一个状态目录同时只跑一个；Ctrl-C 后旧的后台没停干净时再 --resume 会两个一起往同一个远端文件 cat >> ----------
+exec 9> "$SD/.lock"
+if command -v flock >/dev/null; then
+  flock -n 9 || die "另一个 field-install-egs.sh 正在用状态目录 $SD（同时只能跑一个）。刚 Ctrl-C 过的话等它退干净（几秒）再来"
+else echo "！ 本机没有 flock：不防两个同时跑，别同时开两个"; fi
+QUEUE=() PIDS=() TOUCHED=() SESSION_FAIL=0
+# kill_tree <pid>：连子进程一起停（/proc 里按父进程找，不靠 pgrep）
+kids() { local f pid pp; for f in /proc/[0-9]*/stat; do read -r pid _ _ pp _ < "$f" 2>/dev/null || continue; [ "$pp" = "$1" ] && echo "$pid"; done; return 0; }
+kill_tree() { local c; for c in $(kids "$1"); do kill_tree "$c"; done; kill -TERM "$1" 2>/dev/null; return 0; }
+
 # ---------- 口令（只在内存）与 SSH ----------
 CTL="$(mktemp -d "${TMPDIR:-/tmp}/lsa-field.XXXXXX")" || die '建不了临时目录'
 chmod 700 "$CTL"
@@ -195,8 +205,11 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$LSA_FIELD_PW"\n' > "$CTL/askpass"; chmod 70
 export SSH_ASKPASS="$CTL/askpass" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-:0}"
 TEMP_ADDED=''
 cleanup() {
-  local s
-  for s in "$CTL"/cm-*; do [ -S "$s" ] && ssh -o ControlPath="$s" -O exit x >/dev/null 2>&1; done
+  local s p n=0
+  # 后台还在推 / 查的 stage_b 连子进程一起停（EG 上已经开始的安装照跑，--resume 接着查）
+  for p in "${PIDS[@]}"; do kill -0 "$p" 2>/dev/null && { kill_tree "$p"; n=$((n + 1)); }; done
+  [ "$n" = 0 ] || echo "已停掉后台 $n 台的推送 / 查进度（EG 上已开始的安装照跑；之后 --resume 接着做）" >&2
+  for s in "$CTL"/cm-*; do [ -S "$s" ] && ssh -o ControlPath="$s" -O exit x >/dev/null 2>&1 9>&-; done
   rm -rf "$CTL"
   [ -n "$TEMP_ADDED" ] && ip addr del "$TEMP_ADD" dev "$TEMP_DEV" 2>/dev/null && echo "已删掉临时地址 $TEMP_ADD（$TEMP_DEV）"
   return 0
@@ -223,9 +236,9 @@ sshx() {
   ssh -o ControlMaster=auto -o ControlPath="$CTL/cm-$a-$h" -o ControlPersist=600 \
     -o HostKeyAlias="$hka" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking="$strict" -o HashKnownHosts=no -o GlobalKnownHostsFile=/dev/null \
     -o PreferredAuthentications=publickey,keyboard-interactive,password -o NumberOfPasswordPrompts=1 \
-    -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o LogLevel=ERROR "lsaadmin@$h" "$@"
+    -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o LogLevel=ERROR "lsaadmin@$h" "$@" 9>&-
 }
-ssh_close() { ssh -o ControlPath="$CTL/cm-$1-$2" -O exit x >/dev/null 2>&1 || true; rm -f "$CTL/cm-$1-$2"; }
+ssh_close() { ssh -o ControlPath="$CTL/cm-$1-$2" -O exit x >/dev/null 2>&1 9>&- || true; rm -f "$CTL/cm-$1-$2"; }
 
 # 在 EG 上用 sudo 跑的那段：每次临时传过去（base64 进命令行）、跑完删掉；口令从管道喂给 sudo -S（-k：不用缓存，每次都读）
 HELPER="$(cat <<'HELPER_EOF'
@@ -234,10 +247,14 @@ R="${LSA_FIELD_ROOT:-}"            # 只给沙箱测试用（假 EG 的根目录
 ST="$R/var/lib/lsa-field"
 RD="$R/var/tmp/lsa-field"
 mkdir -p "$ST" && chmod 700 "$ST"
-has_systemd() { [ -d /run/systemd/system ] && command -v systemd-run >/dev/null; }
+has_systemd() { [ -d "$R/run/systemd/system" ] && command -v systemctl > /dev/null; }
+UD="$R/etc/systemd/system"
+bootid() { cat /proc/sys/kernel/random/boot_id 2> /dev/null || echo -; }
+# 安装任务还在跑：install.pid 记「pid boot_id」，两个都对上才算（协调审 #73-8：EG 重启后 pid 可能被别的进程复用）
+job_alive() { local p b; read -r p b < "$ST/install.pid" 2> /dev/null || return 1; [[ "$p" =~ ^[0-9]+$ ]] && [ "${b:-}" = "$(bootid)" ] && kill -0 "$p" 2> /dev/null; }
 # bg <单元名> <延时秒> <脚本>：后台跑，SSH 断了照跑（有 systemd 用 systemd-run，没有用 setsid nohup）
 bg() {
-  if has_systemd; then
+  if has_systemd && command -v systemd-run > /dev/null; then
     if [ "$2" -gt 0 ]; then systemd-run --quiet --collect --unit "$1" --on-active="${2}s" /bin/bash "$3"
     else systemd-run --quiet --collect --unit "$1" /bin/bash "$3"; fi
   else setsid nohup bash -c "sleep $2; exec bash '$3'" > /dev/null 2>&1 < /dev/null & fi
@@ -288,27 +305,51 @@ case "$verb" in
       rm -f "$np"/*.yaml; cp -a "$bk/." "$np/"
       echo "ERR netplan generate 不过（已恢复原文件）：$(tr '\n' ' ' <<< "$out" | cut -c1-200)"; exit 3
     fi
-    printf '%s\n' '#!/bin/bash' "[ -f '$ST/confirmed-$tok' ] && exit 0" "rm -f '$np'/*.yaml; cp -a '$bk/.' '$np/'; netplan apply" \
-      "echo \"\$(date '+%F %T') 改地址 $tok 没确认，已换回原来的网口配置\" >> '$ST/revert.log'" > "$ST/revert-$tok.sh"
+    # 自动换回要扛得住重启（协调审 #73-1）：新 netplan 已经落盘，换回也得落盘 —— /etc/systemd/system 下持久的 timer
+    # （enable 进 timers.target；OnActiveSec 从 timer 启动算起，开机时 timer 重新启动 → 拔电重启后开机 rs 秒照样换回。不用 OnBootSec：
+    # 机器已开过 rs 秒以上时它算「已过」，行为不直观）。确认（confirm）时连 unit 一起删。
+    # 换回和确认互斥（flock 同一把锁）：换回过的留 reverted-<令牌>，confirm 看到就判失败（#73-7）
+    u="lsa-field-revert-$tok"
+    printf '%s\n' '#!/bin/bash' "exec 8> '$ST/revert-$tok.lock'; flock 8" \
+      "drop() { systemctl disable '$u.timer' > /dev/null 2>&1; rm -f '$UD/$u.timer' '$UD/$u.service'; systemctl daemon-reload > /dev/null 2>&1; true; }" \
+      "[ -f '$ST/confirmed-$tok' ] && { drop; exit 0; }" \
+      "rm -f '$np'/*.yaml; cp -a '$bk/.' '$np/'; netplan apply; touch '$ST/reverted-$tok'" \
+      "echo \"\$(date '+%F %T') 改地址 $tok 没确认，已换回原来的网口配置\" >> '$ST/revert.log'; drop" > "$ST/revert-$tok.sh"
     printf '%s\n' '#!/bin/bash' 'netplan apply' > "$ST/apply-$tok.sh"
-    bg "lsa-field-revert-$tok" "$rs" "$ST/revert-$tok.sh" || { echo 'ERR 定不了自动换回（systemd-run 失败），没改地址'; rm -f "$np"/*.yaml; cp -a "$bk/." "$np/"; exit 3; }
+    undo() { rm -f "$np"/*.yaml; cp -a "$bk/." "$np/"; rm -f "$UD/$u.timer" "$UD/$u.service"; }
+    if has_systemd; then
+      mkdir -p "$UD"
+      printf '%s\n' '[Unit]' "Description=LSA-9600EG 改地址 $tok 没确认就换回原来的网口配置（field-install-egs.sh）" '[Service]' 'Type=oneshot' \
+        "ExecStart=/bin/bash $ST/revert-$tok.sh" > "$UD/$u.service"
+      printf '%s\n' '[Unit]' "Description=LSA-9600EG 改地址 $tok 的自动换回（重启后照样计时）" '[Timer]' "OnActiveSec=${rs}s" 'AccuracySec=1s' \
+        '[Install]' 'WantedBy=timers.target' > "$UD/$u.timer"
+      { systemctl daemon-reload && systemctl enable --now "$u.timer"; } > /dev/null 2>&1 || { undo; echo 'ERR 定不了自动换回（systemctl enable 失败），没改地址'; exit 3; }
+    else
+      # 没有 systemd（只有沙箱）：临时定时，扛不住重启
+      bg "$u" "$rs" "$ST/revert-$tok.sh" || { undo; echo 'ERR 定不了自动换回，没改地址'; exit 3; }
+    fi
     bg "lsa-field-apply-$tok" 2 "$ST/apply-$tok.sh"
     echo "OK readdress $tok" ;;
   confirm)
-    touch "$ST/confirmed-$1"
-    has_systemd && systemctl stop "lsa-field-revert-$1.timer" > /dev/null 2>&1
-    echo "OK confirm $1" ;;
+    tok="$1" u="lsa-field-revert-$1"
+    exec 8> "$ST/revert-$tok.lock"; flock 8
+    [ -f "$ST/reverted-$tok" ] && { echo "ERR 改地址 $tok 已经自动换回过，不能再确认"; exit 3; }
+    touch "$ST/confirmed-$tok"
+    if has_systemd; then
+      systemctl disable --now "$u.timer" > /dev/null 2>&1; rm -f "$UD/$u.timer" "$UD/$u.service"; systemctl daemon-reload > /dev/null 2>&1
+    fi
+    echo "OK confirm $tok" ;;
   settime)
     date -s "@$1" > /dev/null && { command -v hwclock > /dev/null && hwclock -w 2> /dev/null; true; } && echo "OK settime $(date '+%F %T')" ;;
   install)     # install <安装文件名> <sha256> <LAN1> <join-key 的 base64>
     run="$RD/$1" sha="$2" l1="$3" jk="$(base64 -d <<< "$4")" force=''
     # 只给沙箱用：容器里没有物理网口，install.sh 不加 --force 不收 --lan1（deploy/test/field-install-real.sh）
     [ "${LSA_FIELD_RUN_FORCE:-}" = 1 ] && force=' --force'
-    if [ -f "$ST/install.pid" ] && kill -0 "$(cat "$ST/install.pid")" 2> /dev/null; then echo 'OK install running'; exit 0; fi
+    if job_alive; then echo 'OK install running'; exit 0; fi
     if [ "$(cat "$ST/install.rc" 2> /dev/null)" = 0 ] && [ "$(cat "$ST/install.sha" 2> /dev/null)" = "$sha" ]; then echo 'OK install already'; exit 0; fi
     [ -f "$run" ] || { echo "ERR 没有 $run"; exit 3; }
     [ "$(sha256sum "$run" | cut -d' ' -f1)" = "$sha" ] || { echo 'ERR 安装文件 sha256 不对'; exit 3; }
-    printf '%s\n' '#!/bin/bash' "echo \$\$ > '$ST/install.pid'" \
+    printf '%s\n' '#!/bin/bash' "echo \"\$\$ \$(cat /proc/sys/kernel/random/boot_id 2> /dev/null || echo -)\" > '$ST/install.pid'" \
       "LSA_TMP='$R/var/tmp' bash '$run' --role eg --lan1 $(printf %q "$l1") --join-key $(printf %q "$jk") --yes$force >'$ST/install.log' 2>&1 < /dev/null" \
       "echo \$? > '$ST/install.rc.tmp'; mv '$ST/install.rc.tmp' '$ST/install.rc'; rm -f '$ST/install.pid'" > "$ST/install-job.sh"
     rm -f "$ST/install.rc"; echo "$sha" > "$ST/install.sha"; date +%s > "$ST/install.started"
@@ -319,7 +360,7 @@ case "$verb" in
     echo "gw_neigh=$(ip neigh show "$1" 2> /dev/null | awk '{ print $NF; exit }')" ;;
   istatus)
     echo "elapsed=$(( $(date +%s) - $(cat "$ST/install.started" 2> /dev/null || date +%s) ))"
-    if [ -f "$ST/install.pid" ] && kill -0 "$(cat "$ST/install.pid")" 2> /dev/null; then echo state=running
+    if job_alive; then echo state=running
     elif [ -f "$ST/install.rc" ]; then echo state=done; echo "rc=$(cat "$ST/install.rc")"
     elif [ -f "$ST/install.started" ] && [ $(( $(date +%s) - $(cat "$ST/install.started") )) -lt 30 ]; then echo state=running
     else echo state=none; fi
@@ -391,7 +432,8 @@ auth_fail() { grep -q -e 'Permission denied' -e 'incorrect password' -e 'Sorry, 
 
 # ---------- 会话日志 ----------
 SESSION="$SD/run-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$SESSION") 2>&1
+# tee 不带锁文件的 fd 9：它要等所有写它的进程都退了才退，带着 fd 9 会让锁比脚本活得久（沙箱 Ctrl-C 测试测出）
+exec > >(exec tee -a "$SESSION" 9>&-) 2>&1
 exec 3>&1
 ev() { local sn="$1"; shift; echo "$(ts) [$sn] $*" >&3; [ -d "$SD/$sn" ] && echo "$(ts) $*" >> "$SD/$sn/log"; return 0; }
 echo "== $(ts) field-install-egs.sh：分配表 $PLAN（${#P_ORDER[@]} 台），状态 $SD"
@@ -399,7 +441,8 @@ echo "== $(ts) field-install-egs.sh：分配表 $PLAN（${#P_ORDER[@]} 台），
 echo "   LAN1 地址 $LAN1_ADDR；改地址 ${REVERT_S} s 连不回来自动换回；EG 时钟差 > 60 s $([ "$SETTIME" = 1 ] && echo 校成本机时间 || echo 只提醒)"
 
 # ---------- 阶段 A：在 .250 上认机器、改地址（一次一台）----------
-NEWN=0 CUR_SN=''
+NEWN=0 CUR_SN='' HOLD_UNTIL=0
+HOLD_MARGIN_S="${LSA_FIELD_HOLD_MARGIN_S:-90}"   # 换回之后 netplan apply / 开机还要一会儿
 declare -A HOLD=()
 stage_a() {
   local a o rc host sn line nics l2='' l1='' cand=() mid key f s other d tok want addr gw l2mac dupmac
@@ -438,10 +481,13 @@ stage_a() {
       ev "$sn" "！ 主机密钥和 $other 一样：克隆后没换主机密钥（手册 §8 第 3 步）。照常继续，建议之后在这台上重新生成"
   done
   mid="$(kv machine_id "$o")"
+  # 记过 machine-id 就比（协调审 #73-6）：克隆机主机名、主机密钥都一样时只有它分得出，不然会把同一个正式地址再给一台
+  if [ -n "$(st_get "$sn" machine_id)" ] && [ "$(st_get "$sn" machine_id)" != "$mid" ]; then
+    ev "$sn" "!! 主机名 $host 以前记的是另一台（machine-id $(st_get "$sn" machine_id | cut -c1-12)…，这台 ${mid:0:12}…）：克隆后没改主机名 / 没换 machine-id？改好再来；确实是换机 --redo $sn"
+    st_set "$sn" note "同名不同机（machine-id 不同）"; ssh_close "$a" "$TEMP_IP"; return 1
+  fi
   if [ "$(st_get "$sn" phase)" = pending ] || [ "$(st_get "$sn" phase)" = joined ]; then
-    if [ -n "$(st_get "$sn" machine_id)" ] && [ "$(st_get "$sn" machine_id)" != "$mid" ]; then
-      ev "$sn" "!! 主机名 $host 和已经做完的 $sn 一样，但不是同一台（machine-id 不同）：克隆后没改主机名？在这台上改好主机名再来"
-    else ev "$sn" "这台已经做过（$(zh_phase "$(st_get "$sn" phase)")），怎么又在 $TEMP_IP 上？不重做（确实要重做 --redo $sn）"; fi
+    ev "$sn" "这台已经做过（$(zh_phase "$(st_get "$sn" phase)")），怎么又在 $TEMP_IP 上？不重做（确实要重做 --redo $sn）"
     ssh_close "$a" "$TEMP_IP"; return 1
   fi
   # 系统
@@ -476,7 +522,10 @@ stage_a() {
   if tcp_open "${addr%/*}" 22 || tcp_open "${addr%/*}" 80; then
     ev "$sn" "!! ${addr%/*} 上已经有机器应答（22 / 80 口）：地址冲突，先查清"; st_set "$sn" phase failed-a note '正式地址被占'; ssh_close "$a" "$TEMP_IP"; return 1
   fi
-  d=$(( $(kv epoch "$o") - $(date +%s) ))
+  # EG 报的是文本，先校验再做算术（协调审 #73-5）
+  d="$(kv epoch "$o")"
+  if [[ "$d" =~ ^[0-9]{9,11}$ ]]; then d=$(( d - $(date +%s) ))
+  else ev "$sn" "！ 读不到 EG 的时间（回的是「${d:0:20}」）：不校时、照常改地址"; d=0; fi
   st_set "$sn" hostname "$host" machine_id "$mid" lan2 "$l2" lan1 "$l1" addr "$addr" gw "$gw" \
     macs "$(grep '^nic=' <<< "$o" | cut -d'|' -f1,2 | sed 's/^nic=//' | tr '\n' ' ')"
   echo
@@ -525,8 +574,10 @@ stage_a() {
     else ev "$sn" "!! ${addr%/*} 上连上的不是这台 / 地址不对：$(tail -2 <<< "$o" | tr '\n' ' ' | cut -c1-160)"; fi
   else ev "$sn" "!! ${RECONNECT_S} s 内在 ${addr%/*} 上连不回来（网关 / 前缀 / 交换机网段不对？）"; fi
   HOLD[$sn]=1
+  # 没确认的那台这会儿还在新地址上，.250 看着是空的 —— 不能当它已经拔走（协调审 #73-2）：等它换回 .250 再拔，或过了换回时间 + 余量
+  HOLD_UNTIL=$(( $(date +%s) + REVERT_S + HOLD_MARGIN_S ))
   st_set "$sn" phase failed-a note "改地址后连不回来：EG 在令牌 $tok 下 ${REVERT_S} s 后自动换回 $TEMP_IP，修好分配表后重做"
-  ev "$sn" "这台会在改地址后 ${REVERT_S} s 自动换回 $TEMP_IP；查清后等它回到 $TEMP_IP 再按 r 重做"
+  ev "$sn" "这台会在改地址后 ${REVERT_S} s 自动换回 $TEMP_IP（重启过也会）：先别插下一台，等它回到 $TEMP_IP 再拔走（或修好后 r 重做）"
   return 1
 }
 
@@ -598,8 +649,7 @@ stage_b() {
   ev "$sn" "完成：$(zh_phase "$(st_get "$sn" phase)")（EG $(kv eg_version "$o")）"
 }
 
-# ---------- 后台队列 ----------
-QUEUE=() PIDS=() TOUCHED=() SESSION_FAIL=0
+# ---------- 后台队列（QUEUE / PIDS 在开头定义：cleanup 要停 PIDS）----------
 # 退出码：这一次做过的（阶段 A 失败的、进过后台安装的）有失败就是 1；分配表里别的台以前的失败不算
 rc_final() { local s; [ "$SESSION_FAIL" = 0 ] || return 1; for s in "${TOUCHED[@]}"; do case "$(st_get "$s" phase)" in failed-*) return 1 ;; esac; done; return 0; }
 running_n() { local n=0 p; for p in "${PIDS[@]}"; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done; echo "$n"; }
@@ -628,7 +678,6 @@ if [ "$MODE" = resume ]; then
   echo "续做 ${#QUEUE[@]} 台：${QUEUE[*]}"
   summary
   rc_final; exit $?
-  exit 0
 fi
 
 # ---------- 能到 .250 吗 ----------
@@ -648,6 +697,11 @@ elif command -v ip >/dev/null; then
   fi
 fi
 
+# .250 查重靠 arping 或 python3 广播 ARP（要 root）；都没有时只看 ARP 表，两台同时接着查不出来（协调审 #73-3）
+if [ "$(id -u)" != 0 ]; then echo "！ 不是 root：$TEMP_IP 查重只看 ARP 表，两台新机同时接着查不出来 —— 一次只接一台"
+elif ! command -v arping >/dev/null && ! command -v python3 >/dev/null; then echo "！ 本机没有 arping 也没有 python3：$TEMP_IP 查重只看 ARP 表，两台新机同时接着查不出来 —— 一次只接一台"
+fi
+
 # 上次改好地址还没装完的：先在后台接着做
 if [ "$MODE" != readdress ]; then
   mapfile -t QUEUE < <(unfinished)
@@ -664,6 +718,9 @@ while :; do
   # 先清 .250 的 ARP：上一台改走后，ARP 表里还是它的 MAC，不清就探不到刚插上的下一台（2026-10-20 VM 实测 --once 因此说「没有机器」）
   flush_arp
   if tcp_open "$TEMP_IP" 22; then
+    if [ "$WAIT_GONE" = 1 ] && [ "$HOLD_UNTIL" -gt 0 ]; then
+      HOLD_UNTIL=0; echo "$(ts) 刚才没确认的那台已换回 $TEMP_IP：现在可以拔走它（或修好后 r 回车重做）"
+    fi
     if [ "$WAIT_GONE" = 0 ]; then
       SAID=''
       if stage_a; then
@@ -677,17 +734,18 @@ while :; do
       fi
       continue
     fi
+  elif [ "$WAIT_GONE" = 1 ] && [ "$(date +%s)" -lt "$HOLD_UNTIL" ]; then
+    if [ "$SAID" != hold ]; then echo "$(ts) 等刚才没确认的那台换回 $TEMP_IP（最多还要 $(( HOLD_UNTIL - $(date +%s) )) s）：先别插下一台，它回来以后拔走"; SAID=hold; fi
   else
     [ "$WAIT_GONE" = 1 ] && echo "$(ts) $TEMP_IP 上的那台已拿走"
-    WAIT_GONE=0
+    WAIT_GONE=0; HOLD_UNTIL=0
     # --once：刚插上 / 刚开机的那台要等几秒才出现，等到 ONCE_WAIT_S 再放弃
     if [ "$ONCE" = 1 ] && [ $(( $(date +%s) - T_START )) -ge "$ONCE_WAIT_S" ]; then echo "$(ts) ${ONCE_WAIT_S} s 内 $TEMP_IP 上没有机器"; SESSION_FAIL=1; break; fi
     if [ "$SAID" != wait ]; then echo "$(ts) 等下一台出现在 $TEMP_IP …（LAN2 接交换机、上电即可；q 回车结束）$([ "$MODE" = readdress ] || echo "  后台：$(running_n) 台在装、${#QUEUE[@]} 台排队")"; SAID=wait; fi
   fi
   cmd=''
   if has_tty && [ -t 0 ]; then read -r -t 2 cmd < /dev/tty || true; else sleep 2; fi
-  case "$cmd" in q) echo "$(ts) 结束：不再等新机"; break ;; r) WAIT_GONE=0; SAID=''; HOLD=() ;; esac
+  case "$cmd" in q) echo "$(ts) 结束：不再等新机"; break ;; r) WAIT_GONE=0; SAID=''; HOLD=(); HOLD_UNTIL=0 ;; esac
 done
 summary
 rc_final; exit $?
-exit 0

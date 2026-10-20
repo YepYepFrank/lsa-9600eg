@@ -230,7 +230,7 @@ sudo bash /opt/lsa-eg/install.sh --join-key '<那一行>'        # 已经装好�
 sudo bash /opt/lsa9600sp/field-install-egs.sh --plan <站点分配表> --run LSA-9600SP-<版本>.run      # 子站主机不在 192.168.1.x 段时加 --temp-ip 192.168.1.251/24
 ```
 
-分配表每台一行「SN  LAN2地址/前缀  网关  单元号  LAN1网口」；口令只在开头问一次、不落盘；做完写出 join 清单给 `join-egs.sh --from-file … --plan`。设计、安全阀、续跑与沙箱测试记录见 `docs/EG现场批量安装方案.md`。
+分配表每台一行「SN  LAN2地址/前缀  网关  单元号  LAN1网口」；口令只在开头问一次、不落盘；做完写出 join 清单给 `join-egs.sh --from-file … --plan`。**一次只插一台新机**（出厂都是 `.250`）；改地址失败的那台会在 180 s 后自己换回 `.250`（重启过也会），屏幕提示等它回来、拔走之后再插下一台。设计、安全阀、续跑与沙箱测试记录见 `docs/EG现场批量安装方案.md`。
 
 - **join-key** 共 7 段：`LSAJOIN1`、子站地址、隧道公钥（类型 + 内容）、升级公钥（类型 + 内容）、校验（前 6 段 sha256 的前 8 位）。只有公钥，可以随便传；少粘一截、抄错一位直接拒绝。
 - **效果**等于 `--sp-key` 加 `--upgrade-key`，两把 key 都加 `from=<子站地址>`：隧道账号 lsa-sp 只能从子站开隧道到本机 18080；升级账号 lsa-upg 只能进升级入口（§6c）。另记 `config/join.json`（子站地址、两把 key 的指纹、时间，600）。
