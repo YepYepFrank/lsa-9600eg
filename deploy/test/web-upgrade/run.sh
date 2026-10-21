@@ -409,6 +409,48 @@ f3=$(st "$PC" "$SHA" null); LSA_EGUP_START_WAIT=1 runner
 wait_status "$f3" done 40 && ok "unit 退出后 --finish 补成 done（$(status "$f3")）" || { bad "--finish 没补上"; show "$f3"; }
 rm -f /fake/eg/eg1/hello_slow
 
+say "9d. 联调 F2：systemd-run 起了批次以后执行器出异常 —— 不记 failed，记 running + 批次号，--finish 按批次补"
+# 用一个外壳加载执行器、把某个函数换成抛异常的（只在这一次运行里），其余照常；unit 退出时的 --finish 是原样的执行器
+fault() {  # fault <函数名> <python 条件表达式，a 是参数元组>
+  python3 - "$RUNNER" "$1" "$2" >> /tmp/runner.log 2>&1 <<'EOF'
+import importlib.machinery, sys
+path, fn, cond = sys.argv[1:4]
+m = importlib.machinery.SourceFileLoader('runner', path).load_module()
+orig = getattr(m, fn)
+def bad(*a, **k):
+    if eval(cond):
+        raise RuntimeError('测试注入的异常')
+    return orig(*a, **k)
+setattr(m, fn, bad)
+sys.argv = [path]
+m.main()
+EOF
+}
+reset_egs; echo 3 > /fake/eg/eg1/slow
+PD=$(req plan '{"run":"a.run","sel":["AH01-A"],"force":false,"skipOffline":false}'); PE=$(req plan '{"run":"a.run","sel":["AH01-A"],"force":false,"skipOffline":false}'); runner
+# a) 等批次 meta 的时候出异常（read_meta 抛）
+e1=$(st "$PD" "$SHA" null); fault read_meta True
+{ [ "$(status "$e1")" = running ] && [ -n "$(jget "$SR/$e1.json" 'o["result"]["batch"]')" ] && grep -q '批次已经起来了' <<< "$(reason "$e1")"; } \
+  && ok "等 meta 时出异常：running + 批次号（$(reason "$e1" | cut -c1-40)…）" || { bad '等 meta 时出异常记错了'; show "$e1"; }
+wait_status "$e1" done 60 && ok "批次做完，unit 的 --finish 补成 done" || { bad '--finish 没补成 done'; show "$e1"; }
+EB="$(jget "$SR/$e1.json" 'o["result"]["batch"]')"
+chk "批次 $EB 真的升了（eg1 $(cat /fake/eg/eg1/ver)）" [ "$(cat /fake/eg/eg1/ver)" = "$NEW" ]
+# b) launch 返回之后、写结果的时候出异常（put_state 写 done 时抛）
+reset_egs; echo 3 > /fake/eg/eg1/slow
+e2=$(st "$PE" "$SHA" null); fault put_state 'a[2] == "done" and a[1] == "start"'
+{ [ "$(status "$e2")" = running ] && [ -n "$(jget "$SR/$e2.json" 'o["result"]["batch"]')" ]; } \
+  && ok "写结果时出异常：running + 批次号，不是 failed（$(status "$e2")）" || { bad '写结果时出异常记成了别的'; show "$e2"; }
+wait_status "$e2" done 60 && ok "unit 退出后 --finish 补成 done" || { bad '--finish 没补成 done'; show "$e2"; }
+# c) 老的 failed（result 空）：--finish <请求号> <批次号> 按批次 meta 补；meta 的 req 不是它就不动
+EB2="$(jget "$SR/$e2.json" 'o["result"]["batch"]')"
+python3 -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o.update(status="failed",result=None,reason="执行器出错：x"); json.dump(o,open(p,"w"))' "$SR/$e2.json"
+python3 -I "$RUNNER" --finish "$e2" "$EB2" >> /tmp/runner.log 2>&1
+chk "failed + result 空、批次 meta 的 req 是它：--finish 补成 done、result 带批次（$(jget "$SR/$e2.json" 'o["status"]+" "+str(o["result"])')）" [ "$(jget "$SR/$e2.json" 'o["status"]+" "+o["result"]["batch"]')" = "done $EB2" ]
+python3 -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o.update(status="failed",result=None,reason="执行器出错：x"); json.dump(o,open(p,"w"))' "$SR/$e1.json"
+python3 -I "$RUNNER" --finish "$e1" "$EB2" >> /tmp/runner.log 2>&1
+chk "批次 meta 的 req 不是这个请求：failed 不动" [ "$(status "$e1")" = failed ]
+chk "ExecStopPost 带上批次号（--finish <请求号> <批次号>）" grep -q -- "--finish $e2 $EB2 -- " /tmp/runner.log
+
 say "10. 执行器：上限"
 reset_egs
 for n in $(seq 25); do req scan '{}' > /dev/null; done

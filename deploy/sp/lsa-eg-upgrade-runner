@@ -61,6 +61,7 @@ SHA_RE = re.compile(r'[0-9a-f]{64}', re.A)
 USER_RE = re.compile(r'[A-Za-z0-9._@-]{1,64}', re.A)   # 会进 systemd-run 的命令行：不许 $ % 空白
 SELF = os.path.abspath(__file__)
 RFD = DFD = None           # requests/、done/ 的目录 fd（main 里打开）
+LAUNCHED = {}              # 请求号 → 已经 systemd-run 起来的批次号（之后再出异常也不能记成「发起失败」）
 TYPES = ('scan', 'plan', 'start', 'stop', 'resume')
 TOP_KEYS = {'id', 'type', 'at', 'user', 'params'}
 
@@ -487,41 +488,61 @@ def launch(rid, typ, argv, desc, batch):
     """systemd-run 另起 unit（执行器 oneshot 退出时不会被一起杀掉），等批次 meta 写出来。
     unit 退出时 ExecStopPost 再调本程序 --finish，补上这里等不到的结果。返回 (status, reason)"""
     unit = unit_name(typ, batch, rid)
-    post = f'ExecStopPost=/usr/bin/python3 -I {SELF} --finish {rid}'
+    post = f'ExecStopPost=/usr/bin/python3 -I {SELF} --finish {rid} {batch}'
     cmd = ['systemd-run', '--unit', unit, '--collect', '--quiet', '--description', desc, '--property', post,
            '--', '/bin/bash', SCRIPT] + [sd_arg(a) for a in argv]
     log('  ' + ' '.join(cmd))
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise Fail(f'systemd-run 起不来（{r.returncode}）：{(r.stderr or r.stdout).strip()[:300]}')
-    ready = ready_fn(typ, rid)
-    end = time.time() + START_WAIT_S
-    while time.time() < end:
-        m = read_meta(batch)
-        if m is not None and ready(m):
-            return 'done', ''
-        if not unit_active(unit):
+    # 从这里起批次已经在跑：后面出什么异常都不能记成 failed（联调 F2），一律 running + 批次号，unit 退出时 --finish 补结果
+    LAUNCHED[rid] = batch
+    try:
+        ready = ready_fn(typ, rid)
+        end = time.time() + START_WAIT_S
+        while time.time() < end:
             m = read_meta(batch)
             if m is not None and ready(m):
                 return 'done', ''
-            raise Fail(not_started_reason(unit))
-        time.sleep(1)
+            if not unit_active(unit):
+                m = read_meta(batch)
+                if m is not None and ready(m):
+                    return 'done', ''
+                raise Fail(not_started_reason(unit))
+            time.sleep(1)
+    except Fail:
+        raise
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return 'running', launched_note(e, unit)
     # 等不到：照实写 running（带批次号），unit 退出时 --finish 补结果；扩展服务接着看批次目录
     return 'running', f'{START_WAIT_S} s 了还在预检（批次 meta 还没写出来）：结果出来后这里会更新，也可以 journalctl -u {unit}'
 
 
-def finish(rid):
-    """--finish <请求号>（unit 的 ExecStopPost）：结果还是 running 的补成 done / failed"""
+def launched_note(e, unit):
+    return (f'批次已经起来了，执行器之后出错（{type(e).__name__}: {e}）'[:200]
+            + f'：结果以批次目录为准，unit 退出时这里会更新（journalctl -u {unit}）')
+
+
+def finish(rid, batch=None):
+    """--finish <请求号> [批次号]（unit 的 ExecStopPost）：结果还是 running 的补成 done / failed；
+    记成 failed 的、但批次 meta 表明正是这个请求起来的（执行器起完批次后出了异常，联调 F2），按批次补成 done"""
     if not ID_RE.fullmatch(rid):
         return
     st = read_json(state_path(rid))
-    if not isinstance(st, dict) or st.get('status') != 'running' or st.get('type') not in ('start', 'resume'):
+    if not isinstance(st, dict) or st.get('status') not in ('running', 'failed') or st.get('type') not in ('start', 'resume'):
         return
-    batch = (st.get('result') or {}).get('batch')
+    rb = (st.get('result') or {}).get('batch') if isinstance(st.get('result'), dict) else None
+    batch = rb if isinstance(rb, str) else batch
     if not isinstance(batch, str) or not BATCH_RE.fullmatch(batch):
         return
     m = read_meta(batch)
-    if m is not None and ready_fn(st['type'], rid)(m):
+    ok = m is not None and ready_fn(st['type'], rid)(m)
+    if st['status'] == 'failed':
+        if not ok:
+            return   # 真没起来的 failed 不动
+        st.update(status='done', reason='', result={'batch': batch}, endedAt=now_ms())
+    elif ok:
         st.update(status='done', reason='', endedAt=now_ms())
     else:
         code = os.environ.get('EXIT_STATUS', '')
@@ -770,7 +791,17 @@ def handle(name):
         log(f'[{rid}] 失败：{e}')
     except Exception as e:  # noqa: BLE001 —— 一个请求出错不影响别的
         traceback.print_exc()
-        put_state(rid, typ, 'failed', at, f'执行器出错：{type(e).__name__}: {e}'[:300], None, now_ms())
+        batch = LAUNCHED.get(rid)
+        if batch:   # 批次已经 systemd-run 起来了（联调 F2）：照实写 running + 批次号，不写 failed
+            unit = unit_name(typ, batch, rid)
+            try:
+                put_state(rid, typ, 'running', at, launched_note(e, unit), {'batch': batch}, None)
+                if not unit_active(unit):
+                    finish(rid)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+        else:
+            put_state(rid, typ, 'failed', at, f'执行器出错：{type(e).__name__}: {e}'[:300], None, now_ms())
     finally:
         to_done(name)
 
@@ -815,8 +846,8 @@ def main():
     os.umask(0o022)
     if os.geteuid() != 0:
         sys.exit('要 root 跑')
-    if len(sys.argv) == 3 and sys.argv[1] == '--finish':
-        finish(sys.argv[2])
+    if len(sys.argv) in (3, 4) and sys.argv[1] == '--finish':   # 0.19.0 早先起的 unit 只带请求号
+        finish(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
         return
     for d, mode in ((ROOT, 0o755), (REQ_DIR, 0o700), (DONE_DIR, 0o700), (STATE_DIR, 0o755), (SREQ_DIR, 0o755)):
         os.makedirs(d, mode=mode, exist_ok=True)
