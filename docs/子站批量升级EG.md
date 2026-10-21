@@ -182,6 +182,8 @@ LSA-9600SP-0.18.1-<日期>-r1-offline.run.sig      ← 0.18.1 起
 
 ## 8. 网页入口（0.19.0 起）
 
+> **0.18.2 不启用**（用户 10-21 定）：一键安装文件照装执行器与 systemd 单元，但 `.path` / `.timer` 不启用、子站网页没有这个入口（扩展服务 `EXT_EGUP_ENABLED` 缺省 0）；升到 0.18.2 时已启用过的会被关掉。要试用：`setup.sh --role sp --enable-web-upgrade` 并在子站 `docker/.env` 设 `EXT_EGUP_ENABLED=1`。0.19.0 起缺省打开。
+
 子站网页「系统 → 网关升级」做的事和上面的命令行完全一样：网页（扩展服务 lsa-ext，容器里、没有升级 key）只往请求目录写白名单请求，由子站主机上 root 的**执行器** `lsa-eg-upgrade-runner` 校验后调同一个 `upgrade-egs.sh`。批次、日志、`--list` / `--resume` 两边通用；同一时间只允许一个批次（`upgrade-egs.sh` 自己拿 `/run/lsa9600sp/eg-upgrade.lock`，命令行和网页谁后来谁报「已有批次在跑」）。
 
 **目录**（一键安装文件 `--role sp` 建，升级时重跑会把属主 / 权限改回约定）：

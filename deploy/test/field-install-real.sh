@@ -57,7 +57,7 @@ sed 's/^/    /' /tmp/egfield-run.log | tail -25
 [ "$rc" = 0 ] && ok "退出码 0（$(( $(date +%s) - t0 )) s）" || bad "退出码 $rc"
 
 echo; echo '== 2. 核对'
-ph="$(os sed -n 's/^phase=//p' /fake/sd/SNR001/state | tail -1)"
+ph="$(os sed -n 's/^phase=//p' /fake/sd/SNR001/state | tail -1 || true)"
 [ "$ph" = pending ] && ok '记「待接入」' || bad "阶段 $ph"
 st="$(os bash /opt/lsa-eg/install.sh --status 2>&1)"
 grep -q '接入：待接入 —— 已授权子站 192.168.10.2' <<< "$st" && ok "install.sh --status：$(grep -m1 '接入：' <<< "$st")" || bad "install.sh --status 没有待接入：$(grep -m1 '接入：' <<< "$st")"
