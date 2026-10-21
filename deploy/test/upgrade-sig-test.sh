@@ -1,15 +1,18 @@
 #!/bin/bash
-# 批量升级验签验收（0.18.1）：两台一次性特权 ubuntu:24.04（sigsp = 子站主机、sigeg = EG，网络 lsa-sig；名字和 it-lib.sh 的 itsp / iteg 错开），
+# 批量升级验签验收（0.18.1；0.18.2 起签名强制）：两台一次性特权 ubuntu:24.04（sigsp = 子站主机、sigeg = EG，网络 lsa-sig；名字和 it-lib.sh 的 itsp / iteg 错开），
 # 都用【上一版正式一键安装文件】从头装、一键加柜接好，然后：
-#   子站换上本分支的 upgrade-egs.sh + 测试发布公钥（= 子站先升到 0.18.1 的样子），用本分支 EG 脚本做的测试包（it-mkrun.sh，测试私钥签名）：
-#   A  --plan sig1（EG 还是老入口 4）：签名「已验」、验签列「子站验」
-#   B  升到 sig1：成功，汇总「子站已验签，EG 是老入口没验」
+#   子站换上本分支的 upgrade-egs.sh + 测试发布公钥（= 子站先升到新版的样子），用本分支 EG 脚本做的测试包（it-mkrun.sh，测试私钥签名）：
+#   （EG 起点是 0.18.1 起的（入口 5，装着正式发布公钥）：先把 EG 的 release-signers 换成测试公钥，= 测试 key 是发布 key）
+#   A  --plan sig1：签名「已验」、验签列「子站验」（EG 老入口 4）/「EG 验」（入口 5）
+#   B  升到 sig1：成功，汇总「子站已验签，EG 没验」/「已验签（EG）」；EG 入口变 6
 #   C  --plan sig2（EG 已是入口 5）：验签列「EG 验」
 #   D  篡改 .run（sig2 末尾多 1 字节，.sig 不变）：--plan / 升级都「整批不开始」；子站验不了时（LSA_RELEASE_SIGNERS 指到没有的文件）EG 拒绝，汇总写原因
 #   E  别人的 key 签的 .sig：同 D
 #   F  升到 sig2（真签名）：成功，汇总「已验签（EG）」，EG state sig=ok
-#   G  没有 .sig：--plan --force 验签列「未签名」，签名行写过渡期照升
-#   H  EG 上 EG_UPG_SIG_REQUIRED=1：没签名的 --plan 报 !!；EG 入口直接 start 也拒
+#   G  没有 .sig（0.18.2 起强制）：--plan --force 签名行 !!、整批 !!（rc ≠ 0）；升级整批不开始；--allow-unsigned 对要求签名的 EG 也 !!
+#   H  没 .sig 被拒：EG 入口直接 put + start 拒绝；EG 没有发布公钥时带真 .sig 也拒（验不了签名）
+#   I  .env 逃生口 EG_UPG_SIG_REQUIRED=0：hello sig_required=0；子站 --allow-unsigned --force 升级成功、汇总「未验签（应急」；
+#      EG 审计 /var/log/lsa-upg.log 有「应急：验签强制已关」、state sig=unsigned、install.sh --status 报 !!；子站 allow-unsigned.log 有记录；删掉后 sig_required=1
 # 不下载：ubuntu:24.04 用本机的；openssh / sudo 的 deb 用 DEBS 目录（0.17.2 批准下载过的那批）；Docker 与镜像用安装文件里的。
 #   bash deploy/test/upgrade-sig-test.sh <子站用的上一版 .run> <EG 用的上一版 .run> <工作目录> <放 openssh deb 的目录> [--keep]
 # 子站和 EG 可以给不同的上一版（0.18.0 r1 的样板模型里 T1 三个单元、北向测点超过一个柜块，子站全新装时 lsa-ext 起不来 ——
@@ -117,24 +120,35 @@ ok '篡改件：d（.run 多 1 字节）、e（别人签的）、g（没签名�
 sed 's/\r$//' "$ROOT/deploy/sp/upgrade-egs.sh" | docker exec -i "$SPC" sh -c 'cat > /opt/lsa9600sp/upgrade-egs.sh && chmod 755 /opt/lsa9600sp/upgrade-egs.sh'
 docker exec -i "$SPC" sh -c 'cat > /opt/lsa9600sp/release-signers' < "$W/test-signers"
 
+entry_now() { egx sh -c "grep -m1 '^ENTRY_VERSION=' /usr/local/sbin/lsa-eg-upgrade | cut -d= -f2"; }
+ENT0="$(entry_now)"
+if [ "${ENT0:-0}" -ge 5 ]; then
+  docker exec -i "$EGC" sh -c 'cat > /opt/lsa-eg/release-signers' < "$W/test-signers"
+  ok "EG 起点入口 $ENT0（自带正式发布公钥）：换成测试公钥"
+fi
 UP() { spx env ${UPENV:-} bash /opt/lsa9600sp/upgrade-egs.sh --only "$U" "$@"; }
 summary_line() { spx sh -c 'd=$(ls -1d /var/log/lsa9600sp/eg-upgrade/*/ | tail -1); cat "$d/summary.tsv"'; }
 
-say; say "== A. --plan $R1（EG 入口 $(egx sh -c "grep -m1 '^ENTRY_VERSION=' /usr/local/sbin/lsa-eg-upgrade | cut -d= -f2")）"
+say; say "== A. --plan $R1（EG 入口 $ENT0）"
 out="$(UP --run "/w/runs/$R1" --plan 2>&1)"; rc=$?; echo "$out" | tee -a "$LOG" | sed 's/^/    /'
 [ "$rc" = 0 ] && ok '--plan rc 0' || bad "--plan rc $rc"
 grep -q '^签名：已验' <<< "$out" && ok '签名行「已验」' || bad '签名行不是「已验」'
-grep -E "^$U .*升级 +子站验" <<< "$out" >/dev/null && ok '验签列「子站验」（老入口）' || bad '验签列不是「子站验」'
+if [ "${ENT0:-0}" -ge 5 ]; then
+  grep -E "^$U .*升级 +EG 验" <<< "$out" >/dev/null && ok "验签列「EG 验」（入口 $ENT0）" || bad '验签列不是「EG 验」'
+else
+  grep -E "^$U .*升级 +子站验" <<< "$out" >/dev/null && ok '验签列「子站验」（老入口）' || bad '验签列不是「子站验」'
+fi
 
 say; say "== B. 升到 $V1"
 out="$(UP --run "/w/runs/$R1" 2>&1)"; rc=$?; echo "$out" | tail -8 | tee -a "$LOG" | sed 's/^/    /'
 [ "$rc" = 0 ] && ok "升级成功（$(egx cat /opt/lsa-eg/VERSION)）" || bad "升级 rc $rc"
-grep -q '子站已验签，EG 是老入口没验' <<< "$(summary_line)" && ok '汇总：子站已验签，EG 是老入口没验' || bad "汇总签名说明不对：$(summary_line)"
-[ "$(egx sh -c "grep -m1 '^ENTRY_VERSION=' /usr/local/sbin/lsa-eg-upgrade | cut -d= -f2")" = 5 ] && ok 'EG 入口已是 5' || bad 'EG 入口没换成 5'
+if [ "${ENT0:-0}" -ge 5 ]; then want='已验签（EG）'; else want='子站已验签，EG 没验'; fi
+grep -q "$want" <<< "$(summary_line)" && ok "汇总：$want" || bad "汇总签名说明不对：$(summary_line)"
+[ "$(entry_now)" = 6 ] && ok 'EG 入口已是 6' || bad "EG 入口没换成 6（$(entry_now)）"
 egx test -s /opt/lsa-eg/release-signers && ok 'EG 装上了发布公钥 /opt/lsa-eg/release-signers' || bad 'EG 没有 release-signers'
 egx bash -c 'cd /opt/lsa-eg && bash install.sh --status 2>&1' | grep -E '升级验签' | sed 's/^/    /' | tee -a "$LOG"
 
-say; say "== C. --plan $R2（EG 入口 5）"
+say; say "== C. --plan $R2（EG 入口 6）"
 out="$(UP --run "/w/runs/$R2" --plan 2>&1)"; rc=$?; echo "$out" | tee -a "$LOG" | sed 's/^/    /'
 grep -E "^$U .*升级 +EG 验" <<< "$out" >/dev/null && ok '验签列「EG 验」' || bad '验签列不是「EG 验」'
 
@@ -162,20 +176,48 @@ out="$(UP --run "/w/runs/$R2" 2>&1)"; rc=$?; echo "$out" | tail -6 | tee -a "$LO
 grep -q '已验签（EG）' <<< "$(summary_line)" && ok '汇总：已验签（EG）' || bad "汇总签名说明不对：$(summary_line)"
 [ "$(egx sed -n 's/^sig=//p' /var/lib/lsa-upg/state | tail -1)" = ok ] && ok "EG state sig=ok（$(egx sed -n 's/^sig_note=//p' /var/lib/lsa-upg/state | tail -1)）" || bad 'EG state sig 不是 ok'  # sete-ok
 
-say; say "== G. 没有 .sig（过渡期）"
+say; say "== G. 没有 .sig（0.18.2 起强制）"
 out="$(UP --run "/w/runs/g/$R2" --plan --force 2>&1)"; rc=$?; echo "$out" | tee -a "$LOG" | sed 's/^/    /'
-[ "$rc" = 0 ] && grep -q '^签名：没有签名' <<< "$out" && grep -E "^$U .*升级 +未签名" <<< "$out" >/dev/null && ok '--plan：签名行「没有签名」、验签列「未签名」、rc 0' || bad "未签名的 --plan 不对（rc $rc）"
+[ "$rc" != 0 ] && grep -q '^签名：!! 没有签名' <<< "$out" && grep -E "^$U .*!! +未签名" <<< "$out" >/dev/null && ok "--plan：签名行 !!、这台 !!、rc $rc" || bad "未签名的 --plan 没拦（rc $rc）"
+out="$(UP --run "/w/runs/g/$R2" --force 2>&1)"; rc=$?
+[ "$rc" != 0 ] && grep -q '整批不开始' <<< "$out" && ok "升级：整批不开始（rc $rc）" || bad "没签名的升级没拦住（rc $rc）"
+[ "$(egx cat /opt/lsa-eg/VERSION)" = "$V2" ] && ok "EG 还是 $V2" || bad "EG 版本变了：$(egx cat /opt/lsa-eg/VERSION)"
+out="$(UP --run "/w/runs/g/$R2" --plan --force --allow-unsigned 2>&1)"; rc=$?; echo "$out" | grep -E "^$U " | tee -a "$LOG" | sed 's/^/    /'  # sete-ok
+[ "$rc" != 0 ] && grep -q 'allow-unsigned 也不行' <<< "$out" && ok "--allow-unsigned：要求签名的 EG 照样 !!（rc $rc）" || bad "--allow-unsigned 放过了要求签名的 EG（rc $rc）"
 
-say; say "== H. EG 提前强制（.env EG_UPG_SIG_REQUIRED=1）"
-egx sh -c 'echo EG_UPG_SIG_REQUIRED=1 >> /opt/lsa-eg/.env'
-out="$(UP --run "/w/runs/g/$R2" --plan --force 2>&1)"; rc=$?; echo "$out" | grep -E "^$U " | tee -a "$LOG" | sed 's/^/    /'  # sete-ok（脚本不用 set -e）
-[ "$rc" != 0 ] && grep -q '要求发布件签名' <<< "$out" && ok "--plan 报 !!（rc $rc）" || bad "--plan 没报（rc $rc）"
+say; say "== H. 没 .sig 被拒（EG 入口直接调，缺省强制）"
+egx sudo -n /usr/local/sbin/lsa-eg-upgrade hello > "$W/hello.txt" 2>&1; grep -qx 'sig_required=1' "$W/hello.txt" && ok 'hello sig_required=1（缺省）' || bad 'hello 不是 sig_required=1'
 sha="$(sha256sum "$W/runs/g/$R2" | cut -d' ' -f1)"; sz="$(stat -c %s "$W/runs/g/$R2")"
 egx sh -c "sudo -n /usr/local/sbin/lsa-eg-upgrade 'put $sha $sz' < /w/runs/g/$R2 >/dev/null"
 out="$(egx sudo -n /usr/local/sbin/lsa-eg-upgrade "start $sha" 2>&1)"; echo "    $out" | tee -a "$LOG"
-grep -q '^ERR 安装文件没有签名' <<< "$out" && ok '入口直接 start 拒绝' || bad "入口没拒：$out"
+grep -q '^ERR 安装文件没有签名' <<< "$out" && ok '没 .sig：入口 start 拒绝' || bad "入口没拒：$out"
 egx sudo -n /usr/local/sbin/lsa-eg-upgrade "drop $sha" >/dev/null
+# 本机没有发布公钥：带真 .sig 也拒
+egx mv /opt/lsa-eg/release-signers /opt/lsa-eg/release-signers.off
+sha="$(sha256sum "$W/runs/$R2" | cut -d' ' -f1)"; sz="$(stat -c %s "$W/runs/$R2")"; ssz="$(stat -c %s "$W/runs/$R2.sig")"
+egx sh -c "sudo -n /usr/local/sbin/lsa-eg-upgrade 'put $sha $sz' < /w/runs/$R2 >/dev/null && sudo -n /usr/local/sbin/lsa-eg-upgrade 'put-sig $sha $ssz' < /w/runs/$R2.sig >/dev/null"
+out="$(egx sudo -n /usr/local/sbin/lsa-eg-upgrade "start $sha" 2>&1)"; echo "    $out" | tee -a "$LOG"
+grep -q '^ERR 验不了签名' <<< "$out" && ok 'EG 没有发布公钥：带 .sig 也拒' || bad "没公钥没拒：$out"
+egx sudo -n /usr/local/sbin/lsa-eg-upgrade "drop $sha" >/dev/null
+egx mv /opt/lsa-eg/release-signers.off /opt/lsa-eg/release-signers
+
+say; say "== I. 应急逃生口（.env EG_UPG_SIG_REQUIRED=0 + 子站 --allow-unsigned）"
+egx sh -c 'echo EG_UPG_SIG_REQUIRED=0 >> /opt/lsa-eg/.env'
+egx sudo -n /usr/local/sbin/lsa-eg-upgrade hello > "$W/hello.txt" 2>&1; grep -qx 'sig_required=0' "$W/hello.txt" && ok 'hello sig_required=0' || bad 'hello 不是 sig_required=0'
+out="$(UP --run "/w/runs/g/$R2" --plan --force --allow-unsigned 2>&1)"; rc=$?; echo "$out" | tee -a "$LOG" | sed 's/^/    /'
+[ "$rc" = 0 ] && grep -E "^$U .*升级 +未签名 .*应急" <<< "$out" >/dev/null && ok '--plan --allow-unsigned：这台「升级 / 未签名 / 应急」、rc 0' || bad "逃生口 --plan 不对（rc $rc）"
+egx docker image inspect "lsa-eg-app:$V2" >/dev/null 2>&1 || egx docker load -q -i /w/runs/app-sig2.tar >/dev/null
+n0="$(egx sh -c 'grep -c "应急：验签强制已关" /var/log/lsa-upg.log || true')"
+out="$(UP --run "/w/runs/g/$R2" --force --allow-unsigned 2>&1)"; rc=$?; echo "$out" | tail -6 | tee -a "$LOG" | sed 's/^/    /'
+[ "$rc" = 0 ] && [ "$(egx cat /opt/lsa-eg/VERSION)" = "$V2" ] && ok "应急照升成功（$V2）" || bad "应急升级 rc $rc"
+grep -q '未验签（应急' <<< "$(summary_line)" && ok '汇总：未验签（应急…）' || bad "汇总不对：$(summary_line)"
+n1="$(egx sh -c 'grep -c "应急：验签强制已关" /var/log/lsa-upg.log || true')"
+[ "${n1:-0}" -gt "${n0:-0}" ] && ok "EG 审计记了应急：$(egx sh -c 'grep "应急：验签强制已关" /var/log/lsa-upg.log | tail -1' | cut -c1-120)" || bad 'EG 审计没记应急'
+[ "$(egx sed -n 's/^sig=//p' /var/lib/lsa-upg/state | tail -1)" = unsigned ] && ok 'EG state sig=unsigned' || bad 'EG state sig 不是 unsigned'  # sete-ok
+spx test -s /var/log/lsa9600sp/eg-upgrade-allow-unsigned.log && ok "子站审计：$(spx tail -1 /var/log/lsa9600sp/eg-upgrade-allow-unsigned.log | cut -c1-120)" || bad '子站没有 allow-unsigned.log'
+egx bash -c 'cd /opt/lsa-eg && bash install.sh --status 2>&1' > "$W/status.txt"; grep -q '验签强制已应急关闭' "$W/status.txt" && ok 'install.sh --status 报应急关闭' || bad 'install.sh --status 没提示'
 egx sed -i '/^EG_UPG_SIG_REQUIRED=/d' /opt/lsa-eg/.env
+egx sudo -n /usr/local/sbin/lsa-eg-upgrade hello > "$W/hello.txt" 2>&1; grep -qx 'sig_required=1' "$W/hello.txt" && ok '删掉后 sig_required=1' || bad '删掉后不是 sig_required=1'
 
 say; say "== 结果：✓ $n_ok，✗ $fail（日志 $LOG）"
 [ "$fail" = 0 ]

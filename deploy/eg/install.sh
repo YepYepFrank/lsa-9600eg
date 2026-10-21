@@ -488,8 +488,9 @@ upg_status() {
       fp="$(grep -v '^[[:space:]]*#' release-signers | awk 'NF { $1 = ""; $2 = ""; print }' | ssh-keygen -lf - 2>/dev/null | awk '{ printf "%s%s", s, $2; s = "、" }' || true)"
       echo "  升级验签：发布公钥 $nk 把（${fp:-?}）；最近一次任务的签名：$( [ -f "$st" ] && upg_st sig | sed 's/^$/（老入口，没记）/' || echo 没有)"
     else
-      echo '  升级验签：本机没有发布公钥 release-signers（老发布件装的）—— 子站传来的安装文件验不了签'
+      echo '  升级验签：本机没有发布公钥 release-signers（老发布件装的）—— 子站传来的安装文件验不了签，会被拒绝（在 EG 上手工跑新的 .run）'
     fi
+    if grep -qx 'EG_UPG_SIG_REQUIRED=0' .env 2>/dev/null; then echo '  !! 验签强制已应急关闭（.env EG_UPG_SIG_REQUIRED=0）：没签名的安装文件也会装 —— 用完马上删掉这一行'; fi
   else
     echo '子站批量升级：没授权（要用时 sudo bash install.sh --upgrade-key <子站升级公钥>）'
   fi
@@ -500,10 +501,11 @@ security_notes() {
   local msg=()
   [ -f config/initial-password.txt ] && msg+=('本地维护账号 maint 的初始口令文件还在（config/initial-password.txt）：登录管理页改掉口令后删除它')
   id lsa-sp >/dev/null 2>&1 && msg+=('隧道账号 lsa-sp 还在：子站 provision-eg.sh 跑完后可删 —— sudo bash install.sh --drop-sp-key（以后要再建实体重新 --sp-key）')
-  id lsa-upg >/dev/null 2>&1 && msg+=("子站批量升级账号 lsa-upg 已授权（只认 $(upg_from_now)；只能交安装文件给 EG 自己升级，但持子站那把 key 的人能让 EG 装任意安装文件）：不用时 sudo bash install.sh --drop-upgrade-key")
+  id lsa-upg >/dev/null 2>&1 && msg+=("子站批量升级账号 lsa-upg 已授权（只认 $(upg_from_now)；只能交安装文件给 EG 自己升级，持子站那把 key 的人能让 EG 装发布方签过的安装文件）：不用时 sudo bash install.sh --drop-upgrade-key")
   if command -v sshd >/dev/null 2>&1 && sshd -T 2>/dev/null | grep -x 'passwordauthentication yes' >/dev/null; then  # 不用 -q：提前退出会让 sshd 收 SIGPIPE，pipefail 下判成假
     msg+=('SSH 允许口令登录：维护账号改用密钥登录后建议关掉（/etc/ssh/sshd_config.d/ 下写 PasswordAuthentication no，再 systemctl reload ssh）')
   fi
+  grep -qx 'EG_UPG_SIG_REQUIRED=0' .env 2>/dev/null && msg+=('.env 里有 EG_UPG_SIG_REQUIRED=0：批量升级验签强制被应急关了，没签名的安装文件也会装 —— 应急用完删掉这一行')
   grep -q '^EG_PASSIVE=.' .env 2>/dev/null && msg+=('.env 里有 EG_PASSIVE：那是开发用的旁观模式，现场要删掉')
   if grep -q '^EG_LAN1=.' .env 2>/dev/null && [ "$(id -u)" = 0 ] && ! nft list table inet lsa_eg >/dev/null 2>&1; then
     msg+=('LAN1 防火墙没开：摄像机网上 22 / 80 / 8554 都能连（只有管理页 403）—— sudo bash install.sh --fw-on')

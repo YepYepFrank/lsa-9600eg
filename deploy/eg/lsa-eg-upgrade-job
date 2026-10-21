@@ -115,8 +115,8 @@ phase verify
 sig="$(sget sig)"
 case "$sig" in
   ok) echo "已验签：发布方签名（$(sget sig_note)）" ;;
-  nokey) echo "未验签：有签名文件，但$(sget sig_note)（下一版起这样会被拒绝）" ;;
-  *) sset sig unsigned; echo '未验签：这个安装文件没有签名（0.18.1 过渡期照装；下一版起要求发布件签名）' ;;
+  nokey) echo "未验签：有签名文件，但$(sget sig_note)（只有应急关了验签强制才会走到这里）" ;;
+  *) sset sig unsigned; echo "未验签：这个安装文件没有签名（$(sget sig_note)；只有应急关了验签强制才会走到这里）" ;;
 esac
 
 phase install

@@ -167,8 +167,33 @@ def check_keys(o, want, what):
         raise Reject(f'{what}缺字段：{", ".join(miss)}')
 
 
+# 0.18.2：应急 --allow-unsigned 只给命令行（子站主机上 root 手工跑），网页发起的一律不带
+CLI_ONLY = ('--allow-unsigned',)
+
+
+def no_cli_only(argv):
+    """起 upgrade-egs.sh 之前再兜一层：参数里出现只给命令行的开关就拒（正常不会有：argv 都是这里拼的）"""
+    bad = [a for a in argv if a.split('=', 1)[0] in CLI_ONLY]
+    if bad:
+        raise Reject(f'网页入口不许带 {bad[0]}（应急未签名升级只能在子站主机上用命令行）')
+
+
+def has_cli_only(o):
+    """请求里任何地方（键或字符串值）带了只给命令行的开关：直接拒，不当成「不认识的字段」糊过去"""
+    if isinstance(o, dict):
+        return any(has_cli_only(k) or has_cli_only(v) for k, v in o.items())
+    if isinstance(o, list):
+        return any(has_cli_only(v) for v in o)
+    if isinstance(o, str):
+        low = o.lower().replace('_', '-')
+        return 'allow-unsigned' in low or 'allowunsigned' in low
+    return False
+
+
 def validate(obj, rid):
     """§9.2 白名单：未知 type / 字段、格式不对一律拒。返回 (type, params, user)"""
+    if has_cli_only(obj):
+        raise Reject('网页入口不许带 --allow-unsigned / allowUnsigned（应急未签名升级只能在子站主机上用命令行）')
     check_keys(obj, TOP_KEYS, '请求')
     if obj['id'] != rid:
         raise Reject('请求里的 id 和文件名不一致')
@@ -487,6 +512,7 @@ def not_started_reason(unit, extra=''):
 def launch(rid, typ, argv, desc, batch):
     """systemd-run 另起 unit（执行器 oneshot 退出时不会被一起杀掉），等批次 meta 写出来。
     unit 退出时 ExecStopPost 再调本程序 --finish，补上这里等不到的结果。返回 (status, reason)"""
+    no_cli_only(argv)
     unit = unit_name(typ, batch, rid)
     post = f'ExecStopPost=/usr/bin/python3 -I {SELF} --finish {rid} {batch}'
     cmd = ['systemd-run', '--unit', unit, '--collect', '--quiet', '--description', desc, '--property', post,
@@ -571,6 +597,7 @@ def do_plan(rid, p, user):
         argv.append('--force')
     if p['skipOffline']:
         argv.append('--skip-offline')
+    no_cli_only(argv)
     log('  ' + ' '.join(argv))
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=PLAN_TIMEOUT_S)

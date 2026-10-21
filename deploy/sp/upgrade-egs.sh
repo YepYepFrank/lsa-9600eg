@@ -23,7 +23,9 @@
 # 签名（0.18.1 起）：安装文件旁边的 <run>.sig（发布方 ssh-keygen -Y sign 出的）自动一起用：
 #   先在子站用 /opt/lsa9600sp/release-signers 验一遍 —— 签名不对整批不开始（--plan 也报 !!）；
 #   EG 入口是 0.18.1 起的（entry ≥ 5）就把 .sig 一起传过去，EG 用它自己装着的发布公钥再验，不对就拒绝、不装。
-#   过渡期：没有 .sig 照升，汇总写「未验签」；EG 是老入口（升到 0.18.1 的这一次）收不了 .sig，只有子站验过。下一版起没签名不升。
+#   0.18.2 起没签名不升：没有 .sig（或子站、EG 都验不了）--plan 整批 !!、不开始。EG 是老入口（entry < 5）收不了 .sig，只有子站验过（--plan 注明）。
+#   应急（只限应急）：--allow-unsigned 让没签名 / 验不了签的照升，但只对不要求签名的 EG（老入口，或 EG 上 .env 设了 EG_UPG_SIG_REQUIRED=0）；
+#     要求签名的 EG 照样 !!。用了会记进 /var/log/lsa9600sp/eg-upgrade-allow-unsigned.log、批次 meta、run.log 和汇总「未验签（应急）」。
 #   有了签名，持升级 key 的人也只能让 EG 装发布方签过的安装文件（仍然可以装旧一点的签名包，但不降级：版本不比现在的低）。
 # 每台的流程：拷安装文件（EG 上核对 sha256 与空间）→ 开始（EG 自己在后台做，失败自动回退）→ 每 10 s 查进度 →
 #   EG 自查（版本、7 个容器、本地 TB、连上子站）→ 子站核对（子站 TB 上 EG 报的版本、上送、配置版本没丢）→ 删掉 EG 上的拷贝。
@@ -46,7 +48,7 @@ TERMINAL=' done rolled-back rollback-failed check-failed failed '
 
 LOCK=/run/lsa9600sp/eg-upgrade.lock
 
-RUN='' SEL='' CANARY='' PAR=2 PLAN=0 FORCE=0 MODE='' SKIP_OFFLINE=0 JSON=0 BATCH_ARG='' BY='' REQ='' SOURCE=cli EXPECT_SHA=''
+RUN='' SEL='' CANARY='' PAR=2 PLAN=0 FORCE=0 MODE='' SKIP_OFFLINE=0 JSON=0 BATCH_ARG='' BY='' REQ='' SOURCE=cli EXPECT_SHA='' ALLOW_UNSIGNED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --keygen) MODE=keygen ;;
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
     --plan) PLAN=1 ;;
     --force) FORCE=1 ;;
     --skip-offline) SKIP_OFFLINE=1 ;;
+    --allow-unsigned) ALLOW_UNSIGNED=1 ;;
     --resume) MODE=resume; BATCH="${2:?--resume <批次>（--list 看有哪些）}"; shift ;;
     --list) MODE=list ;;
     --json) JSON=1 ;;
@@ -66,12 +69,12 @@ while [ $# -gt 0 ]; do
     --req) REQ="${2:?--req <请求号>}"; shift ;;
     --source) SOURCE="${2:?--source web|cli}"; shift ;;
     --expect-sha) EXPECT_SHA="${2:?--expect-sha <sha256>}"; shift ;;
-    -h | --help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
 done
-[ -n "$MODE" ] || { sed -n '2,30p' "$0"; exit 2; }
+[ -n "$MODE" ] || { sed -n '2,32p' "$0"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo '要 root：sudo bash upgrade-egs.sh …' >&2; exit 1; }
 [[ "$PAR" =~ ^[1-9][0-9]?$ ]] || { echo "--parallel 要 1–99：$PAR" >&2; exit 2; }
 [ "$JSON" = 0 ] || { [ "$MODE" = run ] && [ "$PLAN" = 1 ]; } || { echo '--json 只配 --run … --plan 用' >&2; exit 2; }
@@ -79,6 +82,8 @@ done
 [ -z "$REQ" ] || [[ "$REQ" =~ ^[0-9]{8}-[0-9]{6}-[a-z0-9]{6}$ ]] || { echo "--req 格式不对：$REQ" >&2; exit 2; }
 [ -z "$BY" ] || [[ "$BY" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || { echo '--by 只许字母、数字、. _ @ -（1–64 个）' >&2; exit 2; }
 case "$SOURCE" in web | cli) ;; *) echo "--source 只能 web 或 cli：$SOURCE" >&2; exit 2 ;; esac
+# 应急 --allow-unsigned 只给命令行（0.18.2）：网页入口发起的批次 / 续查一律不许带
+[ "$SOURCE" = cli ] || [ "$ALLOW_UNSIGNED" = 0 ] || { echo '--allow-unsigned 只能在命令行用（--source web 不许带）' >&2; exit 2; }
 [ -z "$EXPECT_SHA" ] || [[ "$EXPECT_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo '--expect-sha 要 64 位小写 hex' >&2; exit 2; }
 BY="${BY:-${SUDO_USER:-root}}"; [[ "$BY" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || BY=root
 UNIT_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,23}$'   # 单元号（来自 eg-list，也就是容器）：不合格的（含 - 开头、. / ..）不碰文件系统
@@ -230,8 +235,8 @@ plan_json() {
   for r in "${JROWS[@]}"; do
     IFS=$'\t' read -r u st from act vs why <<< "$r"
     case "$act" in 升级) a=up; n_up=$((n_up + 1)) ;; 跳过) a=skip ;; *) a=bad; n_bad=$((n_bad + 1)) ;; esac
-    # egSig：EG 验 ok / 子站验 old-entry / 未签名 unsigned / 都验不了 nokey；跳过的行 null
-    case "$vs" in 'EG 验') eg='"ok"' ;; 子站验) eg='"old-entry"' ;; 未签名) eg='"unsigned"' ;; 未验) eg="$(jstr "$SIGST")" ;; *) eg=null ;; esac
+    # egSig：EG 验 ok / 子站验 old-entry / 未签名 unsigned / EG 没有发布公钥 nokey / 都验不了 = 子站的 sig；跳过的行 null
+    case "$vs" in 'EG 验') eg='"ok"' ;; 子站验) eg='"old-entry"' ;; 未签名) eg='"unsigned"' ;; 'EG 没公钥') eg='"nokey"' ;; 未验) eg="$(jstr "$SIGST")" ;; *) eg=null ;; esac
     [ "$a" != skip ] || eg=null
     printf '%s{"unit":%s,"state":%s,"from":%s,"action":"%s","reason":%s,"egSig":%s}' \
       "$sep" "$(jstr "$u")" "$(jstr "$st")" "$(jstr_or_null "$from")" "$a" "$(jstr "${why:-}")" "$eg"
@@ -242,6 +247,8 @@ plan_json() {
   # skip 和文字的「合计」一致：含没有地址的那几台
   [ "$BAD" = 0 ] && [ "$SIGST" = ok ] && ok=true
   [ "$lrc" != 3 ] || n_bad=$((n_bad + 1))   # eg-list 还没读全也算一项 !!
+  # 0.18.2 签名强制：安装包没签名（又没给应急开关）整批 !!；每台都跳过、没有 bad 行时也算一项
+  [ "$n_bad" != 0 ] || [ "$SIGST" != unsigned ] || [ "$ALLOW_UNSIGNED" = 1 ] || n_bad=1
   printf '],"summary":{"up":%s,"skip":%s,"bad":%s},"ok":%s%s}\n' "$n_up" "$(( n_skip + ${#NOADDR[@]} ))" "$n_bad" "$ok" \
     "$([ "$lrc" = 3 ] && printf ',"listNotReady":true')"
 }
@@ -277,6 +284,7 @@ if [ "$MODE" = resume ]; then
   RUN="$(sed -n 's/^run=//p' "$BD/meta")"; SHA="$(sed -n 's/^sha=//p' "$BD/meta")"; SIZE="$(sed -n 's/^size=//p' "$BD/meta")"  # sete-ok：上面已核对 meta 存在，本脚本不用 set -e
   TO="$(sed -n 's/^to=//p' "$BD/meta")"; PAR="$(sed -n 's/^parallel=//p' "$BD/meta")"; CANARY="$(sed -n 's/^canary=//p' "$BD/meta")"  # sete-ok
   SIGST="$(sed -n 's/^sig=//p' "$BD/meta")"; SIGMSG="$(sed -n 's/^sig_note=//p' "$BD/meta")"; SIGST="${SIGST:-unsigned}"  # sete-ok（0.18.1 前的批次没有，当未签）
+  ALLOW_UNSIGNED="$(sed -n 's/^allow_unsigned=//p' "$BD/meta")"; ALLOW_UNSIGNED="${ALLOW_UNSIGNED:-0}"  # sete-ok（0.18.2 前的批次没有）
   rm -f "$BD/STOP.resume"
   # 网页续查（--source web）只认签名验过的批次（方案 Q2）：命令行起的未签名批次只能命令行续
   if [ "$SOURCE" = web ] && [ "$SIGST" != ok ]; then echo "!! 这一批不是签名包（sig=$SIGST），只能命令行续" >&2; exit 1; fi
@@ -327,9 +335,15 @@ fi
 SIGSIZE=0; [ -f "$RUN.sig" ] && SIGSIZE="$(stat -c %s "$RUN.sig")"
 case "$SIGST" in
   ok) SIGLINE="已验（发布方 $SIGMSG）" ;;
-  nokey) SIGLINE="!! 有 .sig 但子站验不了：$SIGMSG —— EG 上照样验" ;;
-  *) SIGLINE='没有签名（0.18.1 过渡期照升，汇总写「未验签」；下一版起没签名不升）' ;;
+  nokey) SIGLINE="!! 有 .sig 但子站验不了：$SIGMSG —— 只有 EG 能验的才升" ;;
+  *) if [ "$ALLOW_UNSIGNED" = 1 ]; then SIGLINE='!! 没有签名 —— 应急 --allow-unsigned：只升不要求签名的 EG，汇总写「未验签（应急）」'
+     else SIGLINE='!! 没有签名：0.18.2 起没签名不升，整批不开始（把发布件的 <run>.sig 放在安装文件旁边）'; fi ;;
 esac
+# 应急开关的审计（真升级才记；--plan 只看不记）。放在批次目录外面：批次目录下只许有批次
+UNSIGNED_LOG="${LOGROOT%/}-allow-unsigned.log"
+if [ "$ALLOW_UNSIGNED" = 1 ] && [ "$MODE" != resume ] && [ "$PLAN" = 0 ]; then
+  mkdir -p "$(dirname "$UNSIGNED_LOG")" && echo "$(date '+%F %T') 应急 --allow-unsigned：$(basename "${RUN_ORIG:-$RUN}") 签名 $SIGST（$SIGMSG）；sudo 用户 ${SUDO_USER:-root}" >> "$UNSIGNED_LOG"
+fi
 
 # ---------- 清单 + 预检 ----------
 lrc=0
@@ -368,6 +382,8 @@ printf '\n%-8s %-8s %-36s %-6s %-10s %s\n' 单元 在线 '版本（当前 → �
 GO=() BAD=0 NOADDR=() n_skip=0
 declare -A ENTRY=()
 [ "$lrc" = 3 ] && BAD=1
+# 没签名（或子站验不了）又没给应急开关：整批 !!（下面每台照样列出来）
+[ "$SIGST" = unsigned ] && [ "$ALLOW_UNSIGNED" != 1 ] && BAD=1
 need_mb=$(( (SIZE * 2) / 1024 / 1024 + 1536 ))
 # 验签列：EG 验（入口 ≥ 5 且有发布公钥）/ 子站验（EG 老入口或没公钥，只有子站验过）/ 未签名 / -（不升的）
 VS=-
@@ -407,8 +423,11 @@ for c in "${TARGETS[@]}"; do
   free="$(kv free_mb "$out")"; cur="$(kv eg_version "$out")"; maint="$(kv maint "$out")"
   ent="$(kv entry "$out")"; [[ "$ent" =~ ^[0-9]+$ ]] || ent=0; ENTRY[$c]="$ent"
   skeys="$(kv sig_keys "$out")"; sreq="$(kv sig_required "$out")"
+  # EG 要不要求签名：老入口（< 5）不验；入口 5（0.18.1）缺省不要求、报 sig_required=0；入口 6 起缺省要求（应急 .env 关了报 0）
+  egreq=0; [ "$ent" -ge 5 ] && [ "$sreq" != 0 ] && egreq=1
   if [ "$SIGST" = unsigned ]; then VS=未签名
   elif [ "$ent" -ge 5 ] && [ "${skeys:-0}" -gt 0 ] 2>/dev/null; then VS='EG 验'
+  elif [ "$ent" -ge 5 ]; then VS='EG 没公钥'   # 新入口但本机没有发布公钥：EG 自己验不了
   elif [ "$SIGST" = ok ]; then VS='子站验'
   else VS=未验; fi
   if [ "$MODE" != resume ] && [ "$FORCE" != 1 ]; then
@@ -420,12 +439,24 @@ for c in "${TARGETS[@]}"; do
   if [ "$MODE" != resume ] && [ "$(kv running "$out")" = 1 ]; then row "$c" "$on" "$cur" 跳过 '在维护：EG 上有升级任务正在跑'; n_skip=$((n_skip + 1)); continue; fi
   if [ "$MODE" != resume ] && [ -n "$maint" ]; then row "$c" "$on" "$cur" 跳过 "在维护：$maint"; n_skip=$((n_skip + 1)); continue; fi
   if [ "$MODE" != resume ] && [ "${free:-0}" -lt "$need_mb" ]; then row "$c" "$on" "$cur" '!!' "空间不够：剩 ${free} MB，要约 $need_mb MB"; BAD=1; continue; fi
-  if [ "$sreq" = 1 ] && [ "$SIGST" != ok ]; then row "$c" "$on" "$cur" '!!' "这台 EG 要求发布件签名（EG_UPG_SIG_REQUIRED=1），安装文件$([ "$SIGST" = unsigned ] && echo '没有 .sig' || echo '的签名子站没验过')"; BAD=1; continue; fi
+  # 签名（0.18.2 起强制）：没人验得了的不升（应急 --allow-unsigned 只放过不要求签名的 EG）；EG 要求签名但它验不了的也不升（它会拒）
+  if [ "$egreq" = 1 ] && [ "$VS" != 'EG 验' ]; then
+    if [ "$SIGST" = unsigned ]; then why='安装文件没有 .sig，这台 EG 要求发布件签名（--allow-unsigned 也不行）'
+    else why="这台 EG 要求验签，但它没有发布公钥（sig_keys=${skeys:-0}）：在 EG 上手工跑新的 .run 装上公钥"; fi
+    row "$c" "$on" "$cur" '!!' "$why"; BAD=1; continue
+  fi
+  # 谁也没验过：没有 .sig；或子站验不了、EG 也验不了（老入口 / 没公钥）
+  noverify=0
+  if [ "$VS" = 未签名 ] || [ "$VS" = 未验 ] || { [ "$VS" = 'EG 没公钥' ] && [ "$SIGST" != ok ]; }; then noverify=1; fi
+  if [ "$noverify" = 1 ] && [ "$ALLOW_UNSIGNED" != 1 ]; then
+    row "$c" "$on" "$cur" '!!' "$([ "$VS" = 未签名 ] && echo '安装文件没有 .sig' || echo "子站和 EG 都验不了签名（$SIGMSG）")：0.18.2 起没签名不升"; BAD=1; continue
+  fi
   note=''; [ "$(vrel "$cur" "$TO")" = eq ] && note='同版本号、不同构建（重打；构建号分不出新旧，确认是要装的那个）'
   case "$VS" in
-    子站验) note="${note:+$note；}EG 是老入口（升到 0.18.1 的这一次），收不了签名：只有子站验过" ;;
-    未验) note="${note:+$note；}子站和 EG 都验不了签名（$SIGMSG）" ;;
+    子站验) note="${note:+$note；}EG 是老入口（entry $ent），收不了签名：只有子站验过" ;;
+    'EG 没公钥') [ "$noverify" = 1 ] || note="${note:+$note；}EG 没有发布公钥（它不要求签名）：只有子站验过" ;;
   esac
+  [ "$noverify" = 0 ] || note="${note:+$note；}应急 --allow-unsigned：未验签照升"
   [ "$MODE" = resume ] && note='续查 / 接着做'
   row "$c" "$on" "$cur" 升级 "$note"; GO+=("$c")
 done
@@ -446,7 +477,7 @@ if [ "$MODE" != resume ]; then
   [ -n "$CANARY" ] || CANARY="${GO[0]}"
   # 第 5 列：EG 升级入口版本（≥ 5 才传 .sig）
   for c in "${GO[@]}"; do printf '%s\t%s\t%s\t%s\t%s\n' "$c" "${HOST[$c]}" "${CUR[$c]}" "${CFG[$c]}" "${ENTRY[$c]:-0}"; done > "$BD/plan.tsv"
-  printf 'run=%s\nsha=%s\nsize=%s\nto=%s\nparallel=%s\ncanary=%s\nsig=%s\nsig_note=%s\n' "${RUN_ORIG:-$RUN}" "$SHA" "$SIZE" "$TO" "$PAR" "$CANARY" "$SIGST" "$SIGMSG" > "$BD/meta.tmp"
+  printf 'run=%s\nsha=%s\nsize=%s\nto=%s\nparallel=%s\ncanary=%s\nsig=%s\nsig_note=%s\nallow_unsigned=%s\n' "${RUN_ORIG:-$RUN}" "$SHA" "$SIZE" "$TO" "$PAR" "$CANARY" "$SIGST" "$SIGMSG" "$ALLOW_UNSIGNED" > "$BD/meta.tmp"
   # 0.19.0（网页入口 §9.4）：谁发起、哪个请求、从哪发起、开始时间、pid；ended_at 做完（含出错退出）补。
   # meta 最后写、改名落地：执行器看到 meta 就当批次起来了（plan.tsv 已在）
   printf 'by=%s\nreq=%s\nsource=%s\nstarted_at=%s\npid=%s\n' "$BY" "$REQ" "$SOURCE" "$(now_ms)" "$$" >> "$BD/meta.tmp"
@@ -458,6 +489,7 @@ trap 'exit 143' TERM; trap 'exit 130' INT   # systemctl stop / Ctrl-C 也走 EXI
 exec > >(tee -a "$BD/run.log") 2>&1
 exec 3>&1   # 每台的结果行写这里（屏幕 + run.log）；每台的过程写它自己的 <单元号>.log
 echo "== $(ts) 批次 $BATCH：${#GO[@]} 台，canary $CANARY，并发 $PAR；日志 $BD"
+[ "$ALLOW_UNSIGNED" = 1 ] && echo "!! 应急 --allow-unsigned：签名 $SIGST（$SIGMSG），不要求签名的 EG 未验签照升（审计 $UNSIGNED_LOG）"
 
 # ---------- 每台 ----------
 plan_cfg() { awk -F'\t' -v c="$1" '$1==c { print $4 }' "$BD/plan.tsv"; }
@@ -538,9 +570,9 @@ up_one() {
   # 签名：EG 报的 sig（0.18.1 起的入口：ok / unsigned / nokey；老入口一律 unsigned）+ 子站自己验的结果
   case "$sig:$SIGST" in
     ok:*) signote='；已验签（EG）' ;;
-    *:ok) signote='；子站已验签，EG 是老入口没验（升到 0.18.1 以后的下一次起 EG 也验）' ;;
-    nokey:*) signote='；安装文件未验签（EG 和子站都没有发布公钥）' ;;
-    *) signote='；安装文件未验签（没有 .sig；下一版起要求签名）' ;;
+    *:ok) signote='；子站已验签，EG 没验（老入口或没有发布公钥；升完以后的下一次起 EG 也验）' ;;
+    nokey:*) signote='；安装文件未验签（应急：EG 和子站都没有发布公钥）' ;;
+    *) signote='；安装文件未验签（应急：没有 .sig）' ;;
   esac
   if [ -n "$ok" ]; then result "$c" 成功 "本地 TB ${tbv}，配置 ${cfg} 生效，上送正常${signote}"
   else result "$c" 失败 "EG 自查通过，但子站核对不过（版本 ${ver:-?} / 上送正常 ${upok:-?}、${age:-?} s 前 / 配置 ${cfg:-?} 生效 ${cfgok:-?}，升级前 $(plan_cfg "$c")）"; fi

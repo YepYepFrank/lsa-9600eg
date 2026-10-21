@@ -1,5 +1,6 @@
 #!/bin/bash
-# 假 ssh：仿 EG 的升级入口（lsa-upg），EG 状态在 /fake/eg/<host>/（ver 当前版本、slow 装多少秒、job / started / target）
+# 假 ssh：仿 EG 的升级入口（lsa-upg），EG 状态在 /fake/eg/<host>/（ver 当前版本、slow 装多少秒、job / started / target；
+#   nokeys 没有发布公钥；entry6 = 0.18.2 的入口（要求签名，sig_required=1））
 for a in "$@"; do case "$a" in *@*) uh="$a" ;; esac; done
 cmd="${!#}"; host="${uh#*@}"; D="/fake/eg/$host"
 [ -d "$D" ] || { echo "ssh: connect to host $host port 22: No route to host" >&2; exit 255; }
@@ -7,7 +8,8 @@ echo "$(date +%s) $host $cmd" >> /fake/calls
 read -r verb a1 _ <<< "$cmd"
 case "$verb" in
   hello) [ -f "$D/hello_slow" ] && sleep "$(cat "$D/hello_slow")"
-    printf 'entry=5\neg_version=%s\nfree_mb=99999\nrunning=0\nmaint=\nsig_keys=%s\nsig_required=0\n' "$(cat "$D/ver")" "$([ -f "$D/nokeys" ] && echo 0 || echo 1)" ;;
+    printf 'entry=%s\neg_version=%s\nfree_mb=99999\nrunning=0\nmaint=\nsig_keys=%s\nsig_required=%s\n' "$([ -f "$D/entry6" ] && echo 6 || echo 5)" "$(cat "$D/ver")" \
+      "$([ -f "$D/nokeys" ] && echo 0 || echo 1)" "$([ -f "$D/entry6" ] && echo 1 || echo 0)" ;;
   put) got="$(sha256sum | cut -d' ' -f1)"; [ "$got" = "$a1" ] || { echo "ERR 收到的 sha256 $got 不是 $a1"; exit 2; }
     echo "$got" > "$D/put_sha"; echo "OK put $a1" ;;
   put-sig) cat > /dev/null; echo "OK put-sig $a1" ;;
