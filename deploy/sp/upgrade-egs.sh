@@ -318,6 +318,8 @@ else
   [ -n "$TO" ] || { echo "$RUN 不是 LSA-9600 的一键安装文件，或者里面没有 EG 发布件" >&2; exit 1; }
   echo "安装文件：$RUN（EG $TO），算 sha256 …"
   SHA="$(sha256sum "$RUN" | cut -d' ' -f1)"; SIZE="$(stat -c %s "$RUN")"
+  # 读文件出错时 sha256sum 什么也不打：不能带着空 sha 往下走（EG 只会回「命令格式不对」）
+  [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "!! 算不出 $RUN 的 sha256（读文件出错？）—— 不开始" >&2; exit 1; }
   [ -z "$EXPECT_SHA" ] || [ "$SHA" = "$EXPECT_SHA" ] || { echo "!! 安装文件的 sha256（${SHA:0:12}…）不是确认过的那个（${EXPECT_SHA:0:12}…）：计划之后被换过 —— 整批不开始" >&2; exit 1; }
   [ ! -f "$RUN_ORIG.sha256" ] || [ "$(cut -d' ' -f1 "$RUN_ORIG.sha256")" = "$SHA" ] || { echo "!! $RUN_ORIG 和旁边的 .sha256 对不上：文件坏了？" >&2; exit 1; }
   echo '验签 …'
