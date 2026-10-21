@@ -451,6 +451,31 @@ python3 -I "$RUNNER" --finish "$e1" "$EB2" >> /tmp/runner.log 2>&1
 chk "批次 meta 的 req 不是这个请求：failed 不动" [ "$(status "$e1")" = failed ]
 chk "ExecStopPost 带上批次号（--finish <请求号> <批次号>）" grep -q -- "--finish $e2 $EB2 -- " /tmp/runner.log
 
+say "9e. 联调 F5：批次被 TERM（子站关机 / systemctl stop）打断 —— 不写 ended_at，写 interrupted；续查清掉、做完补 ended_at"
+reset_egs; echo 12 > /fake/eg/eg1/slow
+# 自己一个进程组跑，TERM 发给整组（同 systemd 停 unit 时发给整个 cgroup）
+before="$(ls -1 "$LOGROOT")"
+setsid bash "$UP" --run /w/a.run --only AH01-A > /tmp/i1.log 2>&1 &
+IB=''; for _ in $(seq 40); do
+  for d in $(ls -1 "$LOGROOT"); do grep -qx "$d" <<< "$before" || IB="$LOGROOT/$d"; done
+  [ -n "$IB" ] && [ -f "$IB/AH01-A.job" ] && break; sleep 0.5
+done
+mI() { sed -n "s/^$1=//p" "$IB/meta"; }
+ip="$(mI pid)"; pg="$(awk '{ print $5 }' "/proc/$ip/stat" 2>/dev/null)"
+echo "    批次 $(basename "$IB")，pid $ip，进程组 $pg"
+kill -TERM -- "-$pg"; for _ in $(seq 20); do kill -0 "$ip" 2>/dev/null || break; sleep 0.5; done
+gone() { ! kill -0 "$1" 2>/dev/null; }
+chk "TERM 以后进程退了" gone "$ip"
+{ [ -z "$(mI ended_at)" ] && [ "$(mI interrupted)" = 1 ] && ms "$(mI interrupted_at)"; } && ok "meta 没有 ended_at、有 interrupted=1 / interrupted_at（$(mI interrupted_at)）" || bad "TERM 以后 meta 不对：$(grep -E 'ended_at|interrupted' "$IB/meta" | tr '\n' ' ')"
+a1=$(mtime "$IB/.alive"); sleep 2.5; a2=$(mtime "$IB/.alive")
+chk "心跳停了（$a1 = $a2）" [ "$a1" = "$a2" ]
+chk '工作拷贝删了' [ -z "$(ls -A "$E/work")" ]
+bash "$UP" --resume "$(basename "$IB")" > /tmp/i2.log 2>&1; rc=$?
+{ [ "$rc" = 0 ] && [ -z "$(mI interrupted)" ] && [ -z "$(mI interrupted_at)" ] && ms "$(mI ended_at)"; } && ok "续查做完：interrupted 清掉、补了 ended_at（rc $rc）" || { bad "续查以后 meta 不对（rc $rc）：$(grep -E 'ended_at|interrupted' "$IB/meta" | tr '\n' ' ')"; tail -5 /tmp/i2.log; }
+chk "eg1 升好了（$(cat /fake/eg/eg1/ver)）" [ "$(cat /fake/eg/eg1/ver)" = "$NEW" ]
+# 正常做完（含 STOP 后做完）照旧写 ended_at、没有 interrupted
+{ [ -n "$(mB ended_at)" ] && [ -z "$(mB interrupted)" ]; } && ok "STOP 后做完的批次（9 节的 $BATCH）：有 ended_at、没有 interrupted" || bad 'STOP 后做完的批次 meta 不对' 
+
 say "10. 执行器：上限"
 reset_egs
 for n in $(seq 25); do req scan '{}' > /dev/null; done

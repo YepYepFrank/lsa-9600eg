@@ -84,13 +84,19 @@ BY="${BY:-${SUDO_USER:-root}}"; [[ "$BY" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || BY=roo
 UNIT_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,23}$'   # 单元号（来自 eg-list，也就是容器）：不合格的（含 - 开头、. / ..）不碰文件系统
 WORK="${LSA_EGUP_WORK:-/var/lib/lsa9600sp/eg-upgrade/work}"   # 安装文件的 root 0700 工作拷贝（sha、验签、推给 EG 都用这一份）
 ALIVE_S="${LSA_EGUP_ALIVE_S:-30}"   # 批次在跑时每这么多秒 touch 一次 <批次>/.alive（扩展服务 ≤ 90 s 判在跑）
-WORKD='' META_ON='' HB=''
+WORKD='' META_ON='' HB='' SIGNALLED=''
+# 退出时：停心跳、删工作拷贝；批次 meta —— 正常做完（含 STOP 后做完）写 ended_at；
+# 被 TERM / INT / HUP 打断（子站关机、systemctl stop、Ctrl-C）不写 ended_at，写 interrupted=1 与 interrupted_at（联调 F5：
+# 网页按「ended_at 为空、.alive 过期」显示「中断 · 可接着查」）
 on_exit() {
   [ -z "$HB" ] || kill "$HB" 2>/dev/null
   [ -z "$WORKD" ] || rm -rf "$WORKD"
-  [ -z "$META_ON" ] || meta_set ended_at "$(now_ms)"
+  [ -n "$META_ON" ] || return 0
+  if [ -n "$SIGNALLED" ]; then meta_set interrupted 1; meta_set interrupted_at "$(now_ms)"
+  else meta_set ended_at "$(now_ms)"; fi
 }
 trap on_exit EXIT
+trap 'SIGNALLED=TERM; exit 143' TERM; trap 'SIGNALLED=INT; exit 130' INT; trap 'SIGNALLED=HUP; exit 129' HUP
 # 把安装文件（和 .sig）拷进 root 0700 的工作目录：packages/ 组可写，拷完以后 sha、验签、推给 EG 都只认这一份（堵住两次读之间被换）
 stage_copy() {
   local src="$1" need
@@ -296,7 +302,7 @@ if [ "$MODE" = resume ]; then
   # 记这次续查的人和 pid；ended_at 等这次做完再补
   meta_set pid "$$"; meta_set resumed_at "$(now_ms)"; meta_set resumed_by "$BY"; meta_set resumed_source "$SOURCE"
   if [ -n "$REQ" ]; then meta_set resumed_req "$REQ"; else meta_del resumed_req; fi
-  meta_del ended_at; META_ON=1
+  meta_del ended_at; meta_del interrupted; meta_del interrupted_at; META_ON=1
   start_heartbeat
 else
   [ -f "$RUN" ] || { echo "没有安装文件：$RUN" >&2; exit 1; }
@@ -454,8 +460,9 @@ if [ "$MODE" != resume ]; then
   META_ON=1
   start_heartbeat
 fi
-trap 'exit 143' TERM; trap 'exit 130' INT   # systemctl stop / Ctrl-C 也走 EXIT（补 ended_at）
-exec > >(tee -a "$BD/run.log") 2>&1
+# tee 不理 TERM / INT / HUP（等本脚本关掉管道再退）：子站关机 / systemctl stop 是整组发 TERM，tee 先死的话，
+# bash 收尸时往死管道写「Terminated」会被 SIGPIPE 杀掉，退出钩子（interrupted / 删工作拷贝 / 停心跳）就不跑了
+exec > >(trap '' TERM INT HUP; exec tee -a "$BD/run.log") 2>&1
 exec 3>&1   # 每台的结果行写这里（屏幕 + run.log）；每台的过程写它自己的 <单元号>.log
 echo "== $(ts) 批次 $BATCH：${#GO[@]} 台，canary $CANARY，并发 $PAR；日志 $BD"
 
