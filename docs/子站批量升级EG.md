@@ -178,7 +178,7 @@ LSA-9600SP-0.18.1-<日期>-r1-offline.run.sig      ← 0.18.1 起
 | `/var/lib/lsa9600sp/eg-upgrade/requests/` | root 0700 | 扩展服务写请求（挂进容器 rw）；里面不是普通文件的（链接、目录）执行器直接删 |
 | `/var/lib/lsa9600sp/eg-upgrade/done/`、`work/` | root 0700 | 处理完的请求（留 7 天）、安装文件的工作拷贝（升级时拷一份，做完删）；都不挂进容器 |
 | `/var/lib/lsa9600sp/eg-upgrade/state/` | root 0755 | 执行器写结果（`runner.json`、`packages.json`、`requests/<请求号>.json`，挂进容器 ro） |
-| `/var/log/lsa9600sp/eg-upgrade/<批次>/` | root 0755 | 批次目录（同命令行；`meta` 多了 `by` / `req` / `source` / `started_at` / `ended_at` / `pid`，每台多一个 `<单元号>.phase`；在跑时每 30 s 动一下 `.alive`） |
+| `/var/log/lsa9600sp/eg-upgrade/<批次>/` | root 0755 | 批次目录（同命令行；`meta` 多了 `by` / `req` / `source` / `started_at` / `ended_at` / `pid`（子站关机、systemctl stop 打断时不写 `ended_at`，写 `interrupted=1` / `interrupted_at`，续查时清掉），每台多一个 `<单元号>.phase`；在跑时每 30 s 动一下 `.alive`） |
 
 **准备（每个子站一次）**：维护人员的账号加进 `lsa-upgrade` 组，重新登录后才生效：
 
