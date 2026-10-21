@@ -15,7 +15,9 @@
 #     验签（0.18.1 起）：用本机发布件里的发布公钥 /opt/lsa-eg/release-signers（上一次安装带来的，不是这个新安装文件里的）
 #     ssh-keygen -Y verify。结果写进 state 的 sig=：ok（验过）/ unsigned（没有 .sig）/ nokey（有 .sig 但本机没有发布公钥）；
 #     bad（签名不对：不是发布方签的或文件被改过）一律拒绝、删掉收到的文件。
-#     过渡期（0.18.1）：没有 .sig 照装、记 unsigned；下一版起 SIG_REQUIRED=1（没签名 / 没公钥也拒）。现场要提前强制：.env 里 EG_UPG_SIG_REQUIRED=1
+#     0.18.2 起强制（SIG_REQUIRED=1）：unsigned / nokey 也拒绝（0.18.1 是过渡期，照装记 unsigned）。
+#     应急逃生口（只限应急，用完马上删）：/opt/lsa-eg/.env 加一行 EG_UPG_SIG_REQUIRED=0 —— 没签名 / 没公钥的照装、记 unsigned / nokey，
+#     每次 start 在 /var/log/lsa-upg.log 记「应急：验签强制已关」；hello 报 sig_required=0。bad（签名不对）关了也照样拒。
 #   status                      当前 / 最近一次任务的状态（key=value）
 #   log [行数]                  任务日志最后几行（缺省 50，最多 500）
 #   drop <sha256>               删掉收到的安装文件（连同签名）
@@ -34,7 +36,8 @@ set -euo pipefail
 umask 077
 # 4 = 0.18.0 舱室 EG（EG 0.7.0）：hello 报 unit=，apply-config 按单元、认 force
 # 5 = 0.18.1：put-sig、start 验签、hello 报 sig_keys / sig_required（子站 upgrade-egs.sh 看到 ≥ 5 才传 .sig）
-ENTRY_VERSION=5
+# 6 = 0.18.2：验签强制（没 .sig / 没公钥拒绝），.env EG_UPG_SIG_REQUIRED=0 应急关
+ENTRY_VERSION=6
 EG=/opt/lsa-eg
 ST=/var/lib/lsa-upg
 IN="$ST/incoming"
@@ -49,9 +52,9 @@ SIGNERS="$EG/release-signers"
 SIG_ID=lsa9600-release
 SIG_NS=lsa9600-release
 MAX_SIG=16384
-# 过渡期 0：没签名照装（记 unsigned）；下一版改 1
-SIG_REQUIRED=0
-grep -qx 'EG_UPG_SIG_REQUIRED=1' "$EG/.env" 2>/dev/null && SIG_REQUIRED=1
+# 0.18.2 起强制；.env 里 EG_UPG_SIG_REQUIRED=0 是应急逃生口（start 时记审计），别的值一律当强制
+SIG_REQUIRED=1
+grep -qx 'EG_UPG_SIG_REQUIRED=0' "$EG/.env" 2>/dev/null && SIG_REQUIRED=0
 
 say() { echo "$*"; }
 audit() { echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null || true; }
@@ -228,9 +231,13 @@ case "$VERB" in
     sig_check "$f"
     case "$SIG" in
       bad) rm -f "$f" "$f.sig"; deny "签名校验不过：安装文件不是发布方签的，或者安装文件 / 签名被改过（已删；$SIG_MSG）" ;;
-      unsigned) [ "$SIG_REQUIRED" = 1 ] && deny '安装文件没有签名：这台 EG 要求发布件签名（把 <run>.sig 和安装文件放一起再传）' ;;
-      nokey) [ "$SIG_REQUIRED" = 1 ] && deny "验不了签名：$SIG_MSG（这台 EG 要求验签）" ;;
+      unsigned) [ "$SIG_REQUIRED" = 1 ] && deny '安装文件没有签名：EG 要求发布件签名（把 <run>.sig 和安装文件放一起再传）' ;;
+      nokey) [ "$SIG_REQUIRED" = 1 ] && deny "验不了签名：$SIG_MSG（EG 要求验签）" ;;
     esac
+    if [ "$SIG_REQUIRED" = 0 ]; then
+      audit "应急：验签强制已关（$EG/.env EG_UPG_SIG_REQUIRED=0），$A1 签名 $SIG 照装 —— 用完删掉这一行"
+      [ "$SIG" = ok ] || SIG_MSG="$SIG_MSG（应急：EG_UPG_SIG_REQUIRED=0）"
+    fi
     audit "验签 $A1：$SIG（$SIG_MSG）"
     to="$(run_eg_version "$f" || true)"
     [ -n "$to" ] || deny '不是 LSA-9600 的一键安装文件，或者里面没有 EG 发布件'

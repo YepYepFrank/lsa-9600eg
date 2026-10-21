@@ -120,7 +120,21 @@ chk "未签名包：sig $(J 'o["sig"]')、egSig $(J 'o["rows"][0]["egSig"]')、o
 touch /fake/eg/eg1/nokeys
 out="$(LSA_RELEASE_SIGNERS=/nonexistent bash "$UP" --run /w/a.run --plan --json --only AH01-A 2>/dev/null)"
 chk "子站和 EG 都验不了：sig $(J 'o["sig"]')、egSig $(J 'o["rows"][0]["egSig"]')（不当成 unsigned）" [ "$(J 'o["sig"]+" "+o["rows"][0]["egSig"]')" = 'nokey nokey' ]
+# 0.18.2 签名强制：EG 是 0.18.2 的入口（要求签名）、没有发布公钥：子站验过也 bad，egSig nokey
+touch /fake/eg/eg1/entry6
+out="$(bash "$UP" --run /w/a.run --plan --json --only AH01-A 2>/dev/null)"
+chk "入口 6 没公钥：action $(J 'o["rows"][0]["action"]')、egSig $(J 'o["rows"][0]["egSig"]')、bad $(J 'o["summary"]["bad"]')、ok $(J 'o["ok"]')" \
+  [ "$(J 'o["rows"][0]["action"]+" "+o["rows"][0]["egSig"]+" "+str(o["summary"]["bad"])+" "+str(o["ok"])')" = 'bad nokey 1 False' ]
 rm -f /fake/eg/eg1/nokeys
+out="$(bash "$UP" --run /w/u.run --plan --json --only AH01-A --allow-unsigned 2>/dev/null)"
+chk "入口 6 + 未签名包：--allow-unsigned 也 bad（$(J 'o["rows"][0]["action"]+" "+o["rows"][0]["egSig"]')）" [ "$(J 'o["rows"][0]["action"]+" "+o["rows"][0]["egSig"]+" "+str(o["ok"])')" = 'bad unsigned False' ]
+rm -f /fake/eg/eg1/entry6
+# 未签名包、这台全跳过（已是该版本）：没有 bad 行，summary.bad 也算一项
+out="$(bash "$UP" --run /w/u.run --plan --json --only AH03-A 2>/dev/null)"; rc=$?
+chk "未签名包、全跳过：rc $rc、bad $(J 'o["summary"]["bad"]')、ok $(J 'o["ok"]')" [ "$rc/$(J 'str(o["summary"]["bad"])+" "+str(o["ok"])')" = '1/1 False' ]
+# 应急开关只给命令行：--source web 带 --allow-unsigned 脚本自己就拒
+bash "$UP" --run /w/u.run --plan --json --only AH01-A --source web --allow-unsigned > /tmp/o 2>&1; rc=$?
+chk "--source web --allow-unsigned：rc $rc、拒" [ "$rc" = 2 ] && grep -q '只能在命令行用' /tmp/o
 out="$(EG_LIST_CMD="$T/bin/eglist; exit 3" bash "$UP" --run /w/a.run --plan --json --all --skip-offline 2>/dev/null)"
 chk "eg-list 退出码 3：listNotReady、summary.bad 计上（$(J 'o["summary"]["bad"]')）、ok false" [ "$(J 'str(o.get("listNotReady"))+" "+str(o["summary"]["bad"])+" "+str(o["ok"])')" = 'True 1 False' ]
 txt="$(bash "$UP" --run /w/a.run --plan --all 2>/dev/null)"
@@ -238,6 +252,9 @@ i16=$(req scan '{}' 'adm$(id)')
 i17=$(req scan '{}' 'a b')
 i18=$(req plan '{"run":"a.run","sel":["-xpwn"],"force":false,"skipOffline":false}')
 i19=$(req start '{"plan":"20261020-000000-aaaaaa","sha":"'"$(printf 'a%.0s' {1..64})"'","canary":"-x","parallel":1}')
+# 0.18.2：应急 --allow-unsigned 只给命令行，请求里带了（字段或值）直接拒
+i20=$(req plan '{"run":"a.run","sel":"all","force":false,"skipOffline":false,"allowUnsigned":true}')
+i21=$(req plan '{"run":"a.run","sel":["--allow-unsigned"],"force":false,"skipOffline":false}')
 # 容器能做的：requests/ 里放指向主机文件的链接、目录、管道，把（以前的）.done 换成指向主机目录的链接
 mkdir -p /tmp/victim2 && echo keep > /tmp/victim2/old && touch -d '-30 days' /tmp/victim2/old
 i15="$(nextid)"; ln -s /etc/shadow "$R/$i15.json"
@@ -250,7 +267,7 @@ echo '{}' > "$R/hello.json"
 cp /etc/shadow /tmp/shadow.before
 runner
 for x in "$i1 不许带路径" "$i2 不许带路径" "$i3 不认识的请求类型" "$i4 不认识的字段：cmd" "$i5 不认识的字段：x" "$i6 parallel 要是 1–4" "$i7 parallel 要是 1–4" \
-         "$i8 单元号格式不对" "$i9 字段重复" "$i10 id 和文件名不一致" "$i11 太大" "$i12 不是合法 JSON" "$i13 batch 要是批次号" "$i14 user 只许" "$i16 user 只许" "$i17 user 只许"          "$i18 单元号格式不对" "$i19 canary 要是单元号"; do
+         "$i8 单元号格式不对" "$i9 字段重复" "$i10 id 和文件名不一致" "$i11 太大" "$i12 不是合法 JSON" "$i13 batch 要是批次号" "$i14 user 只许" "$i16 user 只许" "$i17 user 只许"          "$i18 单元号格式不对" "$i19 canary 要是单元号" "$i20 网页入口不许带" "$i21 网页入口不许带"; do
   read -r id want <<< "$x"
   rejected "$id" "$want" && ok "拒收：$want（$(reason "$id" | cut -c1-60)）" || { bad "没按预期拒（要「$want」）"; show "$id"; }
 done
@@ -383,7 +400,9 @@ mv /tmp/a.away "$P/a.run"; cp /tmp/a.sig.keep2 "$P/a.run.sig"
 
 say "9b. 网页续查未签名的批次：拒"
 reset_egs
-bash "$UP" --run /w/u.run --only AH01-A > /tmp/ub.log 2>&1
+bash "$UP" --run /w/u.run --only AH01-A > /tmp/ub.log 2>&1; rc=$?
+chk "0.18.2 起命令行不带 --allow-unsigned 不升未签名包（rc $rc）" [ "$rc" = 1 ]
+bash "$UP" --run /w/u.run --only AH01-A --allow-unsigned > /tmp/ub.log 2>&1
 UB="$(ls -1t "$LOGROOT" | head -1)"
 chk "命令行起的未签名批次 $UB（sig=$(sed -n 's/^sig=//p' "$LOGROOT/$UB/meta")）" [ "$(sed -n 's/^sig=//p' "$LOGROOT/$UB/meta")" = unsigned ]
 r2=$(req resume "{\"batch\":\"$UB\"}"); runner
