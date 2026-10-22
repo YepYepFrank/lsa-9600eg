@@ -76,8 +76,8 @@
           "optional": false,
           "type": "number",
           "cap": "tev",
-          "capState": "pending",
-          "note": "能力「地电波」现场口径是「待定」（等 T06 · 清单 E7、PD1、PD5、R1、Q4、S19 D5）：本柜装了才发，检查工具不报缺"
+          "capState": "unsupported",
+          "note": "能力「地电波」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "tev.level",
@@ -87,8 +87,8 @@
           "optional": true,
           "type": "number",
           "cap": "tev",
-          "capState": "pending",
-          "note": "能力「地电波」现场口径是「待定」（等 T06 · 清单 E7、PD1、PD5、R1、Q4、S19 D5）：本柜装了才发，检查工具不报缺"
+          "capState": "unsupported",
+          "note": "能力「地电波」现场口径是「不支持」：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "uhf.amp",

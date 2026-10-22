@@ -86,8 +86,12 @@ def run(devices, expect, feed, applied=None, q=None, infos=None):
 print('1. 解析（同事配置的写法）')
 d = make_conf(SPLIT)
 exp, probs = lc.read_conv_expect(d)
-check(exp == {'SAM-AH03-A': {'env.t', 'env.rh'}, 'SAM-AH03-B': {'us.amp', 'us.cnt', 'tev.amp', 'uv.int', 'smoke.ppm'}} and not probs,
-      '打开的传感器按 device 归，关着的（红外）不算；行尾注释、引号都去掉', repr(exp))
+check(exp == {'SAM-AH03-A': {'env.t', 'env.rh'}, 'SAM-AH03-B': {'us.amp', 'us.cnt', 'uv.int', 'smoke.ppm'}} and not probs,
+      '打开的传感器按 device 归，关着的（红外）不算；行尾注释、引号都去掉；寄存器写了 tev.amp 也不进预期（0.19.0：本项目局放只有超声）', repr(exp))
+pdfull = make_conf({'pd.yaml': sensor_yaml('pd', 'partial_discharge', 'SAM-X-A', 2, True, ['us.amp', 'us.cnt', 'us.type', 'us.level', 'tev.amp', 'tev.level', 'uhf.amp', 'uhf.level'])})
+check(lc.read_conv_expect(pdfull)[0] == {'SAM-X-A': {'us.amp', 'us.cnt', 'us.type', 'us.level'}}, '同事的 pd.yaml 写全了地电波 / 特高频的 key：只留超声四个')
+pdnokey = make_conf({'pd.yaml': '\nsensor:\n  type: partial_discharge\n  device: SAM-X-A\n  slave_id: 2\n  enabled: true\nregisters:\n  a:\n    address: 0x0\n'})
+check(lc.read_conv_expect(pdnokey)[0] == {'SAM-X-A': {'us.amp', 'us.cnt', 'us.type', 'us.level'}}, '局放寄存器没写 key：按类型兜底也只有超声')
 check(lc.read_conv_expect(os.path.join(d, 'sensors'))[0] == exp, '给 sensors/ 目录本身也认')
 nokey = make_conf({'gas.yaml': '\nsensor:\n  type: smoke\n  device: SAM-X-A\n  slave_id: 3\n  enabled: true\nregisters:\n  ppm:\n    address: 0x16\n'})
 check(lc.read_conv_expect(nokey)[0] == {'SAM-X-A': {'smoke.ppm'}}, '寄存器没写 key：按 type 兜底（smoke → smoke.ppm）')
@@ -132,7 +136,7 @@ print('5. 点表全局缺省（子站 0.18.3：地电波、SAM 红外改回「�
 infos0 = []
 m00 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, infos=infos0)
 check(not m00, '不给 --applied、地电波一直没来：按全局缺省「待定」不报缺', repr(m00))
-check(lc.keydefs('sam')['tev.amp'].get('capState') == 'pending' and lc.keydefs('sam')['ir.t_max'].get('capState') == 'pending', 'spec.json：tev.* / ir.t_* 的 capState 是 pending')
+check(lc.keydefs('sam')['tev.amp'].get('capState') == 'unsupported' and lc.keydefs('sam')['uhf.amp'].get('capState') == 'unsupported' and lc.keydefs('sam')['ir.t_max'].get('capState') == 'pending', 'spec.json（后端 3cd2228 导出）：tev.* / uhf.* unsupported，ir.t_* pending')
 
 print('5b. 转换程序 q 标 absent（0.19.0 的转换程序起会发；本单元地电波 confirmed，S19 那样）')
 m7 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=S19)

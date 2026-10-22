@@ -16,12 +16,16 @@ import { parse } from 'yaml'
 /** 寄存器没写 key 时按传感器类型兜底（同事 1.1.1 的驱动） */
 const BY_TYPE: Record<string, string[]> = {
   temperature_humidity: ['env.t', 'env.rh'],
-  partial_discharge: ['us.amp', 'us.cnt', 'us.type', 'us.level', 'tev.amp', 'tev.level', 'uhf.amp', 'uhf.level'],
+  partial_discharge: ['us.amp', 'us.cnt', 'us.type', 'us.level'],
   arc_light: ['uv.int'],
   smoke: ['smoke.ppm'],
   // 0.7.2：同事的 infrared.yaml 寄存器不写 key（按 base_address 连读）—— 以前不认识，红外打开了也不看护、485 清单里也漏了从站 1
   infrared: ['ir.t_max', 'ir.t_avg'],
 }
+
+/** 0.19.0（用户 10-22 核实业主和同事）：本项目局放只有超声一路，地电波 / 特高频不要了 —— 同事的 pd.yaml 寄存器里照样写着
+ *  tev.* / uhf.* 的 key，这里一律不进预期测点（子站全局缺省、S19 本站模型也是 unsupported）；转换程序真发了照常收、照常看护来过的 */
+export const NOT_EXPECTED = /^(tev|uhf)\./
 
 /** 485 总线清单（0.17.4，舱室 EG 方案 §4）：打开的传感器各占一个从站地址。EG 作为自己的客户端属性 conv.bus 报给子站（JSON 串） */
 export interface ConvBus {
@@ -136,7 +140,7 @@ export function loadConvExpect(configDir: string, serial: string | undefined = p
     }
     let set = byDevice.get(device)
     if (!set) byDevice.set(device, (set = new Set()))
-    for (const k of list) set.add(k)
+    for (const k of list) if (!NOT_EXPECTED.test(k)) set.add(k)
     const a = Number(s['slave_id'])
     if (Number.isInteger(a) && a >= 1 && a <= 247) slaves.push({ a, t: type, n: SENSOR_NAME[type] ?? type, dev: device })
     else errors.push(`${f}：从站地址「${String(s['slave_id'] ?? '')}」不对（1–247）`)
