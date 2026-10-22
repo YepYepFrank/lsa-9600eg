@@ -24,7 +24,9 @@ const BY_TYPE: Record<string, string[]> = {
 }
 
 /** 0.19.0（用户 10-22 核实业主和同事）：本项目局放只有超声一路，地电波 / 特高频不要了 —— 同事的 pd.yaml 寄存器里照样写着
- *  tev.* / uhf.* 的 key，这里一律不进预期测点（子站全局缺省、S19 本站模型也是 unsupported）；转换程序真发了照常收、照常看护来过的 */
+ *  tev.* / uhf.* 的 key，这里一律不进预期测点（子站全局缺省、S19 本站模型也是 unsupported）；转换程序真发了照常收、照常看护来过的。
+ *  **这是按本项目只有超声定的，不是 bug**：以后有项目真装了地电波 / 特高频，把这一条去掉、改回按能力判 ——
+ *  0.7.3 起看护的「必有量」已经看本单元能力（QualityService.applyExpect / caps.keyCapState），能力 confirmed 的才算必有；lsa_check 的同一处一起改 */
 export const NOT_EXPECTED = /^(tev|uhf)\./
 
 /** 485 总线清单（0.17.4，舱室 EG 方案 §4）：打开的传感器各占一个从站地址。EG 作为自己的客户端属性 conv.bus 报给子站（JSON 串） */
