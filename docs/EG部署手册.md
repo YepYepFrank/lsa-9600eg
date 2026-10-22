@@ -108,6 +108,7 @@
      sudo bash install-conv.sh --sensors pd,gas,temperature,arc --addr arc=1 --dev temperature=SAM-AH01-B
      ```
      改完 `--status` 看各路的设备名、从站有没有对上，再 `--check`；也可以直接改 `config/conv/sensors/*.yaml` 后 `docker restart lsa-eg-conv`。**挂在哪台设备**决定了看护口径：EG 按这里打开的传感器推出每台的预期测点（W1，见开发计划 §6.1）。
+     **局放只看超声（0.8.0 起）**：预期测点（eg-agent 的看护、检查工具 `lsa_check`）不收地电波 `tev.*`、特高频 `uhf.*` —— 是按本项目只有超声一路定的（用户 2026-10-22 核实业主和同事），**不是 bug**；转换程序的 `pd.yaml` 里照样写着它们的寄存器，读到了照常收。以后有项目真装了地电波 / 特高频，要把 `packages/config/src/conv-expect.ts` 的 `NOT_EXPECTED` 和 `lsa_check.py` 里同一处去掉、改回按能力判（0.7.3 起「必有量」已经看本单元能力，能力 confirmed 的才算必有）。
   3. 核对：`sudo bash install-conv.sh --status`（各路配置、设备名有没有对上、最近采集）、`--check`（lsa_check 跑 2 分钟）；本地管理页「设备与通信 → 服务状态」的转换程序卡片。
   4. 读不到：`--diag [rs485|modbus]` 先停 conv、在镜像里跑同事的诊断脚本直接问从站；没有传感器时 `--sim` 在容器里跑模拟器自测。停用 `--off`。
   - 详细步骤与常见问题见 `tools/conv-addon/硬件联调步骤.md`（发布件里是 `转换程序硬件联调步骤.md`）。

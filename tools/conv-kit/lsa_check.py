@@ -403,7 +403,8 @@ def read_conv_expect(path):
         if not lst:
             problems.append('%s：类型「%s」没有 key，也不认识' % (f, sensor.get('type', '?')))
             continue
-        # 0.19.0（用户 10-22）：本项目局放只有超声一路，地电波 / 特高频不进预期测点（同 EG conv-expect 的 NOT_EXPECTED）
+        # 0.19.0（用户 10-22）：本项目局放只有超声一路，地电波 / 特高频不进预期测点（同 EG conv-expect 的 NOT_EXPECTED）。
+        # 按本项目定的、不是 bug：以后有项目真装了地电波 / 特高频，去掉这一条、改回按能力判（--applied 已经按本单元能力判必有量）
         by.setdefault(dev, set()).update(k for k in lst if not k.startswith(('tev.', 'uhf.')))
     return (by if read else None), problems
 
