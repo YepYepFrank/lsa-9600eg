@@ -100,6 +100,21 @@ check 'awk "/up.sh --prod/{u=NR} /provision-eg.sh --unit AH01-A/{p=NR} END{exit 
 check 'grep -q "lsa-upg@10.0.1.9 apply-config [0-9a-f]* force" /fake/calls && grep -q "lsa-upg@10.0.1.2 apply-config [0-9a-f]*$" /fake/calls' '原来那台带 force（改作单元），新机不带'
 check '[ -f /fake/applied/AH01-A ] && [ -f /fake/applied/AH01-B ] && grep -q "断数窗口：[0-9]* s（up.sh 开始 → 最后一台第一次上送正常；各台：AH01-A [0-9]* s AH01-B [0-9]* s" <<< "$out" && grep -q "全部配置生效：[0-9]* s" <<< "$out"' '两个单元都接上，断数窗口按「第一次上送正常」报、各台分开，全部配置生效另报'
 
+echo '11b. 换机（0.19.0 r2）：子站留着旧 EG 的系统管理员口令，新 EG（待接入）的本地 TB 还是出厂口令'
+reset; hello 10.0.5.1 4 0 '' '' tunnel; touch /fake/sys-stale
+SF=$SPB/tb/provision/out/eg/AH05-A/tb-sysadmin.json; mkdir -p "$(dirname "$SF")"; echo '{"password":"OLD"}' > "$SF"
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc = 0 ] && [ "$(grep -c "provision-eg.sh --unit AH05-A" /fake/calls)" = 2 ]' '旧口令 401 → 改用出厂口令再跑一次 provision，成功'
+check 'grep -q "NEW" "$SF" && ! ls "$SF".stale-* >/dev/null 2>&1' '口令文件换成新生成的，旧文件不留'
+check 'grep -q "换过机，已改用出厂口令" <<< "$out"' "输出说明「换过机，已改用出厂口令」"
+reset; hello 10.0.5.1 4 1 'AH05-A' 'AH05' tunnel; touch /fake/sys-stale
+mkdir -p "$(dirname "$SF")"; echo '{"password":"OLD"}' > "$SF"
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc != 0 ] && [ "$(grep -c "provision-eg.sh" /fake/calls)" -le 1 ] && grep -q OLD "$SF"' '已接入的 EG（不是新机）401：不换口令文件、不重试，照常报错'
+reset; hello 10.0.5.1 4 0 '' '' tunnel; rm -f /fake/sys-stale; rm -rf $SPB/tb/provision/out
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc = 0 ] && [ "$(grep -c "provision-eg.sh --unit AH05-A" /fake/calls)" = 1 ] && ! grep -q "换过机" <<< "$out"' '正常接入：provision 只跑一次、不提换机'
+
 echo '12. --from-file --plan'
 reset; printf 'legacyEg: [AH09]\n' > $SPB/tb/model.site.yaml; hello 10.0.5.1 4 0 '' '' tunnel; hello 10.0.0.9 3 0 - '' tunnel
 printf '# 一批\nAH05-A 10.0.5.1\nAH05-B 10.0.5.9\nAH09 10.0.0.9\n' > /tmp/list
