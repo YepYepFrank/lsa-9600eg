@@ -182,6 +182,17 @@ cam_ntp_apply() {  # $1 = LAN1 网口（空 = 没给过 --lan1）；改了 chron
   mkdir -p /etc/chrony/conf.d
   printf '# LSA-9600EG（install.sh 写）：给 LAN1 上的摄像机对时。关掉：sudo bash install.sh --cam-ntp-off\nallow %s\nlocal stratum 12\n' "$cidr" > "$CAM_NTP_CONF"
 }
+# 摄像机对时放行跟 local.yaml 当前摄像机地址对不对得上（0.7.3，现场改了摄像机地址 192.168.1.19 → .180）：
+# 打印「缺放行的地址|多放行的地址」（都空 = 一致）；没开对时 / 没开防火墙 / 不是 root 读不了 nft 时什么都不打（返回 1）
+cam_ntp_drift() {
+  cam_ntp_on && [ -f "$CAM_NTP_CONF" ] && [ "$(id -u)" = 0 ] && nft list table inet lsa_eg >/dev/null 2>&1 || return 1
+  local hosts allowed miss='' extra='' h
+  hosts="$(cam_hosts | tr '\n' ' ')"
+  allowed="$(nft list chain inet lsa_eg input 2>/dev/null | grep 'udp dport 123' | grep -oE 'ip saddr [0-9.]+' | awk '{print $3}' | sort -u | tr '\n' ' ' || true)"
+  for h in $hosts; do case " $allowed " in *" $h "*) ;; *) miss+="$h " ;; esac; done
+  for h in $allowed; do case " $hosts " in *" $h "*) ;; *) extra+="$h " ;; esac; done
+  echo "${miss% }|${extra% }"
+}
 cam_ntp_status() {
   local nic hosts
   nic="$(grep -E '^EG_LAN1=' .env 2>/dev/null | cut -d= -f2- || true)"
@@ -202,10 +213,16 @@ cam_ntp_status() {
   echo "摄像机对时：开（chrony $(sed -n 's/^allow //p' "$CAM_NTP_CONF")；摄像机 NTP 服务器填本机 LAN1 地址）"
   if [ -z "$hosts" ]; then
     echo '  ！ local.yaml 里还没有摄像机地址：防火墙没给它放行 UDP 123 —— 管理页「视频与测温」填好地址后 sudo bash install.sh --cam-ntp-on'
-  elif [ "$(id -u)" = 0 ] && nft list table inet lsa_eg >/dev/null 2>&1; then
-    local miss='' h
-    for h in $hosts; do nft list chain inet lsa_eg input 2>/dev/null | grep -q "ip saddr $h udp dport 123" || miss+="$h "; done
-    if [ -n "$miss" ]; then echo "  ！ 摄像机地址 ${miss% } 没放行（改过地址？）—— sudo bash install.sh --cam-ntp-on"; else echo "  防火墙放行：${hosts% } → UDP 123"; fi
+  else
+    local d miss extra
+    if d="$(cam_ntp_drift)"; then
+      miss="${d%%|*}"; extra="${d#*|}"
+      if [ -n "$miss$extra" ]; then
+        echo "  ！ 摄像机对时放行跟当前摄像机地址不一致（改过地址？）：${miss:+缺 $miss}${miss:+${extra:+；}}${extra:+还放行着旧地址 $extra} —— sudo bash install.sh --cam-ntp-on"
+      else
+        echo "  防火墙放行：${hosts% } → UDP 123"
+      fi
+    fi
   fi
 }
 fw_remove() {
@@ -507,6 +524,11 @@ security_notes() {
   fi
   grep -qx 'EG_UPG_SIG_REQUIRED=0' .env 2>/dev/null && msg+=('.env 里有 EG_UPG_SIG_REQUIRED=0：批量升级验签强制被应急关了，没签名的安装文件也会装 —— 应急用完删掉这一行')
   grep -q '^EG_PASSIVE=.' .env 2>/dev/null && msg+=('.env 里有 EG_PASSIVE：那是开发用的旁观模式，现场要删掉')
+  local cd cm ce
+  if cd="$(cam_ntp_drift)" && [ "$cd" != '|' ]; then
+    cm="${cd%%|*}"; ce="${cd#*|}"
+    msg+=("摄像机对时放行跟当前摄像机地址不一致（${cm:+缺 $cm}${cm:+${ce:+；}}${ce:+还放行着旧地址 $ce}）：管理页改过摄像机地址后要重新放行 —— sudo bash install.sh --cam-ntp-on")
+  fi
   if grep -q '^EG_LAN1=.' .env 2>/dev/null && [ "$(id -u)" = 0 ] && ! nft list table inet lsa_eg >/dev/null 2>&1; then
     msg+=('LAN1 防火墙没开：摄像机网上 22 / 80 / 8554 都能连（只有管理页 403）—— sudo bash install.sh --fw-on')
   fi

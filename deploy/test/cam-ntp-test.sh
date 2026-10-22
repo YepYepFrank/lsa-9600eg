@@ -1,5 +1,6 @@
 #!/bin/bash
-# 摄像机对时（0.7.x，S19）回归：install.sh 的 lan1_cidr / cam_hosts / cam_ntp_apply / fw_apply / cam_ntp_status。
+# 摄像机对时（0.7.x，S19）回归：install.sh 的 lan1_cidr / cam_hosts / cam_ntp_apply / fw_apply / cam_ntp_status，
+# 0.7.3：cam_ntp_drift 与安全提醒（改了摄像机地址、放行没跟上）。
 # 在一次性容器里跑，ip / nft / systemctl 是替身（不动真的防火墙和 chrony）；写出来的 nft 文件另用真 nft -c 查语法（给了沙箱名才查）：
 #   bash deploy/test/cam-ntp-test.sh [装着 nft 的容器，如 iteg]
 set -euo pipefail
@@ -22,7 +23,7 @@ chmod +x bin/*; export PATH="$W/bin:$PATH"
 : > .env
 SRC=/d/eg/install.sh
 grep -E '^(FW_NFT|FW_UNIT|CAM_NTP_CONF)=' "$SRC" > fn.sh
-for fn in cam_ntp_on cam_hosts lan1_cidr cam_ntp_apply cam_ntp_status; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
+for fn in cam_ntp_on cam_hosts lan1_cidr cam_ntp_apply cam_ntp_drift cam_ntp_status security_notes; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
 # fw_apply 里的 nft heredoc 有顶格的「}」：抽到下一节的标题为止
 awk '/^fw_apply\(\) \{/,/^# ---------- 摄像机对时/' "$SRC" | sed '$d' >> fn.sh
 . ./fn.sh
@@ -70,10 +71,18 @@ s="$(cam_ntp_status)"
 grep -q '摄像机对时：开（chrony 192.168.1.0/24' <<<"$s" && grep -q '防火墙放行：192.168.1.64 192.168.1.65 → UDP 123' <<<"$s" && ok "--status：开、放行两台" || bad "--status：$s"
 cp "$FW_NFT" /out/lan1-fw.nft
 
-echo "== 4. 改了摄像机地址、没重跑：--status 提示"
+sn="$(security_notes 2>/dev/null)"
+grep -q '摄像机对时放行' <<<"$sn" && bad "地址没改、放行一致，安全提醒却报了：$sn" || ok "放行一致：安全提醒不提"
+
+echo "== 4. 改了摄像机地址、没重跑（0.7.3，现场 192.168.1.19 → .180）：--status 与安全提醒都提示"
 sed -i 's#http://192.168.1.64#http://192.168.1.66#; s#admin:p%40ss@192.168.1.64#admin:p%40ss@192.168.1.66#' config/local.yaml
 s="$(cam_ntp_status)"
-grep -q '摄像机地址 192.168.1.66 没放行（' <<<"$s" && ok "提示 192.168.1.66 没放行、要 --cam-ntp-on" || bad "--status：$s"
+grep -q '摄像机对时放行跟当前摄像机地址不一致（改过地址？）：缺 192.168.1.66；还放行着旧地址 192.168.1.64 —— sudo bash install.sh --cam-ntp-on' <<<"$s" && ok "--status：缺 .66、还放行着旧的 .64、要 --cam-ntp-on" || bad "--status：$s"
+[ "$(cam_ntp_drift)" = '192.168.1.66|192.168.1.64' ] && ok "cam_ntp_drift：缺 .66 | 多 .64" || bad "cam_ntp_drift：$(cam_ntp_drift)"
+sn="$(security_notes 2>/dev/null)"
+grep -q '摄像机对时放行跟当前摄像机地址不一致（缺 192.168.1.66；还放行着旧地址 192.168.1.64）' <<<"$sn" && ok "安全提醒：同一句" || bad "安全提醒：$sn"
+fw_apply eth1 >/dev/null
+[ "$(cam_ntp_drift)" = '|' ] && ! grep -q '摄像机对时放行' <<<"$(security_notes 2>/dev/null)" && grep -q '防火墙放行：192.168.1.65 192.168.1.66 → UDP 123' <<<"$(cam_ntp_status)" && ok "--cam-ntp-on（重写放行）以后：一致、不再提示" || bad "重新放行后：$(cam_ntp_drift) / $(cam_ntp_status)"
 
 echo "== 5. 关（EG_CAM_NTP=off）"
 echo 'EG_CAM_NTP=off' >> .env

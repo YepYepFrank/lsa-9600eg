@@ -366,7 +366,9 @@ export class ApplyService {
     return Promise.race([this.sweptP, new Promise<void>(r => setTimeout(r, ms).unref?.())])
   }
 
-  /** 开机清扫（排进应用队列，不与下发并发）：EG 规则的告警类型里，本地设备配置已经没有的，活动告警清掉 */
+  /** 开机清扫（排进应用队列，不与下发并发）：EG 规则的告警类型里，本地设备配置已经没有的，活动告警清掉；
+   *  0.7.3：发起设备已经不在本机 eg.yaml 设备清单里的（拆柜后改归别的单元，如 SAM-AH01-A 不再归 EG-AH01-B），活动告警也清掉。
+   *  应用新 eg.yaml（apply-config / 拆柜 rebind）以后 agent 会重启，所以也是开机清扫这一步 */
   private sweepOnce(): Promise<void> {
     if (!this.tb.available || this.debugTbDown) return Promise.resolve()
     const p = this.chain.then(async () => {
@@ -384,6 +386,11 @@ export class ApplyService {
       if (n) {
         this.log.log(`开机清扫：规则已停用 / 改名、还挂着的活动告警清掉 ${n} 条（不再有规则的类型 ${gone.join('、')}）`)
         this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '清除遗留告警', target: gone.join('、'), ok: true, detail: `开机清扫：清掉 ${n} 条` })
+      }
+      const foreign = await this.clearForeign()
+      for (const [dev, k] of foreign) {
+        this.log.log(`开机清扫：${dev} 已不归本单元（${this.cfg.unit.code}），还挂着的活动告警清掉 ${k} 条`)
+        this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '清除遗留告警', target: dev, ok: true, detail: `开机清扫：设备不再归本单元 ${this.cfg.unit.code}（不在 eg.yaml 设备清单里），清掉 ${k} 条` })
       }
       this.sweptResolve()
     })
@@ -429,6 +436,28 @@ export class ApplyService {
   }
 
   /** 本地 TB 上这些类型的活动告警清掉（规则已没了，不清就一直挂着）；失败只记日志，不影响这次应用 */
+  /** 0.7.3：本地 TB 的活动告警里，发起设备不在本机 eg.yaml 设备清单（也不是 EG 自己）的，清掉；返回 设备名 → 条数 */
+  private async clearForeign(): Promise<Map<string, number>> {
+    const mine = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
+    const out = new Map<string, number>()
+    try {
+      const r = await this.tb.get<{ data: { id: { id: string }; originatorName?: string }[] }>('/api/v2/alarms?pageSize=500&page=0&statusList=ACTIVE')
+      for (const a of r.data) {
+        const dev = a.originatorName
+        if (!dev || mine.has(dev)) continue
+        try {
+          await this.tb.req('POST', `/api/alarm/${a.id.id}/clear`)
+          out.set(dev, (out.get(dev) ?? 0) + 1)
+        } catch (e) {
+          this.log.warn(`清 ${dev} 的遗留告警失败：${(e as Error).message}`)
+        }
+      }
+    } catch (e) {
+      this.log.warn(`查不归本单元设备的遗留告警失败：${(e as Error).message}`)
+    }
+    return out
+  }
+
   private async clearActive(types: string[]): Promise<number> {
     let n = 0
     for (const t of types) {
