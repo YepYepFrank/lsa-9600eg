@@ -12,7 +12,8 @@
           "optional": false,
           "type": "number",
           "cap": "samIr",
-          "capState": "confirmed"
+          "capState": "pending",
+          "note": "能力「SAM 红外测温」现场口径是「待定」（等 T03 · 清单 S19 A4、D7）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "ir.t_avg",
@@ -22,7 +23,8 @@
           "optional": false,
           "type": "number",
           "cap": "samIr",
-          "capState": "confirmed"
+          "capState": "pending",
+          "note": "能力「SAM 红外测温」现场口径是「待定」（等 T03 · 清单 S19 A4、D7）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "us.amp",
@@ -74,7 +76,8 @@
           "optional": false,
           "type": "number",
           "cap": "tev",
-          "capState": "confirmed"
+          "capState": "pending",
+          "note": "能力「地电波」现场口径是「待定」（等 T06 · 清单 E7、PD1、PD5、R1、Q4、S19 D5）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "tev.level",
@@ -84,7 +87,8 @@
           "optional": true,
           "type": "number",
           "cap": "tev",
-          "capState": "confirmed"
+          "capState": "pending",
+          "note": "能力「地电波」现场口径是「待定」（等 T06 · 清单 E7、PD1、PD5、R1、Q4、S19 D5）：本柜装了才发，检查工具不报缺"
         },
         {
           "key": "uhf.amp",

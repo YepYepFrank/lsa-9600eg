@@ -343,11 +343,14 @@ status() {
 case "$MODE" in
   status) status; exit 0 ;;
   check)
-    echo "== lsa_check 检查 $CHECK s（按 $DIR/config/eg.yaml 的设备清单、config/conv 的传感器挂法）"
+    echo "== lsa_check 检查 $CHECK s（按 $DIR/config/eg.yaml 的设备清单、config/conv 的传感器挂法、子站下发的本单元能力）"
+    # 0.7.3：带上 applied-config.json（子站下发过才有），按本单元的能力清单判哪些量该来
     if command -v python3 >/dev/null; then
-      python3 "$HERE/conv-kit/lsa_check.py" --eg-yaml config/eg.yaml --conv config/conv --duration "$CHECK"
+      ap=(); [ -f config/applied-config.json ] && ap=(--applied config/applied-config.json)
+      python3 "$HERE/conv-kit/lsa_check.py" --eg-yaml config/eg.yaml --conv config/conv "${ap[@]}" --duration "$CHECK"
     else
-      docker run --rm --network host -v "$HERE/conv-kit:/kit:ro" -v "$DIR/config/eg.yaml:/eg.yaml:ro" -v "$DIR/config/conv:/conv:ro" --entrypoint python3 "$IMG" /kit/lsa_check.py --eg-yaml /eg.yaml --conv /conv --duration "$CHECK"
+      ap=(); mnt=(); [ -f "$DIR/config/applied-config.json" ] && { ap=(--applied /applied.json); mnt=(-v "$DIR/config/applied-config.json:/applied.json:ro"); }
+      docker run --rm --network host -v "$HERE/conv-kit:/kit:ro" -v "$DIR/config/eg.yaml:/eg.yaml:ro" -v "$DIR/config/conv:/conv:ro" "${mnt[@]}" --entrypoint python3 "$IMG" /kit/lsa_check.py --eg-yaml /eg.yaml --conv /conv "${ap[@]}" --duration "$CHECK"
     fi
     exit 0 ;;
   off)

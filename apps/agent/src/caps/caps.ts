@@ -96,6 +96,21 @@ export function capEnabled(cap: string, c: CapsConfig | null): boolean {
   return !c || c.caps[cap] === 'confirmed'
 }
 
+/** 某台设备某个量的能力状态（0.7.3，看护按它定「必有」）：匹配上的能力里有 confirmed → confirmed；没有但有 pending → pending；
+ *  都是 unsupported → unsupported；一条都匹配不上、或子站没下发能力 → null（照旧当启用） */
+export function keyCapState(device: string, key: string, c: CapsConfig | null): CapState | null {
+  if (!c) return null
+  const pre = prefixOf(device)
+  const states = Object.entries(c.capKeys)
+    .filter(([, pats]) => pats.some(p => {
+      const pp = parsePattern(p)
+      return !!pp && pp.prefix === pre && keyMatch(pp.key, key)
+    }))
+    .map(([cap]) => c.caps[cap] ?? 'unsupported')
+  if (!states.length) return null
+  return states.includes('confirmed') ? 'confirmed' : states.includes('pending') ? 'pending' : 'unsupported'
+}
+
 /** 设备是否启用：至少匹配上一条能力、且匹配上的全都不启用 → 不启用；一条都匹配不上的照常（如 EG 自己） */
 export function deviceEnabled(device: string, c: CapsConfig | null): boolean {
   if (!c) return true

@@ -53,10 +53,14 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 EG 上总线本来就在（容器 `lsa-eg-mosquitto`，`127.0.0.1:1884`），**不用装**（`install.sh` 也会认出来直接退出）。直接按 EG 的设备清单检查：
 
 ```bash
-python3 lsa_check.py --eg-yaml /opt/lsa-eg/config/eg.yaml --conv /opt/lsa-eg/config/conv
+python3 lsa_check.py --eg-yaml /opt/lsa-eg/config/eg.yaml --conv /opt/lsa-eg/config/conv --applied /opt/lsa-eg/config/applied-config.json
 ```
 
 `--conv`（0.7.2）：按转换程序配置算每台设备该来哪些量，与 EG 同一口径 —— 一面柜几台 SAM、传感器按隔室分开挂时（A 只接温湿度、B 接局放 / 弧光 / 气体），不再把另一台的量报成「一直没收到」。`install-conv.sh --check` 会自动带上。不给时照旧按点表全量期望。
+
+`--applied`（1.2，EG 0.7.3）：按子站下发给本单元的能力清单（EG 的 `applied-config.json`，agent 存的生效配置）判哪些量该来：「不支持」的不判缺、不提；「待定」的没来不算缺，给一条建议（装了查接线，定了到子站能力页改）；「已确认」的照报。不给或读不到时按 `spec.json` 的全局缺省 —— 子站 0.18.3 起地电波、SAM 红外的全局缺省是「待定」，S19 由本站模型声明「已确认」，只看全局缺省会漏报，所以现场一律带上。`install-conv.sh --check` 有这个文件就自动带。
+
+1.2 也认 `q` 里的 `absent`（装置报告这一路没装，0.19.0 的转换程序起会发）：不报「一直没收到」，只给建议。
 
 在 EG 上检查时，eg-agent / eg-video 自己发的消息（带 MQTT 5 用户属性 `src=eg-agent` / `eg-video`）会被自动略过，只看你的。
 
