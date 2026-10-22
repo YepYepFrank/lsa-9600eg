@@ -1,6 +1,6 @@
 #!/bin/bash
 # 摄像机对时（0.7.x，S19）回归：install.sh 的 lan1_cidr / cam_hosts / cam_ntp_apply / fw_apply / cam_ntp_status，
-# 0.7.3：cam_ntp_drift 与安全提醒（改了摄像机地址、放行没跟上）。
+# 0.7.3：cam_ntp_drift 与安全提醒（改了摄像机地址、放行没跟上）；0.19.0：cam_ntp_watch（盯 local.yaml 的 systemd 单元）与 cam_ntp_sync（自动同步）。
 # 在一次性容器里跑，ip / nft / systemctl 是替身（不动真的防火墙和 chrony）；写出来的 nft 文件另用真 nft -c 查语法（给了沙箱名才查）：
 #   bash deploy/test/cam-ntp-test.sh [装着 nft 的容器，如 iteg]
 set -euo pipefail
@@ -22,8 +22,8 @@ printf '#!/bin/sh\nexit 0\n' > bin/systemctl
 chmod +x bin/*; export PATH="$W/bin:$PATH"
 : > .env
 SRC=/d/eg/install.sh
-grep -E '^(FW_NFT|FW_UNIT|CAM_NTP_CONF)=' "$SRC" > fn.sh
-for fn in cam_ntp_on cam_hosts lan1_cidr cam_ntp_apply cam_ntp_drift cam_ntp_status security_notes; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
+grep -E '^(FW_NFT|FW_UNIT|CAM_NTP_CONF|CAMNTP_PATH|CAMNTP_SVC|CAMNTP_LOG)=' "$SRC" > fn.sh
+for fn in cam_ntp_on cam_hosts lan1_cidr cam_ntp_apply cam_ntp_watch cam_ntp_sync cam_ntp_drift cam_ntp_status security_notes; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
 # fw_apply 里的 nft heredoc 有顶格的「}」：抽到下一节的标题为止
 awk '/^fw_apply\(\) \{/,/^# ---------- 摄像机对时/' "$SRC" | sed '$d' >> fn.sh
 . ./fn.sh
@@ -73,6 +73,13 @@ cp "$FW_NFT" /out/lan1-fw.nft
 
 sn="$(security_notes 2>/dev/null)"
 grep -q '摄像机对时放行' <<<"$sn" && bad "地址没改、放行一致，安全提醒却报了：$sn" || ok "放行一致：安全提醒不提"
+mkdir -p /etc/systemd/system
+grep -qx "PathChanged=$W/config/local.yaml" "$CAMNTP_PATH" 2>/dev/null && grep -qx 'Unit=lsa-eg-camntp.service' "$CAMNTP_PATH" && grep -qx "ExecStart=/bin/bash $W/install.sh --cam-ntp-sync" "$CAMNTP_SVC" 2>/dev/null \
+  && ok "0.19.0：防火墙开、对时开 → 装了 lsa-eg-camntp.path（盯 local.yaml）/ .service（install.sh --cam-ntp-sync）" || bad "盯 local.yaml 的单元：$(cat "$CAMNTP_PATH" "$CAMNTP_SVC" 2>&1 | tr '\n' ' ')"
+grep -q '改摄像机地址自动同步：开' <<<"$(cam_ntp_status)" && ok "--status：自动同步开" || bad "--status：$(cam_ntp_status)"
+before="$(stat -c %Y "$CAMNTP_PATH")"; sleep 1; fw_apply eth1 >/dev/null
+[ "$(stat -c %Y "$CAMNTP_PATH")" = "$before" ] && ok "再跑一次：单元内容没变就不重写" || bad "单元被无谓重写"
+cam_ntp_sync; [ ! -s "$CAMNTP_LOG" ] && ok "--cam-ntp-sync，地址没变：什么都不做、不记日志" || bad "地址没变也同步了：$(cat "$CAMNTP_LOG")"
 
 echo "== 4. 改了摄像机地址、没重跑（0.7.3，现场 192.168.1.19 → .180）：--status 与安全提醒都提示"
 sed -i 's#http://192.168.1.64#http://192.168.1.66#; s#admin:p%40ss@192.168.1.64#admin:p%40ss@192.168.1.66#' config/local.yaml
@@ -81,8 +88,12 @@ grep -q '摄像机对时放行跟当前摄像机地址不一致（改过地址�
 [ "$(cam_ntp_drift)" = '192.168.1.66|192.168.1.64' ] && ok "cam_ntp_drift：缺 .66 | 多 .64" || bad "cam_ntp_drift：$(cam_ntp_drift)"
 sn="$(security_notes 2>/dev/null)"
 grep -q '摄像机对时放行跟当前摄像机地址不一致（缺 192.168.1.66；还放行着旧地址 192.168.1.64）' <<<"$sn" && ok "安全提醒：同一句" || bad "安全提醒：$sn"
-fw_apply eth1 >/dev/null
-[ "$(cam_ntp_drift)" = '|' ] && ! grep -q '摄像机对时放行' <<<"$(security_notes 2>/dev/null)" && grep -q '防火墙放行：192.168.1.65 192.168.1.66 → UDP 123' <<<"$(cam_ntp_status)" && ok "--cam-ntp-on（重写放行）以后：一致、不再提示" || bad "重新放行后：$(cam_ntp_drift) / $(cam_ntp_status)"
+cam_ntp_sync   # 0.19.0：lsa-eg-camntp.path 看到 local.yaml 变了就跑 install.sh --cam-ntp-sync
+[ "$(cam_ntp_drift)" = '|' ] && ! grep -q '摄像机对时放行' <<<"$(security_notes 2>/dev/null)" && grep -q '防火墙放行：192.168.1.65 192.168.1.66 → UDP 123' <<<"$(cam_ntp_status)" && ok "--cam-ntp-sync（自动同步）以后：一致、不再提示" || bad "同步后：$(cam_ntp_drift) / $(cam_ntp_status)"
+grep -q '摄像机地址变了，对时放行已同步：加上 192.168.1.66；去掉 192.168.1.64；现在放行 192.168.1.65 192.168.1.66' "$CAMNTP_LOG" && ok "同步记了一行日志：$(tail -1 "$CAMNTP_LOG" | cut -c21-)" || bad "日志：$(cat "$CAMNTP_LOG" 2>&1)"
+echo 'EG_LAN1_FW=off' >> .env; sed -i 's#192.168.1.66#192.168.1.67#g' config/local.yaml; n0="$(wc -l < "$CAMNTP_LOG")"
+cam_ntp_sync; [ "$(wc -l < "$CAMNTP_LOG")" = "$n0" ] && ok "防火墙关着（EG_LAN1_FW=off）：--cam-ntp-sync 不动" || bad "防火墙关着还同步了"
+sed -i '/^EG_LAN1_FW=off$/d' .env; sed -i 's#192.168.1.67#192.168.1.66#g' config/local.yaml
 
 echo "== 5. 关（EG_CAM_NTP=off）"
 echo 'EG_CAM_NTP=off' >> .env
@@ -90,6 +101,7 @@ cam_ntp_apply eth1; fw_apply eth1 >/dev/null
 [ ! -f "$CAM_NTP_CONF" ] && ok "chrony 配置撤掉" || bad "关了还有 $CAM_NTP_CONF"
 grep -q 'udp dport 123' "$FW_NFT" && bad "关了防火墙还放行" || ok "防火墙不再放行"
 grep -q '摄像机对时：关' <<<"$(cam_ntp_status)" && ok "--status：关" || bad "--status：$(cam_ntp_status)"
+[ ! -e "$CAMNTP_PATH" ] && [ ! -e "$CAMNTP_SVC" ] && ok "对时关了：盯 local.yaml 的单元撤掉" || bad "对时关了单元还在"
 
 echo "== 6. 没有摄像机地址、LAN1 没地址"
 echo 'EG_LAN1=eth1' > .env; printf 'camera:\n  restv1: ""\n' > config/local.yaml
