@@ -2,9 +2,12 @@
 [Unit]
 Description=LSA-9600 EG 升级请求目录监视（网页入口）
 
+# 0.19.0 r2（真机验收 F7）：触发限速放宽，同 lsa-eg-camntp.path（连发几十条请求也不进 failed；service 那边 StartLimitIntervalSec=0）
 [Path]
 PathExistsGlob=/var/lib/lsa9600sp/eg-upgrade/requests/*.json
 Unit=lsa-eg-upgrade-runner.service
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=200
 
 [Install]
 WantedBy=multi-user.target

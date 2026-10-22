@@ -116,6 +116,8 @@ chk "记住了：$OFF" [ -f "$OFF" ]
 U1=/etc/systemd/system/lsa-eg-upgrade-runner.service
 { grep -qx 'StartLimitIntervalSec=0' $U1 && grep -qx 'ExecStopPost=-/usr/bin/systemctl reset-failed lsa-eg-upgrade-runner.path' $U1 && grep -qx 'ExecStopPost=-/usr/bin/systemctl --no-block start lsa-eg-upgrade-runner.path' $U1; } \
   && ok '0.19.0 r2（F7）：执行器不限速（StartLimitIntervalSec=0），每次跑完 reset-failed + --no-block 拉起 path（请求密了 path 不再卡在 failed）' || bad "执行器 unit 没有 F7 的改动：$(grep -E 'StartLimit|ExecStopPost' $U1 | tr '\n' ' ')"
+{ grep -qx 'TriggerLimitIntervalSec=10s' /etc/systemd/system/lsa-eg-upgrade-runner.path && grep -qx 'TriggerLimitBurst=200' /etc/systemd/system/lsa-eg-upgrade-runner.path; } \
+  && ok '0.19.0 r2（F7）：path 单元触发限速放宽（10 s / 200，同 lsa-eg-camntp.path）' || bad "path 单元：$(grep -E 'TriggerLimit' /etc/systemd/system/lsa-eg-upgrade-runner.path | tr '\n' ' ')"
 grep -q '^ExecStart=/usr/bin/python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner$' $U1 && grep -q '^Type=oneshot' $U1 \
   && grep -q '^PathExistsGlob=/var/lib/lsa9600sp/eg-upgrade/requests/\*.json$' /etc/systemd/system/lsa-eg-upgrade-runner.path && ok '单元：oneshot、监 requests/*.json' || bad '单元内容不对'
 { grep -q '^ProtectSystem=strict$' $U1 && grep -q '^ReadWritePaths=/var/lib/lsa9600sp/eg-upgrade /var/log/lsa9600sp/eg-upgrade -/run/lsa9600sp$' $U1 \
