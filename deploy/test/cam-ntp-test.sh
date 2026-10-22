@@ -17,13 +17,13 @@ bad() { n=$((n+1)); echo "  ✗ $*"; fail=1; }
 W=$(mktemp -d); cd "$W"; mkdir -p bin config /etc/chrony
 # 替身：ip 按 /tmp/ipaddr 回答；nft list chain 回写出来的文件；systemctl 什么都不做
 printf '#!/bin/sh\n[ -s /tmp/ipaddr ] && echo "3: eth1    inet $(cat /tmp/ipaddr) brd x scope global eth1"\nexit 0\n' > bin/ip
-printf '#!/bin/sh\n[ "$1" = list ] && cat /etc/lsa-eg/lan1-fw.nft 2>/dev/null\nexit 0\n' > bin/nft
-printf '#!/bin/sh\nexit 0\n' > bin/systemctl
+printf '#!/bin/sh\n[ "$1" = list ] && cat /etc/lsa-eg/lan1-fw.nft 2>/dev/null\n[ "$1" = -c ] && [ -f /tmp/nft-bad ] && exit 1\n[ "$1" = -f ] && echo "nft -f $2" >> /tmp/calls\nexit 0\n' > bin/nft
+printf '#!/bin/sh\necho "systemctl $*" >> /tmp/calls\nexit 0\n' > bin/systemctl
 chmod +x bin/*; export PATH="$W/bin:$PATH"
 : > .env
 SRC=/d/eg/install.sh
-grep -E '^(FW_NFT|FW_UNIT|CAM_NTP_CONF|CAMNTP_PATH|CAMNTP_SVC|CAMNTP_LOG)=' "$SRC" > fn.sh
-for fn in cam_ntp_on cam_hosts lan1_cidr cam_ntp_apply cam_ntp_watch cam_ntp_sync cam_ntp_drift cam_ntp_status security_notes; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
+grep -E '^(FW_NFT|FW_UNIT|CAM_NTP_CONF|CAMNTP_PATH|CAMNTP_SVC|CAMNTP_LOG|FW_APPLY_FAILED)=' "$SRC" > fn.sh
+for fn in cam_ntp_on cam_hosts_raw ip2n ipv4_ok ip_in_cidr cam_lan1_net cam_host_problem cam_hosts cam_hosts_bad lan1_cidr cam_ntp_apply cam_ntp_unwatch cam_ntp_watch cam_ntp_log cam_ntp_sync cam_ntp_drift cam_ntp_status security_notes; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
 # fw_apply 里的 nft heredoc 有顶格的「}」：抽到下一节的标题为止
 awk '/^fw_apply\(\) \{/,/^# ---------- 摄像机对时/' "$SRC" | sed '$d' >> fn.sh
 . ./fn.sh
@@ -94,6 +94,34 @@ grep -q '摄像机地址变了，对时放行已同步：加上 192.168.1.66；�
 echo 'EG_LAN1_FW=off' >> .env; sed -i 's#192.168.1.66#192.168.1.67#g' config/local.yaml; n0="$(wc -l < "$CAMNTP_LOG")"
 cam_ntp_sync; [ "$(wc -l < "$CAMNTP_LOG")" = "$n0" ] && ok "防火墙关着（EG_LAN1_FW=off）：--cam-ntp-sync 不动" || bad "防火墙关着还同步了"
 sed -i '/^EG_LAN1_FW=off$/d' .env; sed -i 's#192.168.1.67#192.168.1.66#g' config/local.yaml
+
+echo "== 4b. 0.8.0 坏地址：保留原来的放行、记一行，防火墙不敞开"
+good="$(cat "$FW_NFT")"; : > /tmp/calls
+for badip in 192.168.1.300 192.168.1.3000 10.9.9.9; do
+  sed -i -E "s#(thermal: \"rtsp://)[0-9.]+(/ch1\")#\1$badip\2#" config/local.yaml
+  cam_ntp_sync
+  [ "$(cat "$FW_NFT")" = "$good" ] && ! grep -q 'nft -f\|restart lsa-eg-fw' /tmp/calls && ok "$badip：防火墙规则原样、没 nft -f / restart" || bad "$badip：规则被动了"
+done
+grep -q '192.168.1.300（不是合法的 IPv4 地址' "$CAMNTP_LOG" && ok ".300 记了「不是合法的 IPv4」" || bad "日志：$(tail -3 "$CAMNTP_LOG")"
+grep -q '192.168.1.3000（不是合法的 IPv4 地址' "$CAMNTP_LOG" && ! grep -q 'saddr 192.168.1.300 ' "$FW_NFT" && ok "超长 .3000：整段取、不截成 .300" || bad "超长的：$(tail -2 "$CAMNTP_LOG")"
+grep -q '10.9.9.9（不在 LAN1 网段 192.168.1.0/24）' "$CAMNTP_LOG" && ok "不在网段的 10.9.9.9：拒" || bad "网段：$(tail -1 "$CAMNTP_LOG")"
+grep -q '这些摄像机地址不放行对时：10.9.9.9（不在 LAN1 网段' <<<"$(cam_ntp_status)" && ok "--status 列出不放行的地址" || bad "--status：$(cam_ntp_status)"
+n1="$(wc -l < "$CAMNTP_LOG")"; for i in 1 2 3 4 5 6 7 8 9 10; do cam_ntp_sync; done
+[ "$(wc -l < "$CAMNTP_LOG")" = "$n1" ] && ok "连续触发 10 次（同一个坏地址）：不刷日志、不动防火墙" || bad "连续触发刷了 $(( $(wc -l < "$CAMNTP_LOG") - n1 )) 行"
+mv config/local.yaml /tmp/local.bak; : > /tmp/calls; cam_ntp_sync
+[ "$(cat "$FW_NFT")" = "$good" ] && grep -q 'local.yaml 里读不到摄像机地址：保留现有的对时放行' "$CAMNTP_LOG" && ok "local.yaml 不见了：放行留着（没删光）、记一行" || bad "local.yaml 缺失：$(tail -1 "$CAMNTP_LOG")"
+mv /tmp/local.bak config/local.yaml
+sed -i -E "s#(thermal: \"rtsp://)[0-9.]+(/ch1\")#\1192.168.1.65\2#" config/local.yaml
+sed -i 's#192.168.1.66#192.168.1.68#g' config/local.yaml; touch /tmp/nft-bad; : > /tmp/calls
+cam_ntp_sync
+[ "$(cat "$FW_NFT")" = "$good" ] && [ ! -e "$FW_NFT.new" ] && grep -q '新的防火墙规则没通过检查' "$CAMNTP_LOG" && ok "新规则过不了 nft -c：原文件不动、临时文件删掉、记一行" || bad "nft -c 失败时：$(tail -1 "$CAMNTP_LOG")"
+rm -f /tmp/nft-bad; : > /tmp/calls; cam_ntp_sync
+grep -q 'saddr 192.168.1.68 udp dport 123' "$FW_NFT" && grep -q "nft -f $FW_NFT" /tmp/calls && ! grep -q 'restart lsa-eg-fw' /tmp/calls && ok "改对以后同步：nft -f 原子换，没 stop / restart" || bad "原子加载：$(tr '\n' ';' < /tmp/calls)"
+sed -i 's#192.168.1.68#192.168.1.66#g' config/local.yaml; cam_ntp_sync
+grep -qx 'TriggerLimitBurst=200' "$CAMNTP_PATH" && grep -qx 'StartLimitIntervalSec=0' "$CAMNTP_SVC" && ok "单元放宽限流：path TriggerLimitBurst=200、service StartLimitIntervalSec=0（连续保存不进 failed）" || bad "限流：$(cat "$CAMNTP_PATH" "$CAMNTP_SVC" | tr '\n' ' ')"
+cam_ntp_unwatch; [ ! -e "$CAMNTP_PATH" ] && [ ! -e "$CAMNTP_SVC" ] && ok "cam_ntp_unwatch（回退到老版本时调）：单元撤掉" || bad "unwatch 没撤"
+grep -q "grep -q 'lsa-eg-camntp' install.sh || { cam_ntp_unwatch" "$SRC" && ok "回退：老版本 install.sh 不认 lsa-eg-camntp 就撤掉" || bad "回退没撤单元"
+fw_apply eth1 >/dev/null
 
 echo "== 5. 关（EG_CAM_NTP=off）"
 echo 'EG_CAM_NTP=off' >> .env
