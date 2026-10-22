@@ -7,6 +7,8 @@
  *   GET  /restv1/measurement/globTemp    全画面 max / min（带坐标）、avg、center
  *   GET  /restv1/measurement/regionTemp  各区 enable、max / min（带坐标）、avg、center；point 类型另有 point {value, x, y}
  *   GET  /restv1/alarm/status            globTemp、regionTemp[]、diffTemp[]、globTempRise、tempRise[]、firePoint、smartTemp、input[]
+ *   POST /restv1/measurement/region      整份写（{region: [...]}）；POST /restv1/measurement/region/:id 按区号写一个（0.8.0 缺省测温区用）——
+ *                                        照文档校验：regionType 四种之一、localParam.distance (0–1000]、emissivity [0.01–1]、region 坐标在 640×480 里，不对回 10001
  * 请求头 accessToken 不对 / 过期回 {code: 10009}（HTTP 200）；最多 2 个有效会话（第三个登录回 19999），与厂家答复一致。
  * 控制（自检用）：直接改返回对象的 state；命令行起的版本另有 POST /mock/ctl（JSON：expireAll、fail、alarms、tokenLifeS、regions）。
  * 只用 Node 自带模块、没有 TS 专有语法：现场样机上可以 `node --experimental-strip-types restv1-mock.ts` 直接跑（不用装依赖）。
@@ -21,6 +23,8 @@ export interface MockRegion {
   regionName: string
   regionType: 'point' | 'line' | 'region' | 'polygon'
   region: Record<string, unknown>
+  localMeasureParam?: boolean
+  localParam?: { distance: number; emissivity: number }
 }
 
 export interface MockState {
@@ -37,7 +41,7 @@ export interface MockState {
   regions: MockRegion[]
   /** 正在报警的：globTemp、regionTemp 的区号（0 起）、firePoint */
   alarms: { globTemp: boolean; regionTemp: number[]; firePoint: boolean }
-  /** 某个路径（不含 /restv1 前缀，如 '/alarm/status'）故意出错：返回码、'http500'、'hang'（不回）、'nojpeg'（snap 回非 JPEG） */
+  /** 某个路径（不含 /restv1 前缀，如 '/alarm/status'；只对某种方法出错写 'POST /measurement/region'）故意出错：返回码、'http500'、'hang'（不回）、'nojpeg'（snap 回非 JPEG） */
   fail: Record<string, number | 'http500' | 'hang' | 'nojpeg'>
   /** 每个路径被调了几次 */
   hits: Record<string, number>
@@ -68,6 +72,23 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('data', d => (s += String(d)))
     req.on('end', () => resolve(s))
   })
+}
+
+/** 写区域时照文档校验（厂家 restv1 V1.8 §2.82 / §2.84）：区号 0–11、类型四种之一、坐标在 640×480 里、距离 (0–1000]、辐射率 [0.01–1] */
+function validRegion(id: number, r: Record<string, unknown>): boolean {
+  if (!Number.isInteger(id) || id < 0 || id > 11) return false
+  if (typeof r['regionEnable'] !== 'boolean' || !['point', 'line', 'region', 'polygon'].includes(String(r['regionType']))) return false
+  const g = (r['region'] ?? {}) as Record<string, unknown>
+  const inX = (v: unknown) => typeof v === 'number' && v >= 0 && v <= 640
+  const inY = (v: unknown) => typeof v === 'number' && v >= 0 && v <= 480
+  if (r['regionType'] === 'region' && !(inX(g['x']) && inY(g['y']) && typeof g['width'] === 'number' && typeof g['height'] === 'number' && (g['x'] as number) + (g['width'] as number) <= 640 && (g['y'] as number) + (g['height'] as number) <= 480)) return false
+  if (r['regionType'] === 'point' && !(inX(g['x']) && inY(g['y']))) return false
+  const lp = r['localParam'] as { distance?: unknown; emissivity?: unknown } | undefined
+  if (lp !== undefined) {
+    if (typeof lp.distance !== 'number' || !(lp.distance > 0 && lp.distance <= 1000)) return false
+    if (typeof lp.emissivity !== 'number' || !(lp.emissivity >= 0.01 && lp.emissivity <= 1)) return false
+  }
+  return true
 }
 
 /** 第 id 个区的温度（确定性：区号越大越热一点，随秒数小幅摆动） */
@@ -136,13 +157,13 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
         if (b.alarms) state.alarms = b.alarms
         if (b.tokenLifeS) state.tokenLifeS = b.tokenLifeS
         if (b.regions) state.regions = b.regions
-        return json(res, { ok: true, logins: state.logins, maxConcurrent: state.maxConcurrent, hits: state.hits })
+        return json(res, { ok: true, logins: state.logins, maxConcurrent: state.maxConcurrent, hits: state.hits, regions: state.regions.map(r => `${r.regionName}:${r.regionEnable}:${JSON.stringify(r.region)}`) })
       }
       if (!path.startsWith('/restv1/')) return json(res, { code: 10001, msg: 'Invalid Parameter' }, 404)
       const p = path.slice('/restv1'.length)
       const key = p.replace(/\/\d+$/, '')
       state.hits[key] = (state.hits[key] ?? 0) + 1
-      const f = state.fail[key]
+      const f = state.fail[`${req.method} ${key}`] ?? state.fail[key]
       if (f === 'hang') return // 不回，测超时
       if (f === 'http500') return json(res, { msg: 'boom' }, 500)
       if (typeof f === 'number') return json(res, { code: f, msg: 'Function Call Exception' })
@@ -178,7 +199,24 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
       m = /^\/channel\/snap\/(\d+)$/.exec(p)
       if (m) state.snapIds.push(Number(m[1]))
       if (m) return ok({ snapData: f === 'nojpeg' ? Buffer.from('not a jpeg').toString('base64') : JPEG.toString('base64') })
-      if (p === '/measurement/region') return ok(state.regions.map(r => ({ ...r, localMeasureParam: false, localParam: { distance: 2, emissivity: 0.95 } })))
+      if (p === '/measurement/region' && req.method === 'GET') return ok(state.regions.map(r => ({ localMeasureParam: false, localParam: { distance: 2, emissivity: 0.95 }, ...r })))
+      if ((p === '/measurement/region' || /^\/measurement\/region\/\d+$/.test(p)) && req.method === 'POST') {
+        let b: Record<string, unknown>
+        try {
+          b = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>
+        } catch {
+          return json(res, { code: 10001, msg: 'Invalid Parameter' })
+        }
+        const rows: [number, Record<string, unknown>][] = p === '/measurement/region'
+          ? (Array.isArray(b['region']) ? (b['region'] as Record<string, unknown>[]).map((r, i) => [i, r] as [number, Record<string, unknown>]) : [])
+          : [[Number(p.split('/').pop()), b]]
+        if (!rows.length || rows.some(([id, r]) => !validRegion(id, r))) return json(res, { code: 10001, msg: 'Invalid Parameter' })
+        for (const [id, r] of rows) {
+          while (state.regions.length <= id) state.regions.push({ regionEnable: false, regionName: `Area${state.regions.length + 1}`, regionType: 'region', region: { x: 0, y: 0, width: 10, height: 10 } })
+          state.regions[id] = structuredClone(r) as unknown as MockRegion
+        }
+        return json(res, { code: 200, msg: 'Success' })
+      }
       if (p === '/measurement/globTemp') {
         const max = r1(48.3 + Math.sin(now / 10_000) * 0.5)
         return ok({ max: { value: max, x: 80, y: 50 }, min: { value: 22.100000381469727, x: 2, y: 117 }, avg: { value: 30.5 }, center: { value: 31.2 } }) // 160×120

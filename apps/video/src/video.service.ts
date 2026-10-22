@@ -17,6 +17,7 @@ import { MqttKeeper, mqttKeepOptions, refusedOf } from '@lsa-eg/config/mqtt-keep
 import { fetchAuth } from './digest.js'
 import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
 import { numberRegions, type DriverError } from './driver-base.js'
+import { Restv1Driver } from './restv1.js'
 import { CHANNELS, maskUri, mtxPaths, pathOf, renderMtxConfig, withCreds, type MtxPath } from './mtx.js'
 import type { ChannelKey } from './onvif.js'
 import { describe, type Probe } from './rtsp.js'
@@ -50,6 +51,10 @@ export class VideoService {
   /** 有没有配摄像机（任何一路取得到流地址）：没有时录像、裁片段都按「本机没有摄像机」答，不当故障（0.7.1） */
   hasCamera(): boolean {
     return Object.keys(this.sources).length > 0
+  }
+  /** 正在用的 restv1 真机驱动（0.8.0 缺省测温区：写区域走同一个令牌 —— 摄像机最多 2 个会话、没有退出登录的接口）；不是 restv1 为 null */
+  restv1(): Restv1Driver | null {
+    return this.driver instanceof Restv1Driver ? this.driver : null
   }
   private probes: Partial<Record<ChannelKey, Probe>> = {}
   private streamsInfo: { driver: string; ok: boolean; error: string | null; note: string | null; at: number | null } | null = null

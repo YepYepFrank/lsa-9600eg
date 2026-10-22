@@ -6,7 +6,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "verify:restv1": "tsx src/verify-restv1.ts"
+    "verify:restv1": "tsx src/verify-restv1.ts",
+    "verify:cam-regions": "tsx src/verify-cam-regions.ts"
   },
   "dependencies": {
     "@lsa-eg/config": "workspace:*",
