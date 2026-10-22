@@ -396,7 +396,7 @@ sudo bash /opt/lsa-eg/test/test.sh down
 - **注意**：持子站那把升级 key 的人能让 EG 装安装文件、等于 root。有了签名以后（0.18.2 起强制），他只能让 EG 装**发布方签过**、版本不低于现装的安装文件；应急开关要 EG 上的 root 改 `.env`，持 key 的人自己开不了。key 只放在子站主机 root 下，不用时撤销。
 - 0.17.2 之前的 EG 没有 `--upgrade-key`：先手工升到 0.17.2（§6），以后才能批量升。
 
-**网页入口（0.19.0 起；0.18.2 装了但不启用，`setup.sh --role sp --enable-web-upgrade` + 子站 `EXT_EGUP_ENABLED=1` 才打开）**：子站网页「系统 → 网关升级」能做上面的批量升级（选包 → 计划 → 先升一台 → 其余并发 → 停止 / 续查 → 历史），EG 这边**不用多做什么**（授权同上，签名照样 EG 再验）。子站侧：
+**网页入口（0.19.0 起缺省打开；0.18.2 装了但不启用。子站主机上 `setup.sh --role sp --disable-web-upgrade` 关掉并记住、`--enable-web-upgrade` 重新打开）**：子站网页「系统 → 网关升级」能做上面的批量升级（选包 → 计划 → 先升一台 → 其余并发 → 停止 / 续查 → 历史），EG 这边**不用多做什么**（授权同上，签名照样 EG 再验）。子站侧：
 - 网页（扩展服务，容器里、没有升级 key）只往 `/var/lib/lsa9600sp/eg-upgrade/requests/` 写白名单请求；子站主机上 root 的执行器 `/opt/lsa9600sp/lsa-eg-upgrade-runner`（systemd `lsa-eg-upgrade-runner.path` 发现新请求就跑）校验后调同一个 `upgrade-egs.sh`，批次另起 `lsa-eg-upgrade-<批次>` unit。命令行和网页共用批次与日志，同一时间只跑一个批次。
 - 目录（一键安装文件 `--role sp` 建）：安装包目录 `/var/lib/lsa9600sp/eg-upgrade/packages/`（root:lsa-upgrade 2775）、请求 `requests/`（root 0700，挂进容器）、处理完的请求 `done/` 与安装文件工作拷贝 `work/`（root 0700，不挂进容器）、结果 `state/`（0755）、批次 `/var/log/lsa9600sp/eg-upgrade/<批次>/`。
 - **维护账号加进 `lsa-upgrade` 组**（每个子站一次，重新登录生效）：`sudo usermod -aG lsa-upgrade <维护账号>`。
