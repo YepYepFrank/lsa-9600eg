@@ -150,6 +150,11 @@ async function main() {
     const ib = ci?.byDevice.get(B)
     check(!!ib && ib.has('ir.t_max') && ib.has('ir.t_avg') && !ci!.errors.some(e => e.startsWith('infrared.yaml')), `按类型兜底：B 预期测点多了 ir.t_max、ir.t_avg，不报「不认识」（${ci?.errors.join('；') || '无错'}）`)
     check(!!ci?.bus.slaves.some(s => s.a === 1 && s.t === 'infrared' && s.dev === B), `485 清单（conv.bus）里有红外从站 1（${ci?.bus.slaves.map(s => `${s.a} ${s.n}`).join('，')}）`)
+
+    console.log('6. 0.19.0：本项目局放只有超声，地电波 / 特高频不进预期测点（同事的 pd.yaml 照样写着它们的 key）')
+    put('pd2.yaml', sensorYaml('partial_discharge', 'SAM-AH98-C', true, ['us.amp', 'us.cnt', 'us.type', 'us.level', 'tev.amp', 'tev.level', 'uhf.amp', 'uhf.level']))
+    const cp = loadConvExpect(dir)?.byDevice.get('SAM-AH98-C')
+    check(!!cp && [...cp].sort().join(',') === 'us.amp,us.cnt,us.level,us.type', `只留超声四个（${cp ? [...cp].join('、') : '没有'}）`)
   } finally {
     for (const s of [q, south, qOld, southOld, expect]) s.onModuleDestroy()
     Date.now = realNow

@@ -314,7 +314,7 @@ def read_eg_yaml(path):
 # 预期测点 = registers 里写的 key；没写 key 的按 type 兜底。没有配置 / 某台没有传感器挂它：照旧按点表全量期望。
 CONV_BY_TYPE = {
     'temperature_humidity': ['env.t', 'env.rh'],
-    'partial_discharge': ['us.amp', 'us.cnt', 'us.type', 'us.level', 'tev.amp', 'tev.level', 'uhf.amp', 'uhf.level'],
+    'partial_discharge': ['us.amp', 'us.cnt', 'us.type', 'us.level'],
     'arc_light': ['uv.int'],
     'smoke': ['smoke.ppm'],
     'infrared': ['ir.t_max', 'ir.t_avg'],   # 同事的 infrared.yaml 寄存器不写 key
@@ -403,7 +403,8 @@ def read_conv_expect(path):
         if not lst:
             problems.append('%s：类型「%s」没有 key，也不认识' % (f, sensor.get('type', '?')))
             continue
-        by.setdefault(dev, set()).update(lst)
+        # 0.19.0（用户 10-22）：本项目局放只有超声一路，地电波 / 特高频不进预期测点（同 EG conv-expect 的 NOT_EXPECTED）
+        by.setdefault(dev, set()).update(k for k in lst if not k.startswith(('tev.', 'uhf.')))
     return (by if read else None), problems
 
 
