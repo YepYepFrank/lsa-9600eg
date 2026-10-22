@@ -73,6 +73,8 @@ export class StatusController {
           // v1.2：能力全都是 unsupported = 不进本地 TB
           capsLocal: this.caps.deviceLocal(d.name),
           q: this.quality.qualityOf(d.name, now),
+          // 0.7.3：转换程序标 absent 的量（装置报告没装，不算缺）
+          absent: this.quality.absentOf(d.name, now),
           // 0.17：剩余预热秒数（不是需要预热的设备为 null）
           warmupS: this.quality.warmupOf(d.name, now),
           south: this.south.rowOf(d.name, now),

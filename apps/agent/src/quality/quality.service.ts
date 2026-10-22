@@ -39,7 +39,11 @@
  *
  * 0.7.3（子站 0.18.3，现场 AH01-B）：「必有」另看本单元能力 —— 这个量对应的能力不是 confirmed（pending 待定 / unsupported 不支持）时，
  *   没来过不算缺（来过的照常看护）。以前地电波改成「不支持」以后 SAM-AH01-B 还是一直 DEGRADED（q 里 tev.amp invalid 上送子站）。
- *   与检查工具 lsa_check 1.2 --applied 同一口径（子站 0.18.3 起地电波、SAM 红外的全局缺省改回 pending，S19 由本站模型声明 confirmed） */
+ *   与检查工具 lsa_check 1.2 --applied 同一口径（子站 0.18.3 起地电波、SAM 红外的全局缺省改回 pending，S19 由本站模型声明 confirmed）
+ *
+ * 0.8.0（子站 0.19.0，内部 MQTT 格式 v0.8，现场 AH01-B）：转换程序在 q 里标 absent = 装置报告这一路没装（局放地电波读出 187 / 特高频 269，
+ *   读数不发；转换程序补丁 H）：这个量不算缺、不进 q、不让设备 DEGRADED；absent 不上送（子站不认这个码）。
+ *   能力是 confirmed（或子站没下发能力）时日志给建议：本单元确实没装就到子站能力页改成不支持 */
 import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import { CAM_MAX_REGIONS, camRegionLimit, type EgConfig } from '@lsa-eg/config'
@@ -93,7 +97,16 @@ interface DeviceWatch {
   period: number
   /** 转换程序配置推出的预期测点（null = 按物模型全量） */
   expect: ReadonlySet<string> | null
+  /** 上一次判出的转换程序标 absent 的量（逗号连起来，变了才记日志） */
+  absent: string
 }
+
+/** 转换程序标 absent 的量按通道（key 第一段）给说法：局放地电波 / 特高频读出的是「没装」的固定值（v0.8 §5.1） */
+const ABSENT_CHANNEL: Record<string, { what: string; cap: string }> = {
+  tev: { what: '局放装置读出 187 = 没装地电波', cap: '地电波' },
+  uhf: { what: '局放装置读出 269 = 没装特高频', cap: '特高频' },
+}
+const STATE_NAME: Record<string, string> = { pending: '待定', unsupported: '不支持' }
 
 /** 派生量 → 它的输入（摄像机测温区按上限 R1–R12 全列，没配的区不看护、自然不影响结果；I18） */
 const REGION_MAXES = Array.from({ length: CAM_MAX_REGIONS }, (_, i) => `ir.R${i + 1}.max`)
@@ -139,7 +152,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         if (ms === null || p.key in DERIVED) continue
         keys.set(p.key, { period: ms, optional: !!p.optional, required: !p.optional, lastAt: this.startedAt, seen: false })
       }
-      const dw: DeviceWatch = { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, warmScope: warmupScope(d.kind), period: 60_000, expect: null }
+      const dw: DeviceWatch = { keys, fromSource: {}, fromSourceAt: 0, derived: {}, published: null, link: null, comm: null, publishedAt: 0, warm: null, warmAt: 0, warmScope: warmupScope(d.kind), period: 60_000, expect: null, absent: '' }
       this.applyExpect(d.name, dw)
       this.devices.set(d.name, dw)
     }
@@ -185,6 +198,16 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     this.evaluate(device)
   }
 
+  /** 转换程序标 absent 的量（装置报告没装；新鲜度窗口外不算），本地页与状态接口也用 */
+  absentOf(device: string, now = Date.now()): string[] {
+    const d = this.devices.get(device)
+    if (!d || !this.sourceFresh(d, now)) return []
+    return Object.entries(d.fromSource)
+      .filter(([, q]) => q === 'absent')
+      .map(([k]) => k)
+      .sort()
+  }
+
   /** 某设备当前的质量码（合并后），本地页与状态接口用 */
   qualityOf(device: string, now = Date.now()): Record<string, string> {
     const d = this.devices.get(device)
@@ -193,12 +216,15 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     const put = (k: string, q: string) => {
       if (rank(q) > rank(out[k])) out[k] = q
     }
-    if (this.sourceFresh(d, now)) for (const [k, q] of Object.entries(d.fromSource)) put(k, q)
+    // 0.8.0：absent 不进 q（子站不认），这些量也不按周期判缺
+    const absent = new Set(this.absentOf(device, now))
+    if (this.sourceFresh(d, now)) for (const [k, q] of Object.entries(d.fromSource)) if (q !== 'absent') put(k, q)
     for (const [k, q] of Object.entries(d.derived)) put(k, q)
     // 0.17：预热中，这台设备的量都标 warmup（可选量来过才标）
     // 0.7.1：SAM 只有气体那路（smoke.*）标，局放、温湿度不受预热影响（warmupScope）
     if (this.warmup.remaining(device, now) > 0) for (const [k, w] of d.keys) if ((w.seen || w.required) && d.warmScope(k)) put(k, 'warmup')
     for (const [key, w] of d.keys) {
+      if (absent.has(key)) continue
       const q = judge(w, now)
       if (q) put(key, q)
     }
@@ -312,6 +338,17 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     if (sourceQChanged || warmed) this.evaluate(device)
   }
 
+  /** 转换程序标 absent 的量变了：记日志（能力 confirmed 时是建议） */
+  private noteAbsent(name: string, d: DeviceWatch, now: number): void {
+    const cur = this.absentOf(name, now)
+    const key = cur.join(',')
+    if (key === d.absent) return
+    const before = d.absent ? d.absent.split(',') : []
+    d.absent = key
+    for (const line of absentNotes(cur.filter(k => !before.includes(k)), before.filter(k => !cur.includes(k)), k => this.caps.keyState(name, k)))
+      this.log.log(`${name} ${line}`)
+  }
+
   private evaluate(only?: string): void {
     const now = Date.now()
     for (const [name, d] of this.devices) {
@@ -330,6 +367,7 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
         const n = Object.keys(JSON.parse(q)).length
         if (d.published !== null || n) this.log.log(`${name} 质量码 ${n ? q : '全部有效'}`)
       }
+      this.noteAbsent(name, d, now)
       const values: Record<string, unknown> = { q }
       if (enabled) {
         values['dev.link'] = link
@@ -351,6 +389,31 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
       d.publishedAt = now
     }
   }
+}
+
+/** 判缺用不到、只为日志：转换程序标 absent 的量变了时，按通道给一句（能力 confirmed 时给建议） */
+export function absentNotes(added: string[], removed: string[], state: (key: string) => string | null): string[] {
+  const group = (keys: string[]) => {
+    const m = new Map<string, string[]>()
+    for (const k of keys) {
+      const ch = k.split('.')[0]!
+      m.set(ch, [...(m.get(ch) ?? []), k])
+    }
+    return m
+  }
+  const out: string[] = []
+  for (const [ch, keys] of group(added)) {
+    const c = ABSENT_CHANNEL[ch]
+    const what = c ? `${c.what}（${keys.join('、')} 不发）` : `转换程序报 ${keys.join('、')} 没装`
+    const st = state(keys[0]!)
+    out.push(
+      st === null || st === 'confirmed'
+        ? `${what}，不算缺量、不降级。建议：本单元确实没装就到子站能力页把「${c?.cap ?? keys.join('、')}」改成不支持；装了的查装置这一路`
+        : `${what}，能力是「${STATE_NAME[st] ?? st}」，不用处理`,
+    )
+  }
+  for (const [ch, keys] of group(removed)) out.push(`${ABSENT_CHANNEL[ch]?.cap ?? keys.join('、')}：转换程序不再标没装（${keys.join('、')}）`)
+  return out
 }
 
 function judge(w: Watch, now: number): Quality | null {

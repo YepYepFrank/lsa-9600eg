@@ -1,0 +1,137 @@
+From 8b42db556810aa64da9b08623e1f021926e5f139 Mon Sep 17 00:00:00 2001
+From: YepYepFrank <nj.frank.young@gmail.com>
+Date: Wed, 21 Oct 2026 22:18:01 -0400
+Subject: [PATCH] =?UTF-8?q?=E5=B1=80=E6=94=BE=E6=B2=A1=E8=A3=85=E7=9A=84?=
+ =?UTF-8?q?=E9=80=9A=E9=81=93=E5=9C=A8=20q=20=E9=87=8C=E6=A0=87=20absent?=
+ =?UTF-8?q?=EF=BC=9B=E5=90=8C=E4=B8=80=E8=AE=BE=E5=A4=87=E5=87=A0=E8=B7=AF?=
+ =?UTF-8?q?=E4=BC=A0=E6=84=9F=E5=99=A8=E7=9A=84=20q=20=E5=8F=96=E5=B9=B6?=
+ =?UTF-8?q?=E9=9B=86=E5=86=8D=E5=8F=91?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+地电波 / 特高频读出固定值 187 / 269 时照旧不发读数，另在 q 里标 absent（EG内部MQTT格式 v0.8 §6），
+EG 和检查工具据此提示「装置说没装、到子站能力页改成不支持」，不再报「一直没收到」（现场 AH01-B）。
+q 每次都发，都装了发 "{}"；判出的没装通道变了记一条 INFO。
+app.py 记各路传感器最近一次的 q，发出去的是本设备各路的并集：EG 收到 q 是整体替换，
+以前弧光每 2 s 的 "{}" 会把同一设备上别的标记冲掉。
+---
+ src/core/app.py   | 22 ++++++++++++++++++++++
+ src/drivers/pd.py | 19 +++++++++++++++++--
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/app.py b/src/core/app.py
+index bd026de..9fcd5bf 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -12,6 +12,7 @@
+ """
+ 
+ import asyncio
++import json
+ import os
+ import signal
+ import time
+@@ -77,6 +78,9 @@ class Application:
+         # device_name → {"values": {...}, "ts": int}
+         self._device_buffer: Dict[str, Dict[str, Any]] = {}
+         self._device_buffer_lock = asyncio.Lock()
++        # 各路传感器最近一次报的 q (补丁 H): 设备名 → {传感器名: {key: 码}}。同一设备几路的 q 取并集再发:
++        # EG 收到 q 是整体替换, 不合并的话弧光每 2 s 一条 "{}" 会把局放标的 absent / 弧光自己以外的标记冲掉
++        self._sensor_q: Dict[str, Dict[str, Dict[str, str]]] = {}
+         self._flush_task: Optional[asyncio.Task] = None
+         self._buffer_debounce = 0.1  # 100ms 去抖
+ 
+@@ -343,6 +347,9 @@ class Application:
+                 self._device_buffer[device] = {"values": {}, "ts": ts, "items": []}
+ 
+             buf = self._device_buffer[device]
++            if "q" in values:
++                values = dict(values)
++                values["q"] = self._merge_q(device, sensor_name, values["q"])
+             buf["values"].update(values)
+             # ts 取最新的
+             if ts > buf["ts"]:
+@@ -351,6 +358,21 @@ class Application:
+             if normalized is not None:
+                 buf["items"].append((sensor_name, normalized))
+ 
++    def _merge_q(self, device: str, sensor_name: str, q: Any) -> str:
++        """记下这路传感器最新的 q, 返回本设备各路 q 的并集 (JSON 串, key 排序)。不是 JSON 对象的当作 {} (补丁 H)"""
++        try:
++            mine = json.loads(q) if isinstance(q, str) else q
++        except ValueError:
++            mine = None
++        if not isinstance(mine, dict):
++            mine = {}
++        per = self._sensor_q.setdefault(device, {})
++        per[sensor_name] = {str(k): str(v) for k, v in mine.items()}
++        merged: Dict[str, str] = {}
++        for d in per.values():
++            merged.update(d)
++        return json.dumps(dict(sorted(merged.items())), ensure_ascii=False)
++
+     async def _flush_device_buffer_loop(self) -> None:
+         """
+         后台任务: 定期刷新设备缓冲区
+diff --git a/src/drivers/pd.py b/src/drivers/pd.py
+index e63263b..cad3fe2 100644
+--- a/src/drivers/pd.py
++++ b/src/drivers/pd.py
+@@ -24,8 +24,12 @@ v0.7 要点:
+     - 轮询周期 3s (装置 3s 刷新一次)
+     - 没装的通道读出固定值: 地电波=187, 特高频=269 → 不发
+     - 50/100Hz 分量、告警阈值首期不发
++
++v0.8 (EG 补丁 H): 没装的通道照旧不发读数, 另在 q 里标 absent (如 {"tev.amp": "absent", "tev.level": "absent"}),
++    让 EG 和检查工具知道是「装置说没装」而不是「读不到」; 每次都发 q, 通道都装了发 "{}"
+ """
+ 
++import json
+ from typing import Any, Dict, Optional
+ from src.drivers.base import SensorDriver
+ from src.drivers.modbus_rtu import ModbusRTUClient
+@@ -44,6 +48,7 @@ class PartialDischargeDriver(SensorDriver):
+     def __init__(self, modbus_client: ModbusRTUClient, config: Dict[str, Any]):
+         super().__init__(modbus_client, config)
+         self._registers = config.get("registers", {})
++        self._absent: Optional[frozenset] = None  # 上次判出的没装通道 (变了才记 INFO 日志)
+ 
+     async def read_raw(self) -> Optional[Dict[str, Any]]:
+         """连续读取 14 个寄存器 (0x0000~0x000D), 覆盖三个通道"""
+@@ -85,13 +90,15 @@ class PartialDischargeDriver(SensorDriver):
+         result["us.type"] = raw_data["us_type_raw"]                 # 可选
+         result["us.level"] = raw_data["us_level_raw"]               # 可选
+ 
++        q: Dict[str, str] = {}  # 补丁 H: 没装的通道标 absent
++
+         # ── 地电波 TEV 通道 (本柜装了才发) ──
+         tev_raw = raw_data["tev_amp_raw"]
+         if tev_raw != _TEV_INVALID:
+             result["tev.amp"] = round(tev_raw * 0.1, 1)            # dBmV
+             result["tev.level"] = raw_data["tev_level_raw"]        # 可选
+         else:
+-            logger.debug("地电波通道未安装 (raw=%d), 不发", tev_raw)
++            q["tev.amp"] = q["tev.level"] = "absent"
+ 
+         # ── 特高频 UHF 通道 (本柜装了才发) ──
+         uhf_raw = raw_data["uhf_amp_raw"]
+@@ -99,6 +106,14 @@ class PartialDischargeDriver(SensorDriver):
+             result["uhf.amp"] = round(uhf_raw * 0.1, 1)            # dBmV
+             result["uhf.level"] = raw_data["uhf_level_raw"]        # 可选
+         else:
+-            logger.debug("特高频通道未安装 (raw=%d), 不发", uhf_raw)
++            q["uhf.amp"] = q["uhf.level"] = "absent"
++
++        result["q"] = json.dumps(q, ensure_ascii=False)
++        absent = frozenset(k.split(".")[0] for k in q)
++        if absent != self._absent:
++            names = [n for c, n in (("tev", "地电波(寄存器 6 = 187)"), ("uhf", "特高频(寄存器 10 = 269)")) if c in absent]
++            logger.info("局放 slave=%d: %s", self._slave_id,
++                        ("没装的通道: %s, 不发读数、q 标 absent" % "、".join(names)) if names else "地电波、特高频通道都装了")
++            self._absent = absent
+ 
+         return result
+-- 
+2.54.0.windows.1
+
