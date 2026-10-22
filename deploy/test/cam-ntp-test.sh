@@ -17,7 +17,7 @@ bad() { n=$((n+1)); echo "  ✗ $*"; fail=1; }
 W=$(mktemp -d); cd "$W"; mkdir -p bin config /etc/chrony
 # 替身：ip 按 /tmp/ipaddr 回答；nft list chain 回写出来的文件；systemctl 什么都不做
 printf '#!/bin/sh\n[ -s /tmp/ipaddr ] && echo "3: eth1    inet $(cat /tmp/ipaddr) brd x scope global eth1"\nexit 0\n' > bin/ip
-printf '#!/bin/sh\n[ "$1" = list ] && cat /etc/lsa-eg/lan1-fw.nft 2>/dev/null\n[ "$1" = -c ] && [ -f /tmp/nft-bad ] && exit 1\n[ "$1" = -f ] && echo "nft -f $2" >> /tmp/calls\nexit 0\n' > bin/nft
+printf '#!/bin/sh\n[ "$1" = list ] && { [ -f /tmp/nft-stale ] && cat /tmp/nft-stale || cat /etc/lsa-eg/lan1-fw.nft 2>/dev/null; }\n[ "$1" = -c ] && [ -f /tmp/nft-bad ] && exit 1\n[ "$1" = -f ] && echo "nft -f $2" >> /tmp/calls\nexit 0\n' > bin/nft
 printf '#!/bin/sh\necho "systemctl $*" >> /tmp/calls\nexit 0\n' > bin/systemctl
 chmod +x bin/*; export PATH="$W/bin:$PATH"
 : > .env
@@ -119,6 +119,9 @@ rm -f /tmp/nft-bad; : > /tmp/calls; cam_ntp_sync
 grep -q 'saddr 192.168.1.68 udp dport 123' "$FW_NFT" && grep -q "nft -f $FW_NFT" /tmp/calls && ! grep -q 'restart lsa-eg-fw' /tmp/calls && ok "改对以后同步：nft -f 原子换，没 stop / restart" || bad "原子加载：$(tr '\n' ';' < /tmp/calls)"
 sed -i 's#192.168.1.68#192.168.1.66#g' config/local.yaml; cam_ntp_sync
 grep -qx 'TriggerLimitBurst=200' "$CAMNTP_PATH" && grep -qx 'StartLimitIntervalSec=0' "$CAMNTP_SVC" && ok "单元放宽限流：path TriggerLimitBurst=200、service StartLimitIntervalSec=0（连续保存不进 failed）" || bad "限流：$(cat "$CAMNTP_PATH" "$CAMNTP_SVC" | tr '\n' ' ')"
+cp "$FW_NFT" /tmp/nft-stale; sed -i 's#192.168.1.66#192.168.1.69#g' config/local.yaml; n2="$(wc -l < "$CAMNTP_LOG")"; cam_ntp_sync
+grep -q '新的防火墙规则没通过检查 / 没加载上' "$CAMNTP_LOG" && [ "$(wc -l < "$CAMNTP_LOG")" -gt "$n2" ] && ! tail -1 "$CAMNTP_LOG" | grep -q '已同步' && ok "0.8.1：内核里还是旧规则（新文件没加载上）：--cam-ntp-sync 记「没加载上」，不记「已同步」" || bad "加载失败没报出来：$(tail -1 "$CAMNTP_LOG")"
+rm -f /tmp/nft-stale; sed -i 's#192.168.1.69#192.168.1.66#g' config/local.yaml; cam_ntp_sync
 cam_ntp_unwatch; [ ! -e "$CAMNTP_PATH" ] && [ ! -e "$CAMNTP_SVC" ] && ok "cam_ntp_unwatch（回退到老版本时调）：单元撤掉" || bad "unwatch 没撤"
 grep -q "grep -q 'lsa-eg-camntp' install.sh || { cam_ntp_unwatch" "$SRC" && ok "回退：老版本 install.sh 不认 lsa-eg-camntp 就撤掉" || bad "回退没撤单元"
 fw_apply eth1 >/dev/null
