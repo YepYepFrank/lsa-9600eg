@@ -68,7 +68,7 @@ ok "测试包：a.run（签名）、u.run（没签名），EG $NEW"
 # ======================================================================
 say "1. setup.sh --role sp 的 sp_egup_runner（装两遍：幂等；老目录权限不对的改回来）"
 SP_DEST=/opt/lsa9600sp
-export EGUP_ENABLE=1   # 0.18.2 起缺省不启用：这一节和后面各节都按「打开了」测，不启用的另见 1b
+unset EGUP_ENABLE   # 0.19.0 起缺省打开：这一节不带开关，验缺省就是打开的；关掉 / 记住 / 再打开见 1b
 eval "$(sed -n '/^sp_egup_runner() {$/,/^}$/p' "$T/../../bundle/setup.sh")"
 declare -F sp_egup_runner >/dev/null || { bad 'setup.sh 里没取到 sp_egup_runner'; exit 1; }
 src="$(mktemp -d)"; cp "$T/../../sp/lsa-eg-upgrade-runner" "$T/../../sp/lsa-eg-upgrade-runner.path" "$T/../../sp/lsa-eg-upgrade-runner.service" "$T/../../sp/lsa-eg-upgrade-runner.timer" "$src/"; echo 0.19.0-test > "$src/VERSION"
@@ -94,16 +94,25 @@ chk 'timer 装了、enable + restart（每 5 min 兜底：清 flood、7 天清�
 chk 'timer 每 5 min 触发执行器' grep -q '^OnUnitActiveSec=5min$' /etc/systemd/system/lsa-eg-upgrade-runner.timer
 rm -f "$P/a.run" "$SR/keep.json"
 
-say "1b. 不带 --enable-web-upgrade（0.18.2 缺省）：照装文件，但 .path / .timer disable --now、不 restart，删 runner.json"
+say "1b. --disable-web-upgrade（0.19.0）：照装文件，但 .path / .timer disable --now、不 restart，删 runner.json，并记住"
 : > /fake/systemctl.log
-( cd "$src" && EGUP_ENABLE=0 sp_egup_runner . ) > /tmp/setup3.log 2>&1 && ok 'sp_egup_runner（不启用）成功' || { bad "不启用时失败"; cat /tmp/setup3.log; }
+OFF="$E/web-upgrade-off"
+( cd "$src" && EGUP_ENABLE=0 sp_egup_runner . ) > /tmp/setup3.log 2>&1 && ok 'sp_egup_runner（关）成功' || { bad "关时失败"; cat /tmp/setup3.log; }
 chk 'disable --now 了 path 与 timer（预览叠装过的机器升级时也关掉）' grep -q 'disable --now lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.timer' /fake/systemctl.log
 ! grep -qE 'restart|^systemctl enable' /fake/systemctl.log && ok '没有 enable、没有 restart' || bad "不启用时还 enable / restart 了：$(cat /fake/systemctl.log | tr '
 ' ' ')"
 chk '执行器与 unit 文件照装' [ -x "$RUNNER" -a -f /etc/systemd/system/lsa-eg-upgrade-runner.path -a -f /etc/systemd/system/lsa-eg-upgrade-runner.timer ]
 chk 'runner.json 删了（扩展服务看它判断装没装）' [ ! -e "$S/runner.json" ]
-chk '输出写明本版不启用' grep -q '本版不启用' /tmp/setup3.log
-( cd "$src" && sp_egup_runner . ) > /tmp/setup4.log 2>&1 && grep -q 'restart lsa-eg-upgrade-runner.path' /fake/systemctl.log && [ -f "$S/runner.json" ] && ok '再带上开关重装：enable + restart、runner.json 回来（后面各节照旧）' || bad '再带开关重装不对'
+chk '输出写明已关、怎么重新打开' grep -q '已关（--disable-web-upgrade.*重新打开：--enable-web-upgrade' /tmp/setup3.log
+chk "记住了：$OFF" [ -f "$OFF" ]
+: > /fake/systemctl.log
+( cd "$src" && sp_egup_runner . ) > /tmp/setup3b.log 2>&1 && ! grep -qE 'restart|^systemctl enable' /fake/systemctl.log && [ ! -e "$S/runner.json" ] \
+  && ok '以后不带开关重跑（升级）：照样关着，不 enable、不 restart、没有 runner.json' || bad "记住的「关」没生效：$(tr '\n' ' ' < /fake/systemctl.log)"
+( cd "$src" && EGUP_ENABLE=1 sp_egup_runner . ) > /tmp/setup4.log 2>&1 && grep -q 'restart lsa-eg-upgrade-runner.path' /fake/systemctl.log && [ -f "$S/runner.json" ] && [ ! -e "$OFF" ] \
+  && ok '--enable-web-upgrade：enable + restart、runner.json 回来、记号删掉（后面各节照旧）' || bad '--enable-web-upgrade 重新打开不对'
+: > /fake/systemctl.log
+( cd "$src" && sp_egup_runner . ) > /tmp/setup5.log 2>&1 && grep -q 'restart lsa-eg-upgrade-runner.path' /fake/systemctl.log && grep -q '已启用（关掉用 --disable-web-upgrade）' /tmp/setup5.log \
+  && ok '再不带开关重跑：照缺省打开' || bad "重新打开后再重跑不对：$(cat /tmp/setup5.log | tail -2)"
 U1=/etc/systemd/system/lsa-eg-upgrade-runner.service
 grep -q '^ExecStart=/usr/bin/python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner$' $U1 && grep -q '^Type=oneshot' $U1 \
   && grep -q '^PathExistsGlob=/var/lib/lsa9600sp/eg-upgrade/requests/\*.json$' /etc/systemd/system/lsa-eg-upgrade-runner.path && ok '单元：oneshot、监 requests/*.json' || bad '单元内容不对'

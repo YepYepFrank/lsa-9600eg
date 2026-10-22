@@ -2,8 +2,9 @@
 # LSA-9600SP 一键安装入口（在解包目录里；通常由 .run 自解压后调用）。
 #
 #   sudo bash setup.sh                                  交互选角色
-#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--no-tb-backup] [--enable-web-upgrade] [--yes]
-#       --enable-web-upgrade（0.18.2）：打开网页升级 EG 的主机侧执行器（缺省不启用、0.19.0 起缺省打开；子站扩展服务也要 EXT_EGUP_ENABLED=1）
+#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--no-tb-backup] [--disable-web-upgrade | --enable-web-upgrade] [--yes]
+#       网页升级 EG 的主机侧执行器 0.19.0 起缺省打开（0.18.2 装了但不启用）。--disable-web-upgrade 关掉并记住（以后升级照样关着），
+#       --enable-web-upgrade 重新打开（清掉记住的「关」）；子站网页入口另看扩展服务的 EXT_EGUP_ENABLED
 #       子站主机：Docker（没有就装离线包）→ 导入镜像 → /opt/lsa9600sp → 首次自动生成 docker/.env（随机口令、
 #       本机 IP、证书 SAN）→ scripts/up.sh --prod（证书、建库、provision、扩展服务、Nginx、视频）→ TB 系统管理员改随机口令。
 #       已装过的按升级处理：保留 .env。
@@ -33,7 +34,7 @@ JOINKEY=''
 NTP=''
 KIOSK=0
 NO_TB_BACKUP=0
-EGUP_ENABLE="${EGUP_ENABLE:-0}"   # 0.18.2：网页升级 EG 缺省不启用（--enable-web-upgrade 打开）
+EGUP_ENABLE="${EGUP_ENABLE:-}"   # 0.19.0：空 = 照记住的（缺省打开）；--disable-web-upgrade = 0、--enable-web-upgrade = 1
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE="${2:?}"; shift ;;
@@ -42,6 +43,7 @@ while [ $# -gt 0 ]; do
     --kiosk) KIOSK=1 ;;
     --no-tb-backup) NO_TB_BACKUP=1 ;;
     --enable-web-upgrade) EGUP_ENABLE=1 ;;
+    --disable-web-upgrade) EGUP_ENABLE=0 ;;
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
     --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
@@ -349,21 +351,26 @@ sp_egup_runner() {
   printf '{"version": "%s", "at": %s, "pkgDir": "%s/packages"}\n' "$ver" "$(date +%s%3N)" "$E" > "$E/state/runner.json.tmp"
   chmod 644 "$E/state/runner.json.tmp" && mv -f "$E/state/runner.json.tmp" "$E/state/runner.json"
   systemctl daemon-reload
-  # 0.18.2（用户 10-21 选 B）：网页升级缺省不启用 —— 执行器、目录、组、unit 文件照装，.path / .timer 不 enable、不起；
-  # 已经 enable 过的（预览叠装过的机器）这次 disable 掉。--enable-web-upgrade（或 EGUP_ENABLE=1）才打开；0.19.0 改成缺省打开。
-  # 不启用时删掉 state/runner.json：扩展服务以它判断「装没装执行器」（执行器每次运行会重写它）
-  if [ "${EGUP_ENABLE:-0}" != 1 ]; then
+  # 0.19.0（协调 10-22）：网页升级缺省打开（0.18.2 是缺省不启用）。--disable-web-upgrade 关掉并在 $E/web-upgrade-off 记住，
+  # 以后升级（不带开关重跑）照样关着；--enable-web-upgrade 删掉这个记号、重新打开。0.18.2 因为「缺省不启用」关着的机器没有记号，升到 0.19.0 就打开。
+  # 关着时：执行器、目录、组、unit 文件照装，.path / .timer disable --now，删掉 state/runner.json（扩展服务以它判断「装没装执行器」）
+  local off="$E/web-upgrade-off"
+  case "${EGUP_ENABLE:-}" in
+    0) printf '# setup.sh --disable-web-upgrade（%s）：网页升级 EG 关着；重新打开 sudo bash setup.sh --role sp --enable-web-upgrade\n' "$(date '+%F %T')" > "$off" ;;
+    1) rm -f "$off" ;;
+  esac
+  if [ -f "$off" ]; then
     systemctl disable --now lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.timer >/dev/null 2>&1 || true
     systemctl stop lsa-eg-upgrade-runner.service >/dev/null 2>&1 || true
     rm -f "$E/state/runner.json"
-    echo "  网页升级 EG：本版不启用（执行器与 systemd 单元已装、没启动；子站网页上也没有这个入口）。命令行 upgrade-egs.sh 照常。0.19.0 起缺省打开"
+    echo "  网页升级 EG：已关（--disable-web-upgrade，记在 $off，以后升级照样关着；执行器与 systemd 单元已装、没启动）。命令行 upgrade-egs.sh 照常。重新打开：--enable-web-upgrade"
     return 0
   fi
   systemctl enable lsa-eg-upgrade-runner.path lsa-eg-upgrade-runner.timer >/dev/null 2>&1 || true
   systemctl restart lsa-eg-upgrade-runner.path || echo '！ lsa-eg-upgrade-runner.path 没起来（systemctl status lsa-eg-upgrade-runner.path）：网页升级 EG 用不了，命令行 upgrade-egs.sh 照常'
   # 定时兜底（每 5 min）：刷请求过去后清 flood、做 7 天清理（path 单元只在有新请求时触发）
   systemctl restart lsa-eg-upgrade-runner.timer || echo '！ lsa-eg-upgrade-runner.timer 没起来（systemctl status lsa-eg-upgrade-runner.timer）：flood 标记要等下一个请求才清'
-  echo "  网页升级 EG：已启用（--enable-web-upgrade）。安装包目录 $E/packages（维护账号先加组：sudo usermod -aG lsa-upgrade <账号>，重新登录后 scp 进来），请求 / 结果在 $E/requests、$E/state"
+  echo "  网页升级 EG：已启用（关掉用 --disable-web-upgrade）。安装包目录 $E/packages（维护账号先加组：sudo usermod -aG lsa-upgrade <账号>，重新登录后 scp 进来），请求 / 结果在 $E/requests、$E/state"
 }
 
 install_sp() {
