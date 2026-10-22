@@ -204,17 +204,42 @@ export class Restv1Driver implements CameraDriver {
     return this.login()
   }
 
-  /** 带令牌调接口：回 10009 时重新登录再试一次；其它非 200 抛 API */
-  private async call<T>(method: 'GET' | 'POST', path: string, timeoutMs = this.timeoutMs): Promise<T> {
-    let env = await this.raw<T>(method, path, undefined, await this.tokenNow(), timeoutMs)
+  /** 带令牌调接口：回 10009 时重新登录再试一次；其它非 200 抛 API。body 给了就是写（POST），写接口只回 code、没有 data */
+  private async call<T>(method: 'GET' | 'POST', path: string, timeoutMs = this.timeoutMs, body?: unknown): Promise<T> {
+    let env = await this.raw<T>(method, path, body, await this.tokenNow(), timeoutMs)
     if (env.code === 10009) {
       this.token = null
-      env = await this.raw<T>(method, path, undefined, await this.login(), timeoutMs)
+      env = await this.raw<T>(method, path, body, await this.login(), timeoutMs)
       if (env.code === 10009) throw new DriverError(`${path}：重新登录后仍然 10009（${CODE_TEXT[10009]}）`, 'TOKEN')
     }
     if (env.code !== 200) throw new DriverError(`${path}：${env.code ?? '?'} ${CODE_TEXT[env.code ?? 0] ?? env.msg ?? ''}`.trim(), 'API')
+    if (body !== undefined) return env.data as T
     if (env.data === undefined) throw new DriverError(`${path}：回的数据里没有 data`, 'DATA')
     return env.data
+  }
+
+  // ---------- 测温区配置的读写（0.8.0：给没画测温区的摄像机写缺省 R1–R3，见 cam-regions.ts；eg-video 运行时不调） ----------
+
+  /** GET /restv1/measurement/region 原样（ID 0–11 对应 R1–R12），备份 / 核对用 */
+  async regionsRaw(): Promise<Record<string, unknown>[]> {
+    const rows = await this.call<Record<string, unknown>[]>('GET', '/restv1/measurement/region')
+    if (!Array.isArray(rows)) throw new DriverError('/restv1/measurement/region：data 不是数组', 'DATA')
+    this.regionCache = null
+    return rows
+  }
+
+  /** POST /restv1/measurement/region/:id 写一个区（厂家 restv1 V1.8 §2.84）：regionEnable、regionName、regionType、region、localMeasureParam、localParam */
+  async setRegion(id: number, row: Record<string, unknown>): Promise<void> {
+    if (!Number.isInteger(id) || id < 0 || id > 11) throw new DriverError(`区号 ${id} 不对（0–11）`, 'DATA')
+    await this.call<unknown>('POST', `/restv1/measurement/region/${id}`, this.timeoutMs, row)
+    this.regionCache = null
+  }
+
+  /** GET /restv1/measurement/regionTemp 原样（写完核对「有没有数」用） */
+  async regionTempRaw(): Promise<Record<string, unknown>[]> {
+    const rows = await this.call<Record<string, unknown>[]>('GET', '/restv1/measurement/regionTemp')
+    if (!Array.isArray(rows)) throw new DriverError('/restv1/measurement/regionTemp：data 不是数组', 'DATA')
+    return rows
   }
 
   private async readInfo(): Promise<void> {
