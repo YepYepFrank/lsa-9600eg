@@ -435,23 +435,30 @@ export class ApplyService {
     }
   }
 
-  /** 0.7.3：本地 TB 的活动告警里，发起设备不在本机 eg.yaml 设备清单（也不是 EG 自己）的，清掉；返回 设备名 → 条数。
-   *  只清名字像下挂设备 / 别的 EG 的（SAM- / PM- / PM2- / PM6- / CAM- / EG-）：本机别的虚拟设备、认不出的一律不动；
-   *  设备清单里一台下挂设备都没有（eg.yaml 不全 / 读坏了）时整步跳过 —— 不能当成「清单为空」把告警全清掉 */
+  /** 0.7.3：拆柜后不再归本单元的设备（如 EG-AH01-B 上的 SAM-AH01-A），本地 TB 里还挂着的活动告警清掉；返回 设备名 → 条数。
+   *  只清「名字里带的单元号不是本单元」的：<前缀>-<柜号>-<字母>，前缀 SAM / PM / PM2 / PM6 / CAM / EG，且不在本机 eg.yaml 设备清单里。
+   *  柜级的名字（PM-AH01、EG-AH01，拿不准归哪个单元）、带本单元号的（含本单元的子设备）、认不出的名字一律不清，只记一行日志。
+   *  设备清单里一台下挂设备都没有（待接入、eg.yaml 不全）时整步跳过 —— 不能当成「清单为空」把告警全清掉。
+   *  r181eg / s182eg / AH09 的本地 TB 实查（10-22）：告警的发起设备都在 eg.yaml 里，没有别的虚拟设备 */
   private async clearForeign(): Promise<Map<string, number>> {
     const out = new Map<string, number>()
+    const unit = this.cfg.unit.code
     const subs = this.cfg.devices.filter(d => d.kind !== 'eg' && d.name !== this.cfg.eg.name)
-    if (!this.cfg.eg.name || !subs.length) {
-      this.log.warn('开机清扫：eg.yaml 设备清单里没有下挂设备，不清「不归本单元」的告警')
+    if (!this.cfg.eg.name || !unit || !subs.length) {
+      this.log.log('开机清扫：eg.yaml 设备清单里没有下挂设备，跳过「不归本单元」的告警清理')
       return out
     }
     const mine = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
-    const looksLikeDevice = /^(SAM|PM\d*|CAM|EG)-/
+    const skipped = new Set<string>()
     try {
       const r = await this.tb.get<{ data: { id: { id: string }; originatorName?: string }[] }>('/api/v2/alarms?pageSize=500&page=0&statusList=ACTIVE')
       for (const a of r.data) {
         const dev = a.originatorName
-        if (!dev || mine.has(dev) || !looksLikeDevice.test(dev)) continue
+        if (!dev || mine.has(dev)) continue
+        if (!foreignUnitDevice(dev, unit)) {
+          skipped.add(dev)
+          continue
+        }
         try {
           await this.tb.req('POST', `/api/alarm/${a.id.id}/clear`)
           out.set(dev, (out.get(dev) ?? 0) + 1)
@@ -462,6 +469,7 @@ export class ApplyService {
     } catch (e) {
       this.log.warn(`查不归本单元设备的遗留告警失败：${(e as Error).message}`)
     }
+    if (skipped.size) this.log.log(`开机清扫：活动告警的发起设备 ${[...skipped].join('、')} 不在 eg.yaml 里、名字看不出归别的单元，不清`)
     return out
   }
 
@@ -583,6 +591,15 @@ export class ApplyService {
     }
     return { version, thresholds, rules, extras, ignored, ignoredRules, caps, devComm, meters, gas }
   }
+}
+
+/** 0.7.3：设备名里带的单元号是别的单元（拆柜后改归别的单元）：<SAM|PM|PM2|PM6|CAM|EG>-<柜号>-<字母>，且单元号不是 unit。
+ *  柜级名字（PM-AH01）、本单元的（SAM-AH01-B、以本单元号开头的子设备）、认不出的都返回 false */
+export function foreignUnitDevice(dev: string, unit: string): boolean {
+  const m = /^(?:SAM|PM\d*|CAM|EG)-([A-Za-z0-9]+-[A-Z])$/.exec(dev)
+  if (!m) return false
+  const owner = m[1]!
+  return owner !== unit && !owner.startsWith(`${unit}-`)
 }
 
 /** 配置内容哈希（判重复下发）。老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，
