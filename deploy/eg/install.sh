@@ -174,7 +174,12 @@ EOF
     systemctl restart lsa-eg-fw.service
   fi
   nft list table inet lsa_eg >/dev/null 2>&1 && echo "LAN1 防火墙已开：摄像机网 $nic 只出不进（22 / 80 / 8554 从 $nic 都连不上；EG 主动拉摄像机照常）" ||
-    echo "!! LAN1 防火墙没加载上（systemctl status lsa-eg-fw）" >&2
+    { FW_APPLY_FAILED=1; echo "!! LAN1 防火墙没加载上（systemctl status lsa-eg-fw）" >&2; }
+  # 0.8.1：内核里实际的摄像机对时放行跟刚写的规则文件对一下 —— restart 没真加载上（表还是旧的）时 --cam-ntp-sync 不能记「已同步」
+  local want got
+  want="$(grep -oE 'ip saddr [0-9.]+ udp dport 123' "$FW_NFT" | sort || true)"
+  got="$(nft list chain inet lsa_eg input 2>/dev/null | grep -oE 'ip saddr [0-9.]+ udp dport 123' | sort || true)"
+  [ "$want" = "$got" ] || { FW_APPLY_FAILED=1; echo "!! 内核里的摄像机对时放行跟 $FW_NFT 不一样（没加载上新规则？systemctl status lsa-eg-fw）" >&2; }
   cam_ntp_watch
 }
 # ---------- 摄像机对时（0.7.x，S19）：EG 在 LAN1 上给摄像机当 NTP 服务器 ----------
