@@ -283,8 +283,26 @@ join_one() {
     echo "== $(ts) 1. 建实体"
     # 舱室单元按单元号（provision-eg.sh --unit，0.18.0）；照旧一柜一台的照旧 --cabinet（老子站也认）
     local which='--cabinet'; [ "$isunit" = 1 ] && which='--unit'
-    if (cd "$SP_B" && bash scripts/provision-eg.sh "$which" "$U" --ssh "lsa-sp@$EGH" --ssh-key "$TUNKEY" \
-        --hook http://host.docker.internal/hooks/alarm --sp "$A" --eg-url "http://$EGH" < /dev/null); then RES[provision]='完成'
+    local plog="$BD/provision-$U.log" sysf="$SP_B/tb/provision/out/eg/$U/tb-sysadmin.json" stale
+    prov() {
+      (cd "$SP_B" && bash scripts/provision-eg.sh "$which" "$U" --ssh "lsa-sp@$EGH" --ssh-key "$TUNKEY" \
+        --hook http://host.docker.internal/hooks/alarm --sp "$A" --eg-url "http://$EGH" < /dev/null) 2>&1 | tee "$plog"
+      return "${PIPESTATUS[0]}"
+    }
+    if prov; then RES[provision]='完成'
+    # 0.19.0 r2（换机，EG部署包会话旁见）：子站还留着这个单元旧 EG 的系统管理员口令（tb-sysadmin.json），新 EG 的本地 TB 还是出厂口令，
+    # provision 按旧口令登录 401。只在这台 EG 还「待接入」时：旧文件挪开、改用出厂口令再试一次（provision 第 1b 步会重新生成口令文件）
+    elif [ "$(kv eg_joined "$PF")" = 0 ] && [ -f "$sysf" ] && grep -q '系统管理员 .*登录不上（TB 401' "$plog"; then
+      stale="$sysf.stale-$(date +%Y%m%d-%H%M%S)"; mv -f "$sysf" "$stale"
+      echo "  这台 EG 还在「待接入」，子站存的系统管理员口令登录不上（401）：多半换过机 —— 改用出厂口令再试一次"
+      if prov; then
+        rm -f "$stale"
+        echo "  换过机，已改用出厂口令：本地 TB 系统管理员口令已重新生成（$sysf），旧口令文件作废"
+        RES[provision]='完成（换过机，已改用出厂口令）'
+      else
+        mv -f "$stale" "$sysf"
+        stop provision 'provision-eg.sh 改用出厂口令也没成功（看上面的输出；旧口令文件已放回）' 'EG 的本地 TB 要起来了（待接入页上「本地 TB 已起」）'
+      fi
     else stop provision 'provision-eg.sh 没成功（看上面的输出）' 'EG 的本地 TB 要起来了（待接入页上「本地 TB 已起」）'; fi
   fi
 
