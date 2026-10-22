@@ -2,7 +2,7 @@
  *   eg.yaml（子站下发）只读看，访问令牌打码；
  *   local.yaml 能在页面上改的只有：对时服务器、上行网口、摄像机（驱动、地址、账号、各路 RTSP）。
  *   总线 / 本地 TB 地址、容器名、管理页端口改错了本地页自己就打不开或失联，不给页面改，要改到 EG 上改文件。 */
-import { Body, Controller, Get, Inject, Put } from '@nestjs/common'
+import { BadRequestException, Body, Controller, Get, Inject, Put } from '@nestjs/common'
 import { Type } from 'class-transformer'
 import { IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator'
 import { saveLocal, type EgConfig } from '@lsa-eg/config'
@@ -12,6 +12,19 @@ import { ClientIp, CurrentSession, Maint } from '../auth/guard.js'
 import type { Session } from '../auth/auth.service.js'
 import { ApplyService } from '../apply/apply.service.js'
 import { VideoClient } from '../video/video.controller.js'
+
+/** 摄像机地址（http / https / rtsp URL）的主机若是数字点分的，必须是合法 IPv4：4 段、每段 0–255（192.168.1.300、192.168.1.3000 拒）。
+ *  空串、域名照旧放过；返回问题说明，没问题返回 null */
+export function camUrlProblem(url: string): string | null {
+  if (!url) return null
+  const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?([^/:?#]*)/i.exec(url)
+  if (!m) return null
+  const host = m[1]!
+  if (!/^[\d.]+$/.test(host)) return null
+  const parts = host.split('.')
+  if (parts.length !== 4 || parts.some(p => !/^\d{1,3}$/.test(p) || Number(p) > 255)) return `${host} 不是合法的 IPv4 地址（4 段、每段 0–255）`
+  return null
+}
 
 class RtspDto {
   @IsOptional() @IsString() @MaxLength(512) visible?: string
@@ -85,6 +98,14 @@ export class ConfigController {
       if (next === undefined || next === cur) return
       apply(next)
       changed.push(label)
+    }
+    if (b.camera) {
+      // 0.8.0：摄像机地址的主机是数字点分的，必须是合法 IPv4（每段 0–255）—— 宿主机按它写对时的防火墙放行（install.sh --cam-ntp-sync）
+      const cam = b.camera
+      for (const [label, url] of [['restv1 地址', cam.restv1], ['ONVIF 地址', cam.onvif], ...(['visible', 'thermal', 'visibleSub', 'thermalSub'] as const).map(k => [`RTSP ${k}`, cam.rtsp?.[k]] as const)] as const) {
+        const bad = camUrlProblem(url?.trim() ?? '')
+        if (bad) throw new BadRequestException(`摄像机${label}：${bad}`)
+      }
     }
     set('对时服务器', l.ntp.server, b.ntpServer?.trim(), v => (l.ntp.server = v))
     set('上行网口', l.net.uplink, b.uplinkIface?.trim(), v => (l.net.uplink = v))
