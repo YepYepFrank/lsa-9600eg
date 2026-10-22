@@ -24,6 +24,8 @@ async function main() {
     { id: { id: 'e1' }, type: 'EG 离线', originatorName: 'EG-AH01-B' },
     { id: { id: 'c1' }, type: '摄像机离线', originatorName: 'CAM-AH01-B' },
     { id: { id: 'x1' }, type: '老告警', originatorName: undefined },
+    { id: { id: 'v1' }, type: '网关告警', originatorName: 'tb-gateway-AH01-B' },
+    { id: { id: 'g1' }, type: 'EG 离线', originatorName: 'EG-AH01' },
   ]
   const cleared: string[] = []
   let failOn: string | null = null
@@ -45,7 +47,7 @@ async function main() {
     cfg: {
       unit: { code: 'AH01-B' },
       eg: { name: 'EG-AH01-B' },
-      devices: [{ name: 'EG-AH01-B' }, { name: 'SAM-AH01-B' }, { name: 'CAM-AH01-B' }, { name: 'PM-AH01' }],
+      devices: [{ name: 'EG-AH01-B', kind: 'eg' }, { name: 'SAM-AH01-B', kind: 'sam' }, { name: 'CAM-AH01-B', kind: 'camera' }, { name: 'PM-AH01', kind: 'meter' }],
     },
     tb,
     log: { log: () => undefined, warn: (m: string) => warns.push(m) },
@@ -54,8 +56,9 @@ async function main() {
 
   console.log('1. 拆柜后：SAM-AH01-A 已不归 EG-AH01-B')
   const r = await clearForeign()
-  check(cleared.sort().join(',') === 'a1,a2', `只清 SAM-AH01-A 的两条（清了 ${cleared.join('、')}）`)
-  check(r.size === 1 && r.get('SAM-AH01-A') === 2, `按设备记条数：${[...r].map(([d, n]) => `${d} ${n}`).join('、')}`)
+  check(cleared.sort().join(',') === 'a1,a2,g1', `清 SAM-AH01-A 的两条、拆柜前整柜那台 EG-AH01 的一条（清了 ${cleared.join('、')}）`)
+  check(r.size === 2 && r.get('SAM-AH01-A') === 2 && r.get('EG-AH01') === 1, `按设备记条数：${[...r].map(([d, n]) => `${d} ${n}`).join('、')}`)
+  check(!cleared.includes('v1'), '名字不像下挂设备 / EG 的（本机虚拟设备 tb-gateway-AH01-B）不动')
   check(!cleared.includes('b1') && !cleared.includes('e1') && !cleared.includes('c1'), '本单元的设备（SAM-AH01-B、摄像机）和 EG 自己的不动')
   check(!cleared.includes('x1'), '没有发起设备名的不动（拿不准就不清）')
 
@@ -63,13 +66,21 @@ async function main() {
   cleared.length = 0
   failOn = 'a1'
   const r2 = await clearForeign()
-  check(cleared.join(',') === 'a2' && r2.get('SAM-AH01-A') === 1 && warns.some(w => w.includes('SAM-AH01-A') && w.includes('500')), `a1 失败、a2 照清（${cleared.join('、')}；${warns.at(-1)}）`)
+  check(cleared.join(',') === 'a2,g1' && r2.get('SAM-AH01-A') === 1 && warns.some(w => w.includes('SAM-AH01-A') && w.includes('500')), `a1 失败、a2 照清（${cleared.join('、')}；${warns.at(-1)}）`)
 
   console.log('3. 本地 TB 查不了：记警告、返回空，不影响开机清扫的其余部分')
   const bad = Object.create(ApplyService.prototype) as ApplyService
   Object.assign(bad, { cfg: (svc as unknown as { cfg: unknown }).cfg, tb: { get: async () => { throw new Error('ECONNREFUSED') } }, log: { log: () => undefined, warn: (m: string) => warns.push(m) } })
   const r3 = await (bad as unknown as { clearForeign: () => Promise<Map<string, number>> }).clearForeign()
   check(r3.size === 0 && warns.at(-1)!.includes('ECONNREFUSED'), `返回空（${warns.at(-1)}）`)
+
+  console.log('3b. eg.yaml 里一台下挂设备都没有（不全 / 读坏了）：整步跳过，不当成「清单为空」')
+  cleared.length = 0
+  failOn = null
+  const empty = Object.create(ApplyService.prototype) as ApplyService
+  Object.assign(empty, { cfg: { unit: { code: 'AH01-B' }, eg: { name: 'EG-AH01-B' }, devices: [{ name: 'EG-AH01-B', kind: 'eg' }] }, tb, log: { log: () => undefined, warn: (m: string) => warns.push(m) } })
+  const r4 = await (empty as unknown as { clearForeign: () => Promise<Map<string, number>> }).clearForeign()
+  check(r4.size === 0 && cleared.length === 0 && warns.at(-1)!.includes('没有下挂设备'), `一条都不清（${warns.at(-1)}）`)
 
   console.log('4. 开机清扫里调了它，并记审计')
   const src = readFileSync(new URL('./apply/apply.service.ts', import.meta.url), 'utf8')

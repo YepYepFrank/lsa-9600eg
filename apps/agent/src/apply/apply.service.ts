@@ -435,16 +435,23 @@ export class ApplyService {
     }
   }
 
-  /** 本地 TB 上这些类型的活动告警清掉（规则已没了，不清就一直挂着）；失败只记日志，不影响这次应用 */
-  /** 0.7.3：本地 TB 的活动告警里，发起设备不在本机 eg.yaml 设备清单（也不是 EG 自己）的，清掉；返回 设备名 → 条数 */
+  /** 0.7.3：本地 TB 的活动告警里，发起设备不在本机 eg.yaml 设备清单（也不是 EG 自己）的，清掉；返回 设备名 → 条数。
+   *  只清名字像下挂设备 / 别的 EG 的（SAM- / PM- / PM2- / PM6- / CAM- / EG-）：本机别的虚拟设备、认不出的一律不动；
+   *  设备清单里一台下挂设备都没有（eg.yaml 不全 / 读坏了）时整步跳过 —— 不能当成「清单为空」把告警全清掉 */
   private async clearForeign(): Promise<Map<string, number>> {
-    const mine = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
     const out = new Map<string, number>()
+    const subs = this.cfg.devices.filter(d => d.kind !== 'eg' && d.name !== this.cfg.eg.name)
+    if (!this.cfg.eg.name || !subs.length) {
+      this.log.warn('开机清扫：eg.yaml 设备清单里没有下挂设备，不清「不归本单元」的告警')
+      return out
+    }
+    const mine = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
+    const looksLikeDevice = /^(SAM|PM\d*|CAM|EG)-/
     try {
       const r = await this.tb.get<{ data: { id: { id: string }; originatorName?: string }[] }>('/api/v2/alarms?pageSize=500&page=0&statusList=ACTIVE')
       for (const a of r.data) {
         const dev = a.originatorName
-        if (!dev || mine.has(dev)) continue
+        if (!dev || mine.has(dev) || !looksLikeDevice.test(dev)) continue
         try {
           await this.tb.req('POST', `/api/alarm/${a.id.id}/clear`)
           out.set(dev, (out.get(dev) ?? 0) + 1)
@@ -458,6 +465,7 @@ export class ApplyService {
     return out
   }
 
+  /** 本地 TB 上这些类型的活动告警清掉（规则已没了，不清就一直挂着）；失败只记日志，不影响这次应用 */
   private async clearActive(types: string[]): Promise<number> {
     let n = 0
     for (const t of types) {
