@@ -1,9 +1,14 @@
 # LSA-9600SP 网页升级 EG 执行器：oneshot，处理完 requests/ 里的请求就退出（一次只跑一个）。
 # start / resume 的批次由它 systemd-run 另起 lsa-eg-upgrade-<批次> unit 跑，不在这个 unit 的 cgroup 里，这里退出不影响批次。
 # requests/ 是容器可写的：本 unit 只读整个文件系统，只放开下面几处可写（防被链接引到别处写 / 删）。
+# 0.19.0 r2（真机验收 F7）：请求来得密（10 s 内超过 5 条）时撞上 systemd 缺省的启动限速（start-limit-hit），
+# lsa-eg-upgrade-runner.path 跟着进 failed、以后不再触发、自己也不恢复 —— 所以本 unit 不限速（StartLimitIntervalSec=0），
+# 每次跑完（含失败）顺手把 path 单元 reset-failed 再拉起来（--no-block：在 unit 里同步起别的 unit 会卡住任务队列）；
+# 5 min 一次的 timer 也走这里，path 别的原因进了 failed 也能自己好。
 [Unit]
 Description=LSA-9600 EG 升级执行器（网页入口）
 After=local-fs.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -14,3 +19,5 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/lsa9600sp/eg-upgrade /var/log/lsa9600sp/eg-upgrade -/run/lsa9600sp
 PrivateTmp=yes
 NoNewPrivileges=yes
+ExecStopPost=-/usr/bin/systemctl reset-failed lsa-eg-upgrade-runner.path
+ExecStopPost=-/usr/bin/systemctl --no-block start lsa-eg-upgrade-runner.path
