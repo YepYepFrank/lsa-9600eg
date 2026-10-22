@@ -35,7 +35,11 @@
  * 0.6.2 预期测点（全链路联调 W1 / W2，ConvExpectService）：
  *   - 转换程序配置里有传感器挂这台设备时，必有量 = 它们的 key（不再按物模型全量）；判离线的周期取这些量里最快的
  *   - 不在预期里的量：没来过不看护；来过的（传感器改挂别处以后旧设备上留下的）照常过期成 stale / invalid 写进 q，
- *     子站据此给最后值打标记（W2），但不算进 dev.comm（DEGRADED 只看预期测点和转换程序自己报的） */
+ *     子站据此给最后值打标记（W2），但不算进 dev.comm（DEGRADED 只看预期测点和转换程序自己报的）
+ *
+ * 0.7.3（子站 0.18.3，现场 AH01-B）：「必有」另看本单元能力 —— 这个量对应的能力不是 confirmed（pending 待定 / unsupported 不支持）时，
+ *   没来过不算缺（来过的照常看护）。以前地电波改成「不支持」以后 SAM-AH01-B 还是一直 DEGRADED（q 里 tev.amp invalid 上送子站）。
+ *   与检查工具 lsa_check 1.2 --applied 同一口径（子站 0.18.3 起地电波、SAM 红外的全局缺省改回 pending，S19 由本站模型声明 confirmed） */
 import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
 import { CAM_MAX_REGIONS, camRegionLimit, type EgConfig } from '@lsa-eg/config'
@@ -146,16 +150,24 @@ export class QualityService implements OnModuleInit, OnModuleDestroy {
     const e = this.expect?.expected(name) ?? null
     // 预期里一个能看护的量都没有（比如只配了物模型外的 key）：还是按全量
     d.expect = e && [...d.keys.keys()].some(k => e.has(k)) ? e : null
-    for (const [k, w] of d.keys) w.required = d.expect ? d.expect.has(k) : !w.optional
+    // 0.7.3：能力不是 confirmed 的量（待定 / 不支持）没来过不算缺
+    const capOk = (k: string) => {
+      const st = this.caps.keyState(name, k)
+      return st === null || st === 'confirmed'
+    }
+    for (const [k, w] of d.keys) w.required = (d.expect ? d.expect.has(k) : !w.optional) && capOk(k)
     const must = [...d.keys.values()].filter(w => w.required).map(w => w.period)
     d.period = Math.min(...(must.length ? must : [...d.keys.values()].map(w => w.period)), 60_000)
   }
 
   onModuleInit(): void {
-    this.expect?.onChange(() => {
+    const reapply = () => {
       for (const [name, d] of this.devices) this.applyExpect(name, d)
       this.evaluate()
-    })
+    }
+    this.expect?.onChange(reapply)
+    // 0.7.3：能力清单变了（子站改了 confirmed / pending / unsupported）也重算必有量
+    this.caps.onChange(reapply)
     this.bus.onTelemetry((dev, entries, own) => this.take(dev, entries, own))
     this.timer = setInterval(() => this.evaluate(), EVAL_MS)
   }

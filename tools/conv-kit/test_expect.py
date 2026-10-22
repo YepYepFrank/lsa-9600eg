@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """lsa_check 按转换程序配置算预期测点（W1，用户 2026-10-20 选 ①）的自检。只用标准库：
   python3 test_expect.py [同事配置的 sensors 目录，可选：再拿真配置核一遍解析]
-三种情况：分挂两台（A 只温湿度、B 局放 / 弧光 / 气体）、全挂一台、没有转换程序配置（照旧按点表全量）。"""
+三种情况：分挂两台（A 只温湿度、B 局放 / 弧光 / 气体）、全挂一台、没有转换程序配置（照旧按点表全量）。
+另：1.2 的 q 标 absent（装置报告没装，v0.8，现场 AH01-B）与 --applied（本单元能力清单）。"""
 import json
 import os
 import sys
@@ -50,19 +51,22 @@ SPLIT = {
 }
 
 
-def run(devices, expect, feed):
-    """按 feed（设备名 → 发的量）每 2 s 发一轮、发 60 s，然后看「一直没收到」的问题"""
+def run(devices, expect, feed, applied=None, q=None, infos=None):
+    """按 feed（设备名 → 发的量）每 2 s 发一轮、发 60 s，然后看「一直没收到」的问题。
+    q：{设备名: q 的 JSON 串}，跟着每条发；infos：给个 list 就把「建议」级的问题文字放进去"""
     t = [1_792_000_000_000]
     lc.now_ms = lambda: t[0]
 
     class A:
         raw = quiet = lan = False
         every = 0
-    ck = lc.Checker(A(), devices, expect)
+    ck = lc.Checker(A(), devices, expect, applied)
     ck.started = t[0]
     for _ in range(31):
         for dev, keys in feed.items():
             vals = {k: (12.3 if k not in ('us.cnt',) else 1) for k in keys}
+            if q and dev in q:
+                vals['q'] = q[dev]
             ck.on_message('lsa/%s/telemetry' % dev, 1, False, {}, json.dumps({'ts': t[0], 'values': vals}).encode())
         t[0] += 2000
     ck.tick()
@@ -72,6 +76,10 @@ def run(devices, expect, feed):
             miss.setdefault(dev, set()).add(key)
         elif code == 'absent':
             miss.setdefault(dev, set()).add('<一条都没收到>')
+    if infos is not None:
+        infos.extend(v[1] for (level, dev, code, key), v in ck.issues.items() if level == 'INFO' and code in ('absent-ch', 'cap-pending'))
+    if any(code == 'q-val' for (_l, _d, code, _k) in ck.issues):
+        miss.setdefault('<q-val>', set()).add('q 里有不认识的码')
     return miss
 
 
@@ -96,8 +104,8 @@ m = run(devs, exp, feed_split)
 check(not m, '给了 --conv：两台都不报「一直没收到」', repr(m))
 m0 = run(devs, None, feed_split)
 check('us.amp' in m0.get('SAM-AH03-A', set()) and 'env.t' in m0.get('SAM-AH03-B', set()), '对照（不给 --conv，老口径）：A 报缺局放、B 报缺温湿度 —— 就是 W1 的误报', repr(m0))
-m2 = run(devs, exp, {'SAM-AH03-A': ['env.t', 'env.rh'], 'SAM-AH03-B': ['us.amp', 'us.cnt', 'uv.int', 'smoke.ppm']})
-check(m2 == {'SAM-AH03-B': {'tev.amp'}}, '给了 --conv、B 真的少发 tev.amp：照样报（挂上来的传感器缺量不会被放过）', repr(m2))
+m2 = run(devs, exp, {'SAM-AH03-A': ['env.t', 'env.rh'], 'SAM-AH03-B': ['us.amp', 'tev.amp', 'uv.int', 'smoke.ppm']})
+check(m2 == {'SAM-AH03-B': {'us.cnt'}}, '给了 --conv、B 真的少发 us.cnt：照样报（挂上来的传感器缺量不会被放过）', repr(m2))
 
 print('3. 全挂一台（舱室 EG，S19）')
 one = make_conf({f: t.replace('SAM-AH03-A', 'SAM-AH03-B') for f, t in SPLIT.items()})
@@ -115,8 +123,53 @@ check(m5.get('SAM-AH03-B') == {'<一条都没收到>'}, 'B 什么都没发：报
 m6 = run(devs, exp, {'SAM-AH03-A': feed_split['SAM-AH03-A']})
 check(not m6.get('SAM-AH03-A') and m6.get('SAM-AH03-B') == {'<一条都没收到>'}, '给了 --conv、B 一条都没来：A 不报，B 报「30 s 内一条都没收到」', repr(m6))
 
+caps_keys = {'pdAmplitude': ['SAM:us.amp'], 'pdCount': ['SAM:us.cnt'], 'tev': ['SAM:tev.*'], 'uhf': ['SAM:uhf.*']}
+S19 = {'caps': {'pdAmplitude': 'confirmed', 'pdCount': 'confirmed', 'tev': 'confirmed', 'uhf': 'unsupported'}, 'capKeys': caps_keys}
+pd_only = {'SAM-AH01-B': {'us.amp', 'us.cnt', 'tev.amp', 'tev.level'}}
+feed_us = {'SAM-AH01-B': ['us.amp', 'us.cnt']}
+
+print('5. 点表全局缺省（子站 0.18.3：地电波、SAM 红外改回「待定」）')
+infos0 = []
+m00 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, infos=infos0)
+check(not m00, '不给 --applied、地电波一直没来：按全局缺省「待定」不报缺', repr(m00))
+check(lc.keydefs('sam')['tev.amp'].get('capState') == 'pending' and lc.keydefs('sam')['ir.t_max'].get('capState') == 'pending', 'spec.json：tev.* / ir.t_* 的 capState 是 pending')
+
+print('5b. 转换程序 q 标 absent（0.19.0 的转换程序起会发；本单元地电波 confirmed，S19 那样）')
+m7 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=S19)
+check(m7 == {'SAM-AH01-B': {'tev.amp'}}, '对照：没标 absent（老转换程序）—— 报「一直没收到 tev.amp」（tev.level 是可选量），现场以为接错线', repr(m7))
+infos = []
+m8 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=S19, q={'SAM-AH01-B': json.dumps({'tev.amp': 'absent', 'tev.level': 'absent'})}, infos=infos)
+check(not m8, '标了 absent：不报错、q 的码认得（absent 在合法取值里）', repr(m8))
+check(len(infos) == 1 and '读出 187 = 没装地电波' in infos[0] and '「地电波」改成不支持' in infos[0] and 'tev.amp、tev.level' in infos[0],
+      '给一条建议（地电波一条，不按 key 重复）：%s' % (infos[0] if infos else '（没有）'))
+
+print('6. --applied：按本单元的能力清单（子站 0.18.3 起地电波缺省 pending，S19 由本站模型 confirmed）')
+appl_dir = tempfile.mkdtemp(prefix='lsa-applied-')
+ap_path = os.path.join(appl_dir, 'applied-config.json')
+with open(ap_path, 'w', encoding='utf-8') as fh:
+    json.dump({'version': 'c-1', 'caps': {'caps': {'pdAmplitude': 'confirmed', 'pdCount': 'confirmed', 'tev': 'pending', 'uhf': 'unsupported'}, 'capKeys': caps_keys}}, fh)
+ap, prob = lc.read_applied(ap_path)
+check(ap is not None and prob is None and lc.key_cap_state(ap, 'SAM-AH01-B', 'tev.level') == 'pending' and lc.key_cap_state(ap, 'SAM-AH01-B', 'env.t') is None,
+      '读 applied-config.json：tev.level → pending（SAM:tev.* 前缀匹配），env.t 没有对应能力 → None', repr(prob))
+infos9 = []
+m9 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=ap, infos=infos9)
+check(not m9, '本单元地电波 pending、一直没来：不报（装了才发）', repr(m9))
+check(len(infos9) == 1 and '「待定」' in infos9[0] and '不算缺' in infos9[0], 'pending 给一条建议：%s' % (infos9[0] if infos9 else '（没有）'))
+ap_uns = {'caps': dict(ap['caps'], tev='unsupported'), 'capKeys': caps_keys}
+infos_u = []
+m_u = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=ap_uns, infos=infos_u)
+check(not m_u and not infos_u, '现场 AH01-B：本单元地电波 unsupported（c-1021-4）—— 不报缺、也不提', repr((m_u, infos_u)))
+ap_conf = {'caps': dict(ap['caps'], tev='confirmed'), 'capKeys': caps_keys}
+m10 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=ap_conf)
+check(m10 == {'SAM-AH01-B': {'tev.amp'}}, '本单元地电波 confirmed（S19）、一直没来也没标 absent：照报（全局缺省 pending 也不放过）', repr(m10))
+none_path = os.path.join(appl_dir, 'none.json')
+check(lc.read_applied(none_path)[0] is None and '没有' in lc.read_applied(none_path)[1], '没有 applied-config.json：None，按点表全局缺省')
+with open(none_path, 'w', encoding='utf-8') as fh:
+    json.dump({'version': 'c-1', 'caps': None}, fh)
+check(lc.read_applied(none_path)[0] is None and '老子站' in lc.read_applied(none_path)[1], '子站没下发过能力（caps 为 null）：None')
+
 if len(sys.argv) > 1:
-    print('5. 拿真配置核一遍解析（%s）' % sys.argv[1])
+    print('7. 拿真配置核一遍解析（%s）' % sys.argv[1])
     e, p = lc.read_conv_expect(sys.argv[1])
     for n in sorted(e or {}):
         print('    %s：%s' % (n, '、'.join(sorted(e[n]))))

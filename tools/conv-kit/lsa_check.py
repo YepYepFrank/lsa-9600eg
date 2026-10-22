@@ -27,7 +27,7 @@ import threading
 import time
 from collections import defaultdict
 
-VERSION = '1.1'
+VERSION = '1.2'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
@@ -218,7 +218,10 @@ ROOM_NAMES = {'mv': '中压开关柜', 'tr': '干式变压器', 'lv': '低压柜
 KIND_NAMES = {'sam': '感知模块 SAM', 'meter': '多功能电表', 'eg': 'EG 级信号', 'camera': '摄像机'}
 PERIOD_NAMES = {2000: '快 2 s', 3000: '局放 3 s', 10000: '慢 10 s', 60000: '分钟 60 s'}
 DEV_ERR = {'', 'TIMEOUT', 'CRC', 'REFUSED', 'PARSE', 'AUTH'}
-Q_VALUES = {'invalid', 'stale', 'warmup', 'calibrating'}
+Q_VALUES = {'invalid', 'stale', 'warmup', 'calibrating', 'absent'}
+# q 标 absent（v0.8：装置报告这一路没装）按通道给的说法：局放地电波 / 特高频读出的是「没装」的固定值
+ABSENT_CHANNEL = {'tev': ('局放装置读出 187 = 没装地电波', '地电波'), 'uhf': ('局放装置读出 269 = 没装特高频', '特高频')}
+ABSENT_FRESH_MS = 60000   # 转换程序标的 absent 多久不重发就不算数（同 EG 的新鲜度窗口）
 SOUTH5 = ['dev.req_24h', 'dev.timeout_24h', 'dev.crc_24h', 'dev.retry_24h', 'dev.rate_24h']
 # 局放装置没装这一路时读出的固定值（寄存器原值 187 / 269，÷10 后 18.7 / 26.9）：这一路没装，不要发（§5.1）
 PD_ABSENT = {'tev.amp': (18.7, 187), 'uhf.amp': (26.9, 269)}
@@ -325,6 +328,38 @@ def _yaml_scalar(v):
     return v
 
 
+def read_applied(path):
+    """EG 的 applied-config.json（子站下发后 agent 存的）→ 本单元的能力清单 {'caps': {能力: 状态}, 'capKeys': {能力: ["前缀:key", …]}}；
+    没有 / 读不了 / 子站没下发过能力返回 (None, 问题)。"""
+    try:
+        with open(path, encoding='utf-8') as f:
+            a = json.load(f)
+    except FileNotFoundError:
+        return None, '%s 没有（子站还没下发过配置）：能力按点表的全局缺省' % path
+    except (OSError, ValueError) as e:
+        return None, '%s 读不了（%s）：能力按点表的全局缺省' % (path, e)
+    c = a.get('caps') if isinstance(a, dict) else None
+    if not isinstance(c, dict) or not isinstance(c.get('caps'), dict) or not isinstance(c.get('capKeys'), dict):
+        return None, '%s 里没有能力清单（老子站）：能力按点表的全局缺省' % path
+    return c, None
+
+
+def key_cap_state(applied, device, key):
+    """本单元某台设备某个量的能力状态（同 EG agent 的 keyCapState）：匹配上的能力有 confirmed → confirmed；否则有 pending → pending；
+    都是 unsupported → unsupported；一条都匹配不上 → None（当启用）"""
+    pre = device.split('-')[0]
+    states = []
+    for cap, pats in applied['capKeys'].items():
+        for pat in pats:
+            pp, _, pk = pat.partition(':')
+            if pp == pre and pk and (pk == '*' or (pk.endswith('*') and key.startswith(pk[:-1])) or pk == key):
+                states.append(applied['caps'].get(cap, 'unsupported'))
+                break
+    if not states:
+        return None
+    return 'confirmed' if 'confirmed' in states else 'pending' if 'pending' in states else 'unsupported'
+
+
 def read_conv_expect(path):
     """转换程序配置目录（config/conv，或直接给它下面的 sensors/）→ ({设备名: set(key)}, [问题])；一个能读的文件都没有返回 (None, 问题)。
     只认同事配置文件的固定写法（顶层 sensor: / registers:，两格缩进），不是通用 YAML 解析（本工具只用标准库）。"""
@@ -417,6 +452,8 @@ class Dev:
         self.south_seen = set()
         self.stale_flagged = set()
         self.caps_seen = set()     # 收到过量的能力（本柜装了）：同一能力的其他量照常查缺
+        self.absent = set()        # 转换程序 q 里标 absent 的量（装置报告没装，v0.8）
+        self.absent_at = 0         # 最近一次带 q 的时刻（本机 ms）
         self.fails_last = None     # 上一条 dev.fails
         self.fails_seq = []        # 最近的 dev.fails（报问题时给例子）
         self.fails_jumps = 0       # 0 之后紧接着 ≥ 2 的次数
@@ -424,9 +461,10 @@ class Dev:
 
 
 class Checker:
-    def __init__(self, args, devices, expect=None):
+    def __init__(self, args, devices, expect=None, applied=None):
         self.args = args
         self.expect = expect or {}   # 设备名 → 预期测点（--conv，W1）；不在里面的设备按点表全量
+        self.applied = applied       # 本单元的能力清单（--applied，EG 的 applied-config.json）；None = 按点表的全局缺省
         self.devs = {}
         self.listed = devices is not None
         for name, kind in (devices or {}).items():
@@ -669,9 +707,12 @@ class Checker:
                     self.issue('ERROR', name, 'q', 'q 要是对象：{"env.t":"invalid"}，好了发 "{}"（§6）', key, payload)
                 else:
                     defs = keydefs(dev.kind)
+                    # v0.8：absent = 装置报告这一路没装。转换程序每条都发并集，以最新一条为准
+                    dev.absent = {qk for qk, qv in j.items() if qv == 'absent'}
+                    dev.absent_at = now_ms()
                     for qk, qv in j.items():
                         if qv not in Q_VALUES:
-                            self.issue('ERROR', name, 'q-val', 'q 里 %s = "%s"：只能是 invalid / stale / warmup / calibrating（§6）' % (qk, qv), 'q:' + qk, payload)
+                            self.issue('ERROR', name, 'q-val', 'q 里 %s = "%s"：只能是 invalid / stale / warmup / calibrating / absent（§6）' % (qk, qv), 'q:' + qk, payload)
                         if qk not in defs:
                             self.issue('WARN', name, 'q-key', 'q 里的「%s」不是这台设备的量' % qk, 'q:' + qk, payload)
         if key in ('dev.last_ok', 'dev.last_try') and isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -734,9 +775,21 @@ class Checker:
                 # W1：转换程序配置里这台只挂了哪些传感器，就只等它们的量（别的量在本单元另一个设备名下发）
                 if exp is not None and key not in exp:
                     continue
-                if d.get('capState') not in (None, 'confirmed') and d.get('cap') not in dev.caps_seen:
+                state = key_cap_state(self.applied, dev.name, key) if self.applied else d.get('capState')
+                if state not in (None, 'confirmed') and d.get('cap') not in dev.caps_seen:
+                    # 1.2：待定的能力没来不算缺，给一句建议（不支持的不提）
+                    if state == 'pending' and key not in dev.last_arrive and t - dev.first > 3 * p + 2000:
+                        self.issue('INFO', dev.name, 'cap-pending', '没收到「%s」（%s）：本单元这项能力（%s）是「待定」，不算缺。装了的查接线 / 从站；现场定了到子站能力页改成「已确认」或「不支持」' % (
+                            d['label'], key, d.get('cap') or '-'), 'cap:%s' % d.get('cap'), once=True)
                     continue
                 last = dev.last_arrive.get(key)
+                # v0.8：装置报告没装（转换程序 q 标 absent）—— 不是接线问题，给建议、不报错
+                if key in dev.absent and t - dev.absent_at <= ABSENT_FRESH_MS:
+                    ch = key.split('.')[0]
+                    what, cap = ABSENT_CHANNEL.get(ch, ('转换程序报 %s 没装' % key, key))
+                    self.issue('INFO', dev.name, 'absent-ch', '%s（%s 不发），不算缺。本单元确实没装就到子站能力页把「%s」改成不支持；装了的查装置这一路' % (
+                        what, '、'.join(sorted(k for k in dev.absent if k.split('.')[0] == ch)), cap), 'absent:' + ch, once=True)
+                    continue
                 if last is None:
                     if t - dev.first > 3 * p + 2000:
                         self.issue('WARN' if key == 'uv.pulse' else 'ERROR', dev.name, 'missing', '一直没收到「%s」（%s，%s）%s' % (
@@ -827,7 +880,15 @@ def run_check(args):
                 print('预期测点（%s，按转换程序配置）：%s' % (n, '、'.join(sorted(expect[n]))))
         else:
             print('转换程序配置里没有能读的传感器：照旧按点表全量期望')
-    ck = Checker(args, devices, expect)
+    applied = None
+    if args.applied:
+        applied, problem = read_applied(args.applied)
+        if problem:
+            print('能力：%s' % problem)
+        else:
+            off = sorted('%s=%s' % (k, v) for k, v in applied['caps'].items() if v != 'confirmed')
+            print('能力（%s，本单元）：%d 项%s' % (args.applied, len(applied['caps']), '，不是 confirmed 的：' + '、'.join(off) if off else '，全部 confirmed'))
+    ck = Checker(args, devices, expect, applied)
     deadline = time.time() + args.duration if args.duration else None
     next_tick = time.time() + 5
     next_sum = time.time() + args.every if args.every else None
@@ -1014,6 +1075,7 @@ def main():
     ap.add_argument('--pm2', action='store_true', help='这面柜有第二块电表 PM2-<柜号>')
     ap.add_argument('--eg-yaml', help='按这台 EG 的 eg.yaml 取设备清单（EG 上 /opt/lsa-eg/config/eg.yaml）')
     ap.add_argument('--conv', help='转换程序配置目录（EG 上 /opt/lsa-eg/config/conv）：每台设备只等挂在它下面的传感器的量（与 EG 同一口径；不给按点表全量）')
+    ap.add_argument('--applied', help='EG 的 applied-config.json（EG 上 /opt/lsa-eg/config/applied-config.json）：按本单元的能力清单判哪些量该来（不给按点表的全局缺省）')
     ap.add_argument('--duration', type=float, default=0, help='跑多少秒后自动结束（缺省一直跑到 Ctrl+C）')
     ap.add_argument('--every', type=float, default=0, help='每隔多少秒打印一次汇总')
     ap.add_argument('--report', help='结束时把汇总写成 Markdown 文件')
