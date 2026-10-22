@@ -282,12 +282,13 @@ async function download(id: string, label: string) {
 
     <div v-if="tab === 'overview'" class="monitor-grid">
       <section v-if="show('camera')" class="monitor-card camera-card" :class="{ 'cap-pending': pendingCard('camera') }">
-        <div class="monitor-card-heading"><b>双光摄像头</b><span v-if="!demo && cam" class="muted">{{ labelOf(cam) }}</span><span class="grow"/><select v-model="palette" aria-label="热像调色板" :disabled="!demo" :title="demo ? '' : '实况热像的伪彩由摄像机出'"><option value="iron">铁红</option><option value="white">白热</option><option value="rainbow">彩虹</option></select><label><input v-model="boxes" type="checkbox" :disabled="!demo && !rois.length" />测温标注</label><button @click="fullscreen">全屏</button></div>
+        <div class="monitor-card-heading"><b>双光摄像头</b><span v-if="!demo && cam" class="muted">{{ labelOf(cam) }}</span><span class="grow"/><template v-if="demo || cam"><select v-model="palette" aria-label="热像调色板" :disabled="!demo" :title="demo ? '' : '实况热像的伪彩由摄像机出'"><option value="iron">铁红</option><option value="white">白热</option><option value="rainbow">彩虹</option></select><label><input v-model="boxes" type="checkbox" :disabled="!demo && !rois.length" />测温标注</label><button @click="fullscreen">全屏</button></template></div>
         <div ref="camera" class="camera-frame">
           <DualLightPlayer v-if="demo" fill big mode="side" :palette="palette" :boxes="boxes ? [62.2, 78.6, 62.4] : false" :box-labels="['R1', 'R2', 'R3']" :tmax="78.6" :env-t="26.5" />
           <DualLightPlayer v-else fill big mode="side" :palette="palette" :streams="streams" :boxes="boxes && rois.length ? true : false" :rois="rois" :frame-aspect="frameAspect" :tmax="tmax" :env-t="envT" :offline="!cam" :offline-text="`${here}没有配置双光摄像机`" />
         </div>
-        <div class="camera-summary"><div>最高温 <b>{{ demo ? '78.6' : f1(tmax) }}</b><small>℃</small></div><div>温升 <b>{{ demo ? '52.1' : f1(rise) }}</b><small>K</small></div></div>
+        <!-- 没配摄像机（子站没下发能力、卡片没被隐藏时）：只留「没有配置双光摄像机」，调色板 / 测温标注 / 全屏、最高温 / 温升一栏都不显示 -->
+        <div v-if="demo || cam" class="camera-summary"><div>最高温 <b>{{ demo ? '78.6' : f1(tmax) }}</b><small>℃</small></div><div>温升 <b>{{ demo ? '52.1' : f1(rise) }}</b><small>K</small></div></div>
       </section>
       <div class="sensor-stack">
       <section v-if="show('pd')" class="monitor-card pd-card" :class="{ 'cap-pending': pendingCard('pd') }">
