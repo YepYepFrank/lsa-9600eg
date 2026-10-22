@@ -132,6 +132,10 @@ if (IMAGES) {
   console.log(`  → ${tar}.gz`)
   if (CONV) {
     if (/:latest$/.test(CONV) || !CONV.includes(':')) throw new Error(`转换程序镜像要带确切的 tag（不用 latest）：${CONV}`)
+    // 0.8.0：带补丁 H（q 标 absent，tag -p8 起）的转换程序只能配 EG 0.8.0 起（老 agent / 检查工具不认 absent）
+    const pn = Number(/-p(\d+)$/.exec(CONV)?.[1] ?? 0)
+    const [ma, mi] = pkg.version.split('.').map(Number)
+    if (pn >= 8 && ma === 0 && mi < 8) throw new Error(`${CONV} 带补丁 H，要 EG 0.8.0 起；这个发布件是 ${pkg.version}`)
     const id = out('docker', ['image', 'inspect', '-f', '{{.Id}}', CONV])
     writeFileSync(resolve(DIST, 'CONV_IMAGE.txt'), `# 转换程序镜像（install.sh 读第一行；镜像 ID ${id}）\n${CONV}\n`)
     writeFileSync(resolve(DIST, 'IMAGES.txt'), readFileSync(resolve(DIST, 'IMAGES.txt'), 'utf8') + `${CONV} - ${id}\n`)

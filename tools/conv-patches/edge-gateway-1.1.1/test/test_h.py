@@ -69,6 +69,36 @@ async def main():
     await app._buffer_device_data(dev, 4, src, 'partial_discharge')
     check(src['q'] == '{"tev.amp": "absent"}', '不改传进来的那份（缓存里存的还是这一路自己的 q）')
 
+    # 5. 每一路的 q 有自己的新鲜窗口：局放（3 s 一轮 → 60 s）停了以后，弧光再怎么发也不给它续命
+    import src.core.app as appmod
+    clock = [1000.0]
+    appmod.time.monotonic = lambda: clock[0]
+    app2 = Application.__new__(Application)
+    app2._device_buffer = {}
+    app2._device_buffer_lock = asyncio.Lock()
+    app2._sensor_q = {}
+
+    class Drv:
+        def __init__(self, interval, priority):
+            self.poll_interval = interval
+            self.priority = priority
+    app2._drivers = {'partial_discharge': Drv(3, 'fast'), 'arc_light': Drv(0, 'fast')}
+    check(app2._q_ttl('partial_discharge') == 60 and app2._q_ttl('arc_light') == 60 and app2._q_ttl('没配的') == 100,
+          '新鲜窗口同 EG：max(30, 5 × 周期) × 2 —— 局放 3 s / 弧光 fast 2 s → 60 s，没配的按 slow 10 s → 100 s')
+    await app2._buffer_device_data(dev, 1, {'us.amp': 1.0, 'q': json.dumps({'tev.amp': 'absent'})}, 'partial_discharge')
+    for i in range(20):  # 局放不再报（转换程序这一路挂了），弧光每 2 s 一条，共 40 s
+        clock[0] += 2
+        app2._device_buffer.clear()
+        await app2._buffer_device_data(dev, 2 + i, {'uv.int': 0.1, 'q': '{}'}, 'arc_light')
+    q40 = json.loads(app2._device_buffer[dev]['values']['q'])
+    check(q40 == {'tev.amp': 'absent'}, '局放停了 40 s（窗口 60 s 内）：absent 还在（%s）' % q40)
+    for i in range(12):  # 再 24 s，局放那一路已经 64 s 没报
+        clock[0] += 2
+        app2._device_buffer.clear()
+        await app2._buffer_device_data(dev, 30 + i, {'uv.int': 0.1, 'q': '{}'}, 'arc_light')
+    q64 = json.loads(app2._device_buffer[dev]['values']['q'])
+    check(q64 == {} and 'partial_discharge' not in app2._sensor_q[dev], '局放 64 s 没报（过了 60 s 窗口）：它的 absent 作废、记录删掉，弧光的发送不给它续命（%s）' % q64)
+
     sys.exit(1 if fails else 0)
 
 

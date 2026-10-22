@@ -1,4 +1,4 @@
-From 8b42db556810aa64da9b08623e1f021926e5f139 Mon Sep 17 00:00:00 2001
+From 72c5520a51b509abcb98cbba71db91856693ed48 Mon Sep 17 00:00:00 2001
 From: YepYepFrank <nj.frank.young@gmail.com>
 Date: Wed, 21 Oct 2026 22:18:01 -0400
 Subject: [PATCH] =?UTF-8?q?=E5=B1=80=E6=94=BE=E6=B2=A1=E8=A3=85=E7=9A=84?=
@@ -16,12 +16,12 @@ q 每次都发，都装了发 "{}"；判出的没装通道变了记一条 INFO�
 app.py 记各路传感器最近一次的 q，发出去的是本设备各路的并集：EG 收到 q 是整体替换，
 以前弧光每 2 s 的 "{}" 会把同一设备上别的标记冲掉。
 ---
- src/core/app.py   | 22 ++++++++++++++++++++++
+ src/core/app.py   | 33 +++++++++++++++++++++++++++++++++
  src/drivers/pd.py | 19 +++++++++++++++++--
- 2 files changed, 39 insertions(+), 2 deletions(-)
+ 2 files changed, 50 insertions(+), 2 deletions(-)
 
 diff --git a/src/core/app.py b/src/core/app.py
-index bd026de..9fcd5bf 100644
+index bd026de..625c783 100644
 --- a/src/core/app.py
 +++ b/src/core/app.py
 @@ -12,6 +12,7 @@
@@ -32,17 +32,18 @@ index bd026de..9fcd5bf 100644
  import os
  import signal
  import time
-@@ -77,6 +78,9 @@ class Application:
+@@ -77,6 +78,10 @@ class Application:
          # device_name → {"values": {...}, "ts": int}
          self._device_buffer: Dict[str, Dict[str, Any]] = {}
          self._device_buffer_lock = asyncio.Lock()
-+        # 各路传感器最近一次报的 q (补丁 H): 设备名 → {传感器名: {key: 码}}。同一设备几路的 q 取并集再发:
-+        # EG 收到 q 是整体替换, 不合并的话弧光每 2 s 一条 "{}" 会把局放标的 absent / 弧光自己以外的标记冲掉
-+        self._sensor_q: Dict[str, Dict[str, Dict[str, str]]] = {}
++        # 各路传感器最近一次报的 q (补丁 H): 设备名 → {传感器名: (时刻 monotonic, {key: 码})}。同一设备几路的 q 取并集再发:
++        # EG 收到 q 是整体替换, 不合并的话弧光每 2 s 一条 "{}" 会把局放标的 absent / 弧光自己以外的标记冲掉。
++        # 每一路的 q 过了它自己的新鲜窗口就作废 (_q_ttl), 不会被别的传感器的发送带着一直续命
++        self._sensor_q: Dict[str, Dict[str, Any]] = {}
          self._flush_task: Optional[asyncio.Task] = None
          self._buffer_debounce = 0.1  # 100ms 去抖
  
-@@ -343,6 +347,9 @@ class Application:
+@@ -343,6 +348,9 @@ class Application:
                  self._device_buffer[device] = {"values": {}, "ts": ts, "items": []}
  
              buf = self._device_buffer[device]
@@ -52,22 +53,32 @@ index bd026de..9fcd5bf 100644
              buf["values"].update(values)
              # ts 取最新的
              if ts > buf["ts"]:
-@@ -351,6 +358,21 @@ class Application:
+@@ -351,6 +359,31 @@ class Application:
              if normalized is not None:
                  buf["items"].append((sensor_name, normalized))
  
++    def _q_ttl(self, sensor_name: str) -> float:
++        """这一路 q 的新鲜窗口 (秒), 同 EG: max(30 s, 5 个轮询周期) × 2; 周期取 poll_interval, 没配按 priority (fast 2 s / slow 10 s)"""
++        drv = getattr(self, "_drivers", {}).get(sensor_name)
++        period = getattr(drv, "poll_interval", 0) or (2 if getattr(drv, "priority", "slow") == "fast" else 10)
++        return max(30.0, 5.0 * period) * 2
++
 +    def _merge_q(self, device: str, sensor_name: str, q: Any) -> str:
-+        """记下这路传感器最新的 q, 返回本设备各路 q 的并集 (JSON 串, key 排序)。不是 JSON 对象的当作 {} (补丁 H)"""
++        """记下这路传感器最新的 q, 返回本设备各路 q 的并集 (JSON 串, key 排序)。不是 JSON 对象的当作 {} (补丁 H)。
++        别的路过了自己新鲜窗口的 q 不再算进来, 也从记录里删掉"""
 +        try:
 +            mine = json.loads(q) if isinstance(q, str) else q
 +        except ValueError:
 +            mine = None
 +        if not isinstance(mine, dict):
 +            mine = {}
++        now = time.monotonic()
 +        per = self._sensor_q.setdefault(device, {})
-+        per[sensor_name] = {str(k): str(v) for k, v in mine.items()}
++        per[sensor_name] = (now, {str(k): str(v) for k, v in mine.items()})
++        for name in [n for n, (at, _) in per.items() if now - at > self._q_ttl(n)]:
++            del per[name]
 +        merged: Dict[str, str] = {}
-+        for d in per.values():
++        for _, d in per.values():
 +            merged.update(d)
 +        return json.dumps(dict(sorted(merged.items())), ensure_ascii=False)
 +

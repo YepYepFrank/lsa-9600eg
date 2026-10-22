@@ -396,6 +396,16 @@ if [ "$MODE" = diag ]; then
 fi
 
 # ---------- 启用 ----------
+# 0.8.0：带补丁 H（局放没装的通道 q 标 absent，镜像 tag -p8 起）的转换程序只能配 EG 0.8.0 起的 agent ——
+# 老 agent 不认 absent，当成一般标记，SAM 一直 DEGRADED；老检查工具把 absent 报成错误。版本不够就拒装
+conv_patch_n() { if [[ "$1" =~ -p([0-9]+)$ ]]; then echo "${BASH_REMATCH[1]}"; else echo 0; fi; }
+egv="$(head -1 VERSION 2>/dev/null | cut -d- -f1 | tr -d '[:space:]' || true)"
+if [ "$(conv_patch_n "$IMG")" -ge 8 ]; then
+  if [ -z "$egv" ]; then echo "!! 读不到这台 EG 的版本（$DIR/VERSION）：$IMG 要 EG 0.8.0 起，不装" >&2; exit 1; fi
+  if ! printf '%s\n%s\n' 0.8.0 "$egv" | sort -V -C; then
+    echo "!! $IMG 带补丁 H（q 标 absent），要 EG 0.8.0 起；这台 EG 是 $egv —— 先把 EG 升到 0.8.0 再装" >&2; exit 1
+  fi
+fi
 if [ -n "$SIM" ] && [ -z "$SERIAL" ]; then SERIAL=/dev/null; else pick_serial; fi
 gen_config && fresh=1 || fresh=''
 apply_params && changed=1 || changed=''
