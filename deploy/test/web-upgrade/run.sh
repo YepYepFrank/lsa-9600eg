@@ -114,6 +114,8 @@ chk "记住了：$OFF" [ -f "$OFF" ]
 ( cd "$src" && sp_egup_runner . ) > /tmp/setup5.log 2>&1 && grep -q 'restart lsa-eg-upgrade-runner.path' /fake/systemctl.log && grep -q '已启用（关掉用 --disable-web-upgrade）' /tmp/setup5.log \
   && ok '再不带开关重跑：照缺省打开' || bad "重新打开后再重跑不对：$(cat /tmp/setup5.log | tail -2)"
 U1=/etc/systemd/system/lsa-eg-upgrade-runner.service
+{ grep -qx 'StartLimitIntervalSec=0' $U1 && grep -qx 'ExecStopPost=-/usr/bin/systemctl reset-failed lsa-eg-upgrade-runner.path' $U1 && grep -qx 'ExecStopPost=-/usr/bin/systemctl --no-block start lsa-eg-upgrade-runner.path' $U1; } \
+  && ok '0.19.0 r2（F7）：执行器不限速（StartLimitIntervalSec=0），每次跑完 reset-failed + --no-block 拉起 path（请求密了 path 不再卡在 failed）' || bad "执行器 unit 没有 F7 的改动：$(grep -E 'StartLimit|ExecStopPost' $U1 | tr '\n' ' ')"
 grep -q '^ExecStart=/usr/bin/python3 -I /opt/lsa9600sp/lsa-eg-upgrade-runner$' $U1 && grep -q '^Type=oneshot' $U1 \
   && grep -q '^PathExistsGlob=/var/lib/lsa9600sp/eg-upgrade/requests/\*.json$' /etc/systemd/system/lsa-eg-upgrade-runner.path && ok '单元：oneshot、监 requests/*.json' || bad '单元内容不对'
 { grep -q '^ProtectSystem=strict$' $U1 && grep -q '^ReadWritePaths=/var/lib/lsa9600sp/eg-upgrade /var/log/lsa9600sp/eg-upgrade -/run/lsa9600sp$' $U1 \
