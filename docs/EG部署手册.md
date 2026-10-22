@@ -102,7 +102,12 @@
   - **健康检查**：进程在，并且最近 2 分钟有数据发出或写进缓存（补丁 0005 的心跳文件 `/data/heartbeat`）。`--status` 显示 healthy / unhealthy。
 - **启用只走 `install-conv.sh`**（EG 0.6.2 起，在 EG 安装目录里；同一套脚本也在单独的「转换程序接入包」里）。发布件带转换程序镜像（`CONV_IMAGE.txt`、`images-conv.tar.gz`，install.sh 导入），**缺省不启用**，现场接好 485 以后：
   1. `sudo bash install-conv.sh`：按 `eg.yaml` 从镜像模板生成 `config/conv/`（局放、气体、温湿度、弧光、红外都打开 —— 0.7.1 起红外也开（S19 五种传感器全配，子站 `samIr` 缺省已确认）；温湿度挂第一台 SAM、其余挂第二台；从站地址用同事的缺省 1–5）。**非 S19 的站 SAM 没接红外的，用 `--sensors pd,gas,temperature,arc` 关掉**，否则子站会判红外缺量；已有的 `config/conv/` 不动→ 选串口（`/dev/serial/by-id` 下只有一个 USB 转 485 就用它，多个让选，没有就 `/dev/ttyS1` COM2）→ 写 `.env`（`EG_CONV=on`、镜像、串口、dialout 组、`COMPOSE_PROFILES=conv`）→ 起 conv，20 s 后给一句结论（通了 / 部分通 / 没应答 / 串口打不开）。
-  2. 现场调整：`--sensors pd,arc`、`--addr pd=7`、`--dev temperature=SAM-<柜号>-B`、`--baud`，只改给了的项、改完自动重启；也可以直接改 `config/conv/sensors/*.yaml` 后 `docker restart lsa-eg-conv`。**挂在哪台设备**决定了看护口径：EG 按这里打开的传感器推出每台的预期测点（W1，见开发计划 §6.1）。
+  2. 现场调整：**缺省接法只是模板**（温湿度挂第一台 SAM、其余挂第二台，从站按同事的缺省 1–5、弧光是 5），要按现场实际改：`--sensors pd,arc`、`--addr pd=7`、`--dev temperature=SAM-<柜号>-B`、`--baud`，只改给了的项、改完自动重启。
+     现场例子（2026-10-21，子站 192.168.0.150 下的 AH01-B：没接红外、弧光拨在从站 1、温湿度跟其余传感器都挂 B）：
+     ```bash
+     sudo bash install-conv.sh --sensors pd,gas,temperature,arc --addr arc=1 --dev temperature=SAM-AH01-B
+     ```
+     改完 `--status` 看各路的设备名、从站有没有对上，再 `--check`；也可以直接改 `config/conv/sensors/*.yaml` 后 `docker restart lsa-eg-conv`。**挂在哪台设备**决定了看护口径：EG 按这里打开的传感器推出每台的预期测点（W1，见开发计划 §6.1）。
   3. 核对：`sudo bash install-conv.sh --status`（各路配置、设备名有没有对上、最近采集）、`--check`（lsa_check 跑 2 分钟）；本地管理页「设备与通信 → 服务状态」的转换程序卡片。
   4. 读不到：`--diag [rs485|modbus]` 先停 conv、在镜像里跑同事的诊断脚本直接问从站；没有传感器时 `--sim` 在容器里跑模拟器自测。停用 `--off`。
   - 详细步骤与常见问题见 `tools/conv-addon/硬件联调步骤.md`（发布件里是 `转换程序硬件联调步骤.md`）。
@@ -235,6 +240,8 @@ sudo bash /opt/lsa9600sp/field-install-egs.sh --plan <站点分配表> --run LSA
 - **join-key** 共 7 段：`LSAJOIN1`、子站地址、隧道公钥（类型 + 内容）、升级公钥（类型 + 内容）、校验（前 6 段 sha256 的前 8 位）。只有公钥，可以随便传；少粘一截、抄错一位直接拒绝。
 - **效果**等于 `--sp-key` 加 `--upgrade-key`，两把 key 都加 `from=<子站地址>`：隧道账号 lsa-sp 只能从子站开隧道到本机 18080；升级账号 lsa-upg 只能进升级入口（§6c）。另记 `config/join.json`（子站地址、两把 key 的指纹、时间，600）。
 - 已接入别的子站的 EG 再给别的子站的 join-key：拒绝，换子站加 `--force`。同一个子站的重复给：只更新 key（幂等）。
+- **接入完子站会撤掉隧道账号 lsa-sp**（`drop-tunnel`，升级授权 lsa-upg 留着）。以后要**拆柜**（把一台改作单元、加第二台）或改设备清单，子站要重新开隧道建实体：**先在这台 EG 上重新授权** `sudo bash /opt/lsa-eg/install.sh --join-key '<同一个子站的那一行>'`（同一子站幂等，只补回 lsa-sp），再到子站做拆柜；没补授权的，子站那一步连不上 EG 的本地 TB（现场 2026-10-21）。
+- **拆柜前不用动转换程序**：子站推新配置时 `apply-config` 发现单元变了，会自己 `install-conv.sh --rebind` 把各路传感器改挂到新的设备名、重启转换程序（clientId 跟着换）；拆完 `install-conv.sh --status` 核一眼设备名即可。
 - **待接入**：有 join.json、还没有 eg.yaml。第一轮装完起本地 TB 和一张只读的**待接入页**（容器 `lsa-eg-pending`，同一个应用镜像，在 80 口）：授权的子站、本机各网口的 IP / MAC、软件版本、本地 TB 起没起、子站上要执行的下一条命令。页面上没有密钥、没有任何操作，LAN1 进来照样 403。`install.sh --status` 显示「接入：待接入 —— 已授权子站 …」，接入后显示「接入：已接入子站 X（柜号 Y）」。
 
 **子站做的**（经升级入口，0.17.4 入口版本 3 新加 4 个动作，仍是白名单；0.18.0 入口版本 4：hello 报 `unit=`、apply-config 按单元）：
