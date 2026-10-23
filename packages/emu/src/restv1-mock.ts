@@ -9,11 +9,16 @@
  *   GET  /restv1/alarm/status            globTemp、regionTemp[]、diffTemp[]、globTempRise、tempRise[]、firePoint、smartTemp、input[]
  *   POST /restv1/measurement/region      整份写（{region: [...]}）；POST /restv1/measurement/region/:id 按区号写一个（0.8.0 缺省测温区用）——
  *                                        照文档校验：regionType 四种之一、localParam.distance (0–1000]、emissivity [0.01–1]、region 坐标在 640×480 里，不对回 10001
+ *   GET / POST /restv1/measurement/globMeasureParam  全局测温参数 envtemp、detectdist (0–1000]、radrate [0.01–1]、humidity [0–100]（0.8.1）
+ * style（0.8.1）：'doc' 照文档（缺省）；'b37' 照现场真机（AH01-B 的 .180，固件 0000_B37_1.1.17，2026-10-23）——
+ *   读回矩形区是 regionType "rectangle"、没有 localMeasureParam / localParam，出厂空区是 0×0；写的时候 regionType 要 "rectangle"、
+ *   带了本地参数就回 10001（现场照文档写回的就是 10001；两样里到底是哪一样不收没拆开验，mock 两样都拒，保守）。
+ *   rejectZero：写 0×0 的区回 10001（真机收不收没验过，用来验「出厂空区写不回去」的退路）
  * 请求头 accessToken 不对 / 过期回 {code: 10009}（HTTP 200）；最多 2 个有效会话（第三个登录回 19999），与厂家答复一致。
  * 控制（自检用）：直接改返回对象的 state；命令行起的版本另有 POST /mock/ctl（JSON：expireAll、fail、alarms、tokenLifeS、regions）。
  * 只用 Node 自带模块、没有 TS 专有语法：现场样机上可以 `node --experimental-strip-types restv1-mock.ts` 直接跑（不用装依赖）。
  *
- *   node --experimental-strip-types packages/emu/src/restv1-mock.ts --port 18091 --user <测试账号> --password <测试口令> [--rtsp rtsp://127.0.0.1:8555]
+ *   node --experimental-strip-types packages/emu/src/restv1-mock.ts --port 18091 --user <测试账号> --password <测试口令> [--rtsp rtsp://127.0.0.1:8555] [--style b37]
  * 测试口令自己定，**不要用厂家默认口令**。 */
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
@@ -48,6 +53,12 @@ export interface MockState {
   rtspBase: string
   /** 抓拍请求的通道号（按顺序） */
   snapIds: number[]
+  /** 照文档还是照现场真机（见文件头） */
+  style: 'doc' | 'b37'
+  /** 写 0×0 的区回 10001 */
+  rejectZero: boolean
+  /** 全局测温参数 */
+  glob: { envtemp: number; detectdist: number; radrate: number; humidity: number }
 }
 
 export const DEFAULT_MOCK_REGIONS: MockRegion[] = [
@@ -74,10 +85,20 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
-/** 写区域时照文档校验（厂家 restv1 V1.8 §2.82 / §2.84）：区号 0–11、类型四种之一、坐标在 640×480 里、距离 (0–1000]、辐射率 [0.01–1] */
-function validRegion(id: number, r: Record<string, unknown>): boolean {
+/** 现场真机出厂的 12 个区：都没启用、名字 Area1–Area12、矩形 0×0（mock 内部类型照文档记 region，b37 读回时换成 rectangle） */
+export const B37_FACTORY: MockRegion[] = Array.from({ length: 12 }, (_, i) => ({ regionEnable: false, regionName: `Area${i + 1}`, regionType: 'region' as const, region: { x: 0, y: 0, width: 0, height: 0 } }))
+
+/** 写区域时照文档校验（厂家 restv1 V1.8 §2.82 / §2.84）：区号 0–11、类型四种之一、坐标在 640×480 里、距离 (0–1000]、辐射率 [0.01–1]。
+ *  b37：矩形只认 "rectangle"、不认本地参数（见文件头）；rejectZero：0×0 不收 */
+function validRegion(id: number, r: Record<string, unknown>, st: Pick<MockState, 'style' | 'rejectZero'> = { style: 'doc', rejectZero: false }): boolean {
   if (!Number.isInteger(id) || id < 0 || id > 11) return false
+  if (st.style === 'b37') {
+    if (r['regionType'] === 'region' || 'localParam' in r || 'localMeasureParam' in r) return false
+    if (r['regionType'] === 'rectangle') r = { ...r, regionType: 'region' }
+  }
   if (typeof r['regionEnable'] !== 'boolean' || !['point', 'line', 'region', 'polygon'].includes(String(r['regionType']))) return false
+  const z = (r['region'] ?? {}) as Record<string, unknown>
+  if (st.rejectZero && r['regionType'] === 'region' && (z['width'] === 0 || z['height'] === 0)) return false
   const g = (r['region'] ?? {}) as Record<string, unknown>
   const inX = (v: unknown) => typeof v === 'number' && v >= 0 && v <= 640
   const inY = (v: unknown) => typeof v === 'number' && v >= 0 && v <= 480
@@ -126,7 +147,7 @@ export interface Restv1Mock {
   close(): Promise<void>
 }
 
-export function startRestv1Mock(opts: { user: string; password: string; port?: number; host?: string; tokenLifeS?: number; regions?: MockRegion[]; rtspBase?: string; ctl?: boolean }): Promise<Restv1Mock> {
+export function startRestv1Mock(opts: { user: string; password: string; port?: number; host?: string; tokenLifeS?: number; regions?: MockRegion[]; rtspBase?: string; ctl?: boolean; style?: 'doc' | 'b37'; rejectZero?: boolean }): Promise<Restv1Mock> {
   const state: MockState = {
     user: opts.user,
     password: opts.password,
@@ -140,6 +161,9 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
     hits: {},
     rtspBase: (opts.rtspBase ?? 'rtsp://127.0.0.1:8555').replace(/\/$/, ''),
     snapIds: [],
+    style: opts.style ?? 'doc',
+    rejectZero: opts.rejectZero ?? false,
+    glob: { envtemp: 22, detectdist: 2, radrate: 1, humidity: 30 },
   }
   const live = () => {
     const now = Date.now()
@@ -151,13 +175,15 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
       const u = new URL(req.url ?? '/', 'http://x')
       const path = u.pathname
       if (opts.ctl && path === '/mock/ctl' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as Partial<{ expireAll: boolean; fail: MockState['fail']; alarms: MockState['alarms']; tokenLifeS: number; regions: MockRegion[] }>
+        const b = JSON.parse((await readBody(req)) || '{}') as Partial<{ expireAll: boolean; fail: MockState['fail']; alarms: MockState['alarms']; tokenLifeS: number; regions: MockRegion[]; style: MockState['style']; rejectZero: boolean }>
         if (b.expireAll) state.tokens.clear()
         if (b.fail) state.fail = b.fail
         if (b.alarms) state.alarms = b.alarms
         if (b.tokenLifeS) state.tokenLifeS = b.tokenLifeS
         if (b.regions) state.regions = b.regions
-        return json(res, { ok: true, logins: state.logins, maxConcurrent: state.maxConcurrent, hits: state.hits, regions: state.regions.map(r => `${r.regionName}:${r.regionEnable}:${JSON.stringify(r.region)}`) })
+        if (b.style) state.style = b.style
+        if (b.rejectZero !== undefined) state.rejectZero = b.rejectZero
+        return json(res, { ok: true, logins: state.logins, maxConcurrent: state.maxConcurrent, hits: state.hits, regions: state.regions.map(r => `${r.regionName}:${r.regionEnable}:${JSON.stringify(r.region)}`), glob: state.glob })
       }
       if (!path.startsWith('/restv1/')) return json(res, { code: 10001, msg: 'Invalid Parameter' }, 404)
       const p = path.slice('/restv1'.length)
@@ -199,7 +225,23 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
       m = /^\/channel\/snap\/(\d+)$/.exec(p)
       if (m) state.snapIds.push(Number(m[1]))
       if (m) return ok({ snapData: f === 'nojpeg' ? Buffer.from('not a jpeg').toString('base64') : JPEG.toString('base64') })
-      if (p === '/measurement/region' && req.method === 'GET') return ok(state.regions.map(r => ({ localMeasureParam: false, localParam: { distance: 2, emissivity: 0.95 }, ...r })))
+      if (p === '/measurement/region' && req.method === 'GET')
+        return ok(state.regions.map(r => (state.style === 'b37'
+          ? { regionEnable: r.regionEnable, regionName: r.regionName, regionType: r.regionType === 'region' ? 'rectangle' : r.regionType, region: r.region }
+          : { localMeasureParam: false, localParam: { distance: 2, emissivity: 0.95 }, ...r })))
+      if (p === '/measurement/globMeasureParam' && req.method === 'GET') return ok({ ...state.glob })
+      if (p === '/measurement/globMeasureParam' && req.method === 'POST') {
+        let b: Record<string, unknown>
+        try {
+          b = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>
+        } catch {
+          return json(res, { code: 10001, msg: 'Invalid Parameter' })
+        }
+        const n = (k: string, lo: number, hi: number, open = false) => typeof b[k] === 'number' && (open ? (b[k] as number) > lo : (b[k] as number) >= lo) && (b[k] as number) <= hi
+        if (!(n('envtemp', -20, 550) && n('detectdist', 0, 1000, true) && n('radrate', 0.01, 1) && n('humidity', 0, 100))) return json(res, { code: 10001, msg: 'Invalid Parameter' })
+        state.glob = { envtemp: b['envtemp'] as number, detectdist: b['detectdist'] as number, radrate: b['radrate'] as number, humidity: b['humidity'] as number }
+        return json(res, { code: 200, msg: 'Success' })
+      }
       if ((p === '/measurement/region' || /^\/measurement\/region\/\d+$/.test(p)) && req.method === 'POST') {
         let b: Record<string, unknown>
         try {
@@ -210,8 +252,9 @@ export function startRestv1Mock(opts: { user: string; password: string; port?: n
         const rows: [number, Record<string, unknown>][] = p === '/measurement/region'
           ? (Array.isArray(b['region']) ? (b['region'] as Record<string, unknown>[]).map((r, i) => [i, r] as [number, Record<string, unknown>]) : [])
           : [[Number(p.split('/').pop()), b]]
-        if (!rows.length || rows.some(([id, r]) => !validRegion(id, r))) return json(res, { code: 10001, msg: 'Invalid Parameter' })
-        for (const [id, r] of rows) {
+        if (!rows.length || rows.some(([id, r]) => !validRegion(id, r, state))) return json(res, { code: 10001, msg: 'Invalid Parameter' })
+        for (const [id, r0] of rows) {
+          const r = r0['regionType'] === 'rectangle' ? { ...r0, regionType: 'region' } : r0
           while (state.regions.length <= id) state.regions.push({ regionEnable: false, regionName: `Area${state.regions.length + 1}`, regionType: 'region', region: { x: 0, y: 0, width: 10, height: 10 } })
           state.regions[id] = structuredClone(r) as unknown as MockRegion
         }
@@ -257,6 +300,7 @@ if (process.argv[1] && /restv1-mock\.(ts|js|mjs)$/.test(process.argv[1])) {
     console.error('用法：restv1-mock.ts --port <端口> --user <测试账号> --password <测试口令> [--host 0.0.0.0] [--rtsp rtsp://…]（测试口令自己定，不要用厂家默认口令）')
     process.exit(2)
   }
-  const m = await startRestv1Mock({ user, password, port: Number(arg('port') ?? 18091), host: arg('host') ?? '127.0.0.1', rtspBase: arg('rtsp'), ctl: true })
+  const style = arg('style') === 'b37' ? 'b37' : 'doc'
+  const m = await startRestv1Mock({ user, password, port: Number(arg('port') ?? 18091), host: arg('host') ?? '127.0.0.1', rtspBase: arg('rtsp'), ctl: true, style, ...(style === 'b37' ? { regions: B37_FACTORY } : {}) })
   console.log(`restv1 模拟摄像机：${m.url}（控制 POST ${m.url}/mock/ctl）`)
 }

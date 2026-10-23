@@ -235,6 +235,19 @@ export class Restv1Driver implements CameraDriver {
     this.regionCache = null
   }
 
+  /** GET /restv1/measurement/globMeasureParam 全局测温参数（厂家 restv1 V1.8 §2.72）：envtemp、detectdist（检测距离 m）、radrate（辐射率）、humidity。
+   *  真机（2026-10-23，固件 0000_B37_1.1.17）的测温区读回没有 localParam —— 区域没有自己的辐射率，按这里的全局值算 */
+  async globalParamRaw(): Promise<Record<string, unknown>> {
+    const g = await this.call<Record<string, unknown>>('GET', '/restv1/measurement/globMeasureParam')
+    if (!g || typeof g !== 'object' || Array.isArray(g)) throw new DriverError('/restv1/measurement/globMeasureParam：data 不是对象', 'DATA')
+    return g
+  }
+
+  /** POST /restv1/measurement/globMeasureParam（§2.61「设置全局测温参数」）：四个字段一起写 */
+  async setGlobalParam(g: Record<string, unknown>): Promise<void> {
+    await this.call<unknown>('POST', '/restv1/measurement/globMeasureParam', this.timeoutMs, g)
+  }
+
   /** GET /restv1/measurement/regionTemp 原样（写完核对「有没有数」用） */
   async regionTempRaw(): Promise<Record<string, unknown>[]> {
     const rows = await this.call<Record<string, unknown>[]>('GET', '/restv1/measurement/regionTemp')

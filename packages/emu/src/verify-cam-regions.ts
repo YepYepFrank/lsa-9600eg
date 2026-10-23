@@ -1,13 +1,14 @@
 /* 0.8.0 自检：给没画测温区的摄像机写缺省 R1–R3（apps/video/src/cam-regions.ts），用 restv1-mock 跑：
  *   空区写入（读回核对、regionTemp 有数、别的区不动）、已有启用的区拒绝、--force 覆盖、备份 / 恢复、
  *   接口报错 10001 / 10008 / 10009（一直 10009 → TOKEN；中途令牌失效重登一次照常）、写到一半出错按备份写回、距离范围、读回不一致。
+ * 0.8.1：照现场真机（mock style b37：rectangle、没有本地参数、出厂 0×0）写、换写法、全局测温参数、--force 要 --yes、试写 probe、恢复只写变了的 / 0×0 退路。
  * 测试账号口令每次随机生成（不用厂家默认口令）。
  *
  *   pnpm -F @lsa-eg/emu verify:cam-regions */
 import { randomBytes } from 'node:crypto'
 import { Restv1Driver } from '../../../apps/video/src/restv1.js'
-import { applyDefaultRegions, defaultRegionRows, DEFAULT_STRIPS, restoreRegions, writableOf } from '../../../apps/video/src/cam-regions.js'
-import { startRestv1Mock, type MockRegion } from './restv1-mock.js'
+import { applyDefaultRegions, defaultRegionRows, DEFAULT_STRIPS, probeRegions, restoreRegions, styleOf, writableOf } from '../../../apps/video/src/cam-regions.js'
+import { B37_FACTORY, startRestv1Mock, type MockRegion } from './restv1-mock.js'
 
 let fails = 0
 let n = 0
@@ -24,10 +25,10 @@ const EXISTING: MockRegion[] = [
   ...FACTORY.slice(1),
 ]
 
-async function rig(regions: MockRegion[]) {
+async function rig(regions: MockRegion[], opt: { style?: 'doc' | 'b37'; rejectZero?: boolean } = {}) {
   const user = `t${randomBytes(3).toString('hex')}`
   const password = randomBytes(9).toString('base64url')
-  const m = await startRestv1Mock({ user, password, regions })
+  const m = await startRestv1Mock({ user, password, regions, ...opt })
   const d = new Restv1Driver({ base: m.url, user, password, timeoutMs: 2000 })
   return { m, d, posts: () => m.state.hits['/measurement/region'] ?? 0 }
 }
@@ -56,7 +57,7 @@ async function main() {
     check(r.temps.length === 3 && r.temps.every(t => t.max !== null && t.avg !== null), `regionTemp 有数：${r.temps.map(t => `${t.name} ${t.max}/${t.avg}`).join('，')}`)
     console.log('3. 备份 / 恢复')
     const rr = await restoreRegions(d, r.backup)
-    check(rr.ok && rr.written.length === 12, `按备份写回 12 个区、读回一致（${rr.mismatch.join('；') || '无'}）`)
+    check(rr.ok && rr.written.join(',') === '0,1,2' && rr.skipped === 9, `按备份写回：只写变了的 R1–R3（9 个一样的没写）、读回一致（${rr.mismatch.join('；') || '无'}）`)
     check(m.state.regions.slice(0, 3).every((x, i) => x.regionName === `Area${i + 1}` && x.regionEnable === false), 'R1–R3 回到出厂（Area1–3、没启用）')
     const empty = await restoreRegions(d, { at: 'x', camera: m.url, regions: [] })
     check(!empty.ok && !!empty.error?.includes('没有区域配置'), '空备份：拒')
@@ -69,8 +70,10 @@ async function main() {
     const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
     check(!r.ok && !!r.error?.includes('已经有 1 个启用的测温区（母排/region）') && posts() === 1, `拒绝、一个都没写（只有一次 GET；${r.error}）`)
     check(m.state.regions[0]!.regionName === '母排', '原来的「母排」还在')
-    const f = await applyDefaultRegions(d, { camera: m.url, force: true, waitTempMs: 0 })
-    check(f.ok && m.state.regions[0]!.regionName === 'R1' && f.backup.regions[0]!['regionName'] === '母排', '--force：覆盖 R1–R3，备份里留着「母排」')
+    const nf = await applyDefaultRegions(d, { camera: m.url, force: true, waitTempMs: 0 })
+    check(!nf.ok && !!nf.error?.includes('R1 位置（区号 0）现在 「母排」启用') && !!nf.error?.includes('再加 --yes') && posts() === 2 && m.state.regions[0]!.regionName === '母排', `--force 没给 --yes：列出会覆盖的、不写（${nf.error}）`)
+    const f = await applyDefaultRegions(d, { camera: m.url, force: true, yes: true, waitTempMs: 0 })
+    check(f.ok && m.state.regions[0]!.regionName === 'R1' && f.backup.regions[0]!['regionName'] === '母排' && f.notes.some(x => x.includes('--force 覆盖了')), '--force --yes：覆盖 R1–R3，备份里留着「母排」，说明里写了覆盖了什么')
     const rr = await restoreRegions(d, f.backup)
     check(rr.ok && m.state.regions[0]!.regionName === '母排' && m.state.regions[0]!.regionEnable === true, '用备份恢复：「母排」回来了')
     await m.close()
@@ -106,9 +109,9 @@ async function main() {
       if (id === 1 && row['regionName'] === 'R2') throw new Error('模拟：R2 写到一半断了')
       return orig(id, row)
     }
-    const r = await applyDefaultRegions(d, { camera: m.url, force: true, waitTempMs: 0 })
-    check(!r.ok && r.written.join(',') === '0' && r.rolledBack === 'R1 已写回' && m.state.regions[0]!.regionName === '母排', `R2 失败：R1 按备份写回「母排」（${r.error}；${r.rolledBack}）`)
-    check(calls === 3, `调用顺序：写 R1、写 R2（失败）、写回 R1（共 ${calls} 次）`)
+    const r = await applyDefaultRegions(d, { camera: m.url, force: true, yes: true, waitTempMs: 0 })
+    check(!r.ok && r.written.join(',') === '0' && r.rolledBack === 'R1 已写回、R2 已写回' && m.state.regions[0]!.regionName === '母排', `R2 失败（不是摄像机回的错误码，可能已经写进去了）：R1、R2 都按备份写回（${r.error}；${r.rolledBack}）`)
+    check(calls === 4, `调用顺序：写 R1、写 R2（失败）、写回 R1、写回 R2（共 ${calls} 次）`)
     await m.close()
   }
 
@@ -135,6 +138,183 @@ async function main() {
     const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
     check(r.ok, `rectangle 读回算一致（${r.mismatch.join('；') || '无'}）`)
     check(Object.keys(writableOf({ regionEnable: true, regionName: 'x', regionType: 'region', region: {}, localMeasureParam: true, localParam: {}, extra: 1 })).length === 6, '写回只带 6 个文档字段（摄像机多回的字段不带）')
+    await m.close()
+  }
+
+  console.log('9. 现场真机（b37：rectangle、没有本地参数、出厂 0×0）：照读回的写法一次写进；辐射率走全局')
+  {
+    const { m, d, posts } = await rig(B37_FACTORY, { style: 'b37' })
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    check(r.ok && r.style?.rectType === 'rectangle' && r.style.local === false && posts() === 5, `写法 rectangle、不带本地参数，R1 一次就收（POST ${posts() - 2} 次 = 3 个区；${r.mismatch.join('；') || '读回一致'}）`)
+    check(r.backup.glob?.['radrate'] === 1 && m.state.glob.radrate === 1, '备份里带全局测温参数（辐射率 1），没给 --set-global 不动它')
+    check(r.notes.some(x => x.includes('现在辐射率 1') && x.includes('--set-global')), `说明里报全局辐射率、提示 --set-global（${r.notes.join('；')}）`)
+    const g = await applyDefaultRegions(d, { camera: m.url, force: true, yes: true, setGlobal: true, distance: 3, waitTempMs: 0 })
+    check(g.ok && m.state.glob.radrate === 0.95 && m.state.glob.detectdist === 3 && m.state.glob.envtemp === 22 && m.state.glob.humidity === 30, `--set-global：全局辐射率 0.95、距离 3 m，环境温度 / 湿度不动（${g.notes.join('；')}）`)
+    const rr = await restoreRegions(d, g.backup)
+    check(rr.ok && m.state.glob.radrate === 1 && m.state.glob.detectdist === 2 && rr.notes.some(x => x.includes('全局测温参数也写回了')), `恢复：全局测温参数写回辐射率 1 / 2 m（${rr.notes.join('；')}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    const rr = await restoreRegions(d, r.backup)
+    check(rr.ok && m.state.regions.slice(0, 3).every((x, i) => x.regionName === `Area${i + 1}` && x.regionEnable === false && x.region['width'] === 0), `恢复：R1–R3 回到出厂（Area1–3、0×0、没启用）（${rr.mismatch.join('；') || '一致'}）`)
+    await m.close()
+  }
+
+  console.log('10. 现场的样子：用户手画的 Area6（区号 5）启用着')
+  {
+    const field = B37_FACTORY.map((x, i) => (i === 5 ? { ...x, regionEnable: true, region: { x: 320, y: 132, width: 206, height: 169 } } : x))
+    const { m, d, posts } = await rig(field, { style: 'b37' })
+    const r0 = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    check(!r0.ok && !!r0.error?.includes('Area6/rectangle') && posts() === 1, `不加 --force：拒（${r0.error}）`)
+    const r1 = await applyDefaultRegions(d, { camera: m.url, force: true, waitTempMs: 0 })
+    check(!r1.ok && !!r1.error?.includes('「Area6」启用 rectangle x320 y132 206×169（区号 5）') && !!r1.error?.includes('不动') && posts() === 2, `--force 不加 --yes：列出 R1–R3 位置、Area6 不动，没写（${r1.error}）`)
+    const r2 = await applyDefaultRegions(d, { camera: m.url, force: true, yes: true, waitTempMs: 0 })
+    check(r2.ok && m.state.regions[5]!.regionName === 'Area6' && m.state.regions[5]!.regionEnable === true && m.state.regions[5]!.region['width'] === 206, `--force --yes：写了 R1–R3，Area6 原样（${r2.mismatch.join('；') || '读回一致'}）`)
+    await m.close()
+  }
+
+  console.log('11. 恢复：出厂 0×0 摄像机不收原样 → 没启用的改成停用')
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37', rejectZero: true })
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    const rr = await restoreRegions(d, r.backup)
+    check(r.ok && rr.ok && rr.written.join(',') === '0,1,2' && rr.notes.filter(x => x.includes('改成停用')).length === 3, `R1–R3 都改成停用、核对一致（${rr.notes[0] ?? ''}）`)
+    check(m.state.regions.slice(0, 3).every((x, i) => x.regionName === `Area${i + 1}` && x.regionEnable === false), '名字回到 Area1–3、没启用（坐标留着，不测温）')
+    await m.close()
+  }
+
+  console.log('12. 写法读不准时换着试：读回写的 region（像文档），摄像机却只收 rectangle')
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const orig = d.regionsRaw.bind(d)
+    d.regionsRaw = async () => (await orig()).map(x => ({ ...x, regionType: 'region' }))
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    check(r.ok && r.style?.rectType === 'rectangle' && r.style.local === false && r.notes.some(x => x.includes('改用 regionType "rectangle"、不带本地参数')), `R1 试到 rectangle、不带才收，R2 / R3 照它写（${r.notes.find(x => x.includes('改用')) ?? ''}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    m.state.fail['POST /measurement/region'] = 10001
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    check(!r.ok && !!r.error?.includes('几种写法摄像机都不收') && r.rolledBack === '一个都还没写，不用写回', `哪种都 10001：报出来、一个都没写（${(r.error ?? '').slice(0, 60)}…）`)
+    await m.close()
+  }
+
+  console.log('13. 试写 probe：一个空区上写一次、读回、马上写回')
+  {
+    const field = B37_FACTORY.map((x, i) => (i === 0 ? { ...x, regionEnable: true, regionName: '母排' } : x))
+    const { m, d } = await rig(field, { style: 'b37' })
+    const before = JSON.stringify(m.state.regions)
+    const p = await probeRegions(d, { camera: m.url })
+    check(p.ok && p.slot === 1 && p.tries.length === 1 && !!p.tries[0]!.accepted && p.works?.rectType === 'rectangle', `第一个没启用的区（区号 1）上试，rectangle、不带本地参数一次就收（${p.tries.map(t => t.style).join('；')}）`)
+    check(p.tries[0]!.readback?.['regionName'] === 'PROBE' && p.unchanged && JSON.stringify(m.state.regions) === before && p.restored === 'R2 已写回', `读回是 PROBE；写回后摄像机跟试之前一模一样（${p.restored}）`)
+    check(!!p.backup.glob && m.state.glob.radrate === 1, '试写不动全局测温参数（备份里带着）')
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37', rejectZero: true })
+    const p = await probeRegions(d, { camera: m.url })
+    check(p.ok && p.unchanged && !!p.restored?.includes('改成停用') && m.state.regions[0]!.regionEnable === false && m.state.regions[0]!.regionName === 'Area1', `0×0 写不回：改成停用、名字回 Area1，算一样（${p.restored}）`)
+    await m.close()
+  }
+  {
+    const all = B37_FACTORY.map(x => ({ ...x, regionEnable: true }))
+    const { m, d, posts } = await rig(all, { style: 'b37' })
+    const p = await probeRegions(d, { camera: m.url })
+    check(!p.ok && !!p.error?.includes('没有空位') && posts() === 1, `12 个区都启用：不试（${p.error}）`)
+    await m.close()
+  }
+  check(styleOf([{ regionType: 'rectangle', regionEnable: false }]).local === false && styleOf([{ regionType: 'region', localParam: {} }]).local === true, 'styleOf：看读回有没有本地参数、矩形字样')
+  check(!('localParam' in writableOf({ regionEnable: true, localParam: {}, localMeasureParam: true }, false)), '摄像机没有本地参数时写回不带这两个字段')
+
+  console.log('14. 复审：出错时不丢备份、可能写进去的那一格也写回、摄像机回的区不够')
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const orig = d.regionsRaw.bind(d)
+    let k = 0
+    d.regionsRaw = async () => {
+      if (++k === 2) throw new Error('/restv1/measurement/region：19999 接口调用异常')
+      return orig()
+    }
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    check(!r.ok && !!r.error?.includes('写完读回失败') && r.written.join(',') === '0,1,2' && r.backup.regions.length === 12, `写完读回失败：不抛，结果连同备份交回去（${r.error}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const orig = d.setRegion.bind(d)
+    let hit = 0
+    d.setRegion = async (id: number, row: Record<string, unknown>) => {
+      await orig(id, row)
+      if (id === 1 && row['regionName'] === 'R2' && ++hit === 1) throw new Error('/restv1/measurement/region/1：超时（6000 ms）')
+    }
+    const r = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
+    check(!r.ok && r.written.join(',') === '0' && !!r.rolledBack?.includes('R1') && !!r.rolledBack?.includes('R2'), `写 R2 超时（其实写进去了）：R1、R2 都按备份写回（${r.rolledBack}）`)
+    check(m.state.regions.slice(0, 3).every((x, i) => x.regionName === `Area${i + 1}` && x.regionEnable === false), '摄像机 R1–R3 都回到出厂样子')
+    await m.close()
+  }
+  {
+    const { m, d, posts } = await rig(B37_FACTORY.slice(0, 2), { style: 'b37' })
+    const r = await applyDefaultRegions(d, { camera: m.url, force: true, yes: true, waitTempMs: 0 })
+    check(!r.ok && !!r.error?.includes('只回了 2 个区') && posts() === 1, `摄像机只回 2 个区：不写（${r.error}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const before = JSON.stringify(m.state.regions)
+    const orig = d.setRegion.bind(d)
+    d.setRegion = async (id: number, row: Record<string, unknown>) => {
+      await orig(id, row)
+      if (row['regionName'] === 'PROBE') throw new Error('/restv1/measurement/region/0：超时（6000 ms）')
+    }
+    const p = await probeRegions(d, { camera: m.url })
+    check(!p.ok && !!p.error?.includes('超时') && p.restored === 'R1 已写回' && JSON.stringify(m.state.regions) === before, `probe 试写超时（其实写进去了）：照样写回，摄像机没留下 PROBE（${p.restored}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const orig = d.regionsRaw.bind(d)
+    let k = 0
+    d.regionsRaw = async () => {
+      if (++k === 3) throw new Error('/restv1/measurement/region：19999 接口调用异常')
+      return orig()
+    }
+    const p = await probeRegions(d, { camera: m.url })
+    check(!p.ok && !!p.error?.includes('试完读回失败') && p.restored === 'R1 已写回' && p.backup.regions.length === 12, `probe 试完读回失败：不抛，备份照样交回去（${p.error}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const g = await applyDefaultRegions(d, { camera: m.url, setGlobal: true, waitTempMs: 0 })
+    const wrongCam = await restoreRegions(d, g.backup, { camera: 'http://192.0.2.9' })
+    check(!wrongCam.ok && !!wrongCam.error?.includes('现在接的是 http://192.0.2.9') && m.state.regions[0]!.regionName === 'R1', `备份不是这台摄像机的：不写（${wrongCam.error}）`)
+    const orig = d.setRegion.bind(d)
+    d.setRegion = async (id: number, row: Record<string, unknown>) => {
+      if (id === 1) throw new Error('/restv1/measurement/region/1：超时（6000 ms）')
+      return orig(id, row)
+    }
+    const rr = await restoreRegions(d, g.backup, { camera: m.url })
+    check(!rr.ok && !!rr.error?.includes('R2') && rr.written.join(',') === '0,2' && m.state.glob.radrate === 1, `恢复时 R2 写不回：接着写 R3，全局参数照样写回（${rr.error}）`)
+    d.setRegion = orig
+    m.state.glob = { envtemp: 22, detectdist: 2, radrate: 0.95, humidity: 30 }
+    const bad = await restoreRegions(d, { ...g.backup, glob: { ...g.backup.glob, radrate: 7 } }, { camera: m.url })
+    check(!bad.ok && bad.mismatch.some(x => x.includes('radrate=7') && x.includes('没写回')) && m.state.glob.radrate === 0.95, `备份里的全局参数超范围（辐射率 7）：不写回（${bad.mismatch.join('；')}）`)
+    await m.close()
+  }
+  {
+    const { m, d } = await rig(B37_FACTORY, { style: 'b37' })
+    const og = d.globalParamRaw.bind(d)
+    let k = 0
+    // 写之前读的是全的（写要四个字段），写完核对那次少回 humidity
+    d.globalParamRaw = async () => {
+      const g = await og()
+      if (++k > 1) delete g['humidity']
+      return g
+    }
+    const r = await applyDefaultRegions(d, { camera: m.url, setGlobal: true, waitTempMs: 0 })
+    check(r.ok && r.notes.some(x => x.includes('辐射率 1 → 0.95')), `摄像机少回一个全局字段（humidity）：只比两边都有的，核对照样一致（${r.mismatch.join('；') || '无不一致'}）`)
     await m.close()
   }
 
