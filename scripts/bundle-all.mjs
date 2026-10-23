@@ -199,6 +199,11 @@ ${KIOSK ? `            连机柜双屏一起装：sudo bash ${NAME}.run --role s
             sudo bash ${NAME}.run --role eg --eg-config <放 eg.yaml 的目录>
   只解包：  bash ${NAME}.run --extract <目录>
 
+拷文件一律连同签名一起拷（0.18.2 起没签名不升；子站网页「网关升级」也只认验过签的包）：
+  ${NAME}.run 和 ${NAME}.run.sig 放同一目录，${NAME}.run.sha256 核对用。例：
+  scp ${NAME}.run ${NAME}.run.sig ${NAME}.run.sha256 <维护账号>@<子站>:/tmp/
+  子站网页升级 EG：scp ${NAME}.run ${NAME}.run.sig <维护账号>@<子站>:/var/lib/lsa9600sp/eg-upgrade/packages/  （然后网页上点「重新扫描」）
+
 不带 --role 就交互选。重跑同一个（或更新的）安装文件 = 升级：子站保留 docker/.env，EG 保留 config/ 与 .env，旧版可回退（EG：install.sh --rollback）。
 详见 docs/子站部署手册.md、docs/EG部署手册.md。
 `,

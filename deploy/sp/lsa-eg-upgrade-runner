@@ -305,7 +305,8 @@ def _sig(f, name):
     if sf is None:
         if os.path.lexists(os.path.join(PKG_DIR, name + '.sig')):
             return 'bad', f'{name}.sig 不是普通文件'
-        return 'unsigned', f'旁边没有 {name}.sig'
+        # 0.8.2（现场 10-23 第 2 次只拷了 .run）：说清楚要放什么、放哪
+        return 'unsigned', f'旁边没有 {name}.sig：把同名的 {name}.sig 跟 .run 一起放进 {PKG_DIR}/ 再点「重新扫描」'
     with sf:
         sig = sf.read(65537)
     if len(sig) > 65536:

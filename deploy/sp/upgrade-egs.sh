@@ -346,7 +346,7 @@ case "$SIGST" in
   ok) SIGLINE="已验（发布方 $SIGMSG）" ;;
   nokey) SIGLINE="!! 有 .sig 但子站验不了：$SIGMSG —— 只有 EG 能验的才升" ;;
   *) if [ "$ALLOW_UNSIGNED" = 1 ]; then SIGLINE='!! 没有签名 —— 应急 --allow-unsigned：只升不要求签名的 EG，汇总写「未验签（应急）」'
-     else SIGLINE='!! 没有签名：0.18.2 起没签名不升，整批不开始（把发布件的 <run>.sig 放在安装文件旁边）'; fi ;;
+     else SIGLINE="!! 没有签名：0.18.2 起没签名不升，整批不开始 —— 把同名的 $(basename "${RUN_ORIG:-$RUN}").sig 放到 $(dirname "${RUN_ORIG:-$RUN}")/（跟 .run 同一目录）再来"; fi ;;
 esac
 # 应急开关的审计（真升级才记；--plan 只看不记）。放在批次目录外面：批次目录下只许有批次
 UNSIGNED_LOG="${LOGROOT%/}-allow-unsigned.log"
@@ -450,7 +450,7 @@ for c in "${TARGETS[@]}"; do
   if [ "$MODE" != resume ] && [ "${free:-0}" -lt "$need_mb" ]; then row "$c" "$on" "$cur" '!!' "空间不够：剩 ${free} MB，要约 $need_mb MB"; BAD=1; continue; fi
   # 签名（0.18.2 起强制）：没人验得了的不升（应急 --allow-unsigned 只放过不要求签名的 EG）；EG 要求签名但它验不了的也不升（它会拒）
   if [ "$egreq" = 1 ] && [ "$VS" != 'EG 验' ]; then
-    if [ "$SIGST" = unsigned ]; then why='安装文件没有 .sig，这台 EG 要求发布件签名（--allow-unsigned 也不行）'
+    if [ "$SIGST" = unsigned ]; then why='安装文件旁边没有同名的 .run.sig（放到同一目录），这台 EG 要求发布件签名（--allow-unsigned 也不行）'
     else why="这台 EG 要求验签，但它没有发布公钥（sig_keys=${skeys:-0}）：在 EG 上手工跑新的 .run 装上公钥"; fi
     row "$c" "$on" "$cur" '!!' "$why"; BAD=1; continue
   fi
@@ -458,7 +458,7 @@ for c in "${TARGETS[@]}"; do
   noverify=0
   if [ "$VS" = 未签名 ] || [ "$VS" = 未验 ] || { [ "$VS" = 'EG 没公钥' ] && [ "$SIGST" != ok ]; }; then noverify=1; fi
   if [ "$noverify" = 1 ] && [ "$ALLOW_UNSIGNED" != 1 ]; then
-    row "$c" "$on" "$cur" '!!' "$([ "$VS" = 未签名 ] && echo '安装文件没有 .sig' || echo "子站和 EG 都验不了签名（$SIGMSG）")：0.18.2 起没签名不升"; BAD=1; continue
+    row "$c" "$on" "$cur" '!!' "$([ "$VS" = 未签名 ] && echo '安装文件旁边没有同名的 .run.sig（放到同一目录）' || echo "子站和 EG 都验不了签名（$SIGMSG）")：0.18.2 起没签名不升"; BAD=1; continue
   fi
   note=''; [ "$(vrel "$cur" "$TO")" = eq ] && note='同版本号、不同构建（重打；构建号分不出新旧，确认是要装的那个）'
   case "$VS" in

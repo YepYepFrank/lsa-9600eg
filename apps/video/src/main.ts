@@ -8,6 +8,7 @@
  *   GET  /api/video/clip?ch=visible|ir&start=&end=   裁一段 MP4（毫秒）；头 X-Actual-Start / End、X-Gap；没有录像回 404 + missingReason
  *   POST /api/video/cam-regions/default?force=1&yes=1&distance=<米>&setGlobal=1  给没画测温区的 restv1 摄像机写缺省 R1–R3（0.8.0，cam-regions.ts）；回备份与核对结果
  *   POST /api/video/cam-regions/probe        在一个没启用的区上试写、读回、马上写回（0.8.1，先验写法）
+ *   POST /api/video/cam-regions/disable?ids=5,6&yes=1  停用指定的区（0.8.2；没给 yes 只预览）
  *   POST /api/video/cam-regions/restore      按备份（JSON 体）原样写回
  *   这几个只给 install.sh --cam-regions-default / --cam-regions-restore 用（经 docker exec 调本机），本地页不转
  * 只听本机（127.0.0.1）：本地管理页经 eg-agent 转过来。
@@ -20,7 +21,7 @@ import { NestFactory } from '@nestjs/core'
 import type { Response } from 'express'
 import { VideoService } from './video.service.js'
 import { MissingError } from './recording.js'
-import { applyDefaultRegions, probeRegions, restoreRegions, type Backup } from './cam-regions.js'
+import { applyDefaultRegions, disableRegions, probeRegions, restoreRegions, type Backup } from './cam-regions.js'
 
 const SVC = Symbol('VideoService')
 
@@ -103,6 +104,18 @@ class CamRegionsController {
     if (dist !== undefined && !(dist > 0 && dist <= 1000)) throw new BadRequestException(`距离 ${distance} 不对：要在 (0, 1000] 米之间`)
     try {
       return await applyDefaultRegions(d, { force: force === '1', yes: yes === '1', setGlobal: setGlobal === '1', distance: dist, camera: this.svc.cfg.local.camera.restv1 })
+    } catch (e) {
+      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
+    }
+  }
+
+  @Post('disable')
+  @HttpCode(200)
+  async disable(@Query('ids') ids?: string, @Query('yes') yes?: string) {
+    const d = this.driver()
+    const list = String(ids ?? '').split(',').filter(Boolean).map(Number)
+    try {
+      return await disableRegions(d, { ids: list, yes: yes === '1', camera: this.svc.cfg.local.camera.restv1 })
     } catch (e) {
       throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
     }

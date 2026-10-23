@@ -31,6 +31,8 @@
 #   （左 / 中 / 右三竖条、辐射率 0.95、距离缺省 2 m）；摄像机上已有启用的测温区就拒绝；--force 先列出会覆盖什么，再加 --yes 才覆盖 R1–R3。
 #   0.8.1：写法照摄像机读回的来（真机 rectangle、区域没有本地参数）；区域没有本地参数时辐射率 / 距离是全局的，--cam-set-global 才改；
 #   --cam-regions-probe 只在一个空区上试写、读回、马上写回（先在现场验写法）。
+#   0.8.2：--cam-regions-default 不加 --yes 一律只预览（要写加 --yes；摄像机上有启用的区还要加 --force）；
+#   --cam-region-disable <区号[,区号…]> [--yes] 停用指定的区（区号 0–11，就是输出里「区号 N」那个数；先整份备份，不加 --yes 只预览）。
 #   写之前整份备份到 /var/lib/lsa-eg/cam-regions-backup-<时间>.json；--cam-regions-restore <备份文件> 写回跟备份不一样的区。在 lsa-eg-video 容器里跑
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
 #   --watchdog-off 关掉并记住，--watchdog-on 重新打开；--status 显示它。本机有硬件看门狗时直接用它、不加载 softdog。
@@ -58,6 +60,7 @@ MODE='install'
 FORCE=0
 YES=0
 CAM_SET_GLOBAL=0
+CAMREG_IDS=
 RESTORE_TB=0
 TB_BACKUP=1
 while [ $# -gt 0 ]; do
@@ -79,6 +82,7 @@ while [ $# -gt 0 ]; do
     --cam-ntp-sync) MODE='cam-ntp-sync' ;;
     --cam-regions-default) MODE='cam-regions-default' ;;
     --cam-regions-probe) MODE='cam-regions-probe' ;;
+    --cam-region-disable) CAMREG_IDS="${2:?--cam-region-disable 后面给区号（0–11，逗号分开，如 5 或 5,6）}"; MODE='cam-region-disable'; shift ;;
     --cam-set-global) CAM_SET_GLOBAL=1 ;;
     --yes) YES=1 ;;
     --cam-regions-restore) CAMREG_FILE="${2:?--cam-regions-restore 后面给备份文件（/var/lib/lsa-eg/cam-regions-backup-<时间>.json）}"; MODE='cam-regions-restore'; shift ;;
@@ -843,13 +847,18 @@ if [ "$MODE" = 'fw-on' ]; then
 fi
 # 摄像机缺省测温区（0.8.0）：在 lsa-eg-video 容器里跑 cam-regions.ts（同一套 restv1 驱动、口令只从 local.yaml 取）
 CAMREG_DIR=/var/lib/lsa-eg
-if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-probe' ] || [ "$MODE" = 'cam-regions-restore' ]; then
+if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-probe' ] || [ "$MODE" = 'cam-region-disable' ] || [ "$MODE" = 'cam-regions-restore' ]; then
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx lsa-eg-video || { echo '!! lsa-eg-video 没在跑：先 sudo bash install.sh 把全部起来' >&2; exit 1; }
   install -d -m 700 "$CAMREG_DIR"
   rc=0
-  if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-probe' ]; then
+  if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-probe' ] || [ "$MODE" = 'cam-region-disable' ]; then
     args=(default)
     [ "$MODE" = 'cam-regions-probe' ] && args=(probe)
+    if [ "$MODE" = 'cam-region-disable' ]; then
+      [[ "$CAMREG_IDS" =~ ^[0-9]{1,2}(,[0-9]{1,2})*$ ]] || { echo "!! --cam-region-disable 只认区号（0–11，逗号分开）：$CAMREG_IDS" >&2; exit 2; }
+      args=(disable "$CAMREG_IDS")
+      [ "${YES:-0}" = 1 ] && args+=(--yes)
+    fi
     if [ "$MODE" = 'cam-regions-default' ]; then
       [ "${FORCE:-0}" = 1 ] && args+=(--force)
       [ "${YES:-0}" = 1 ] && args+=(--yes)
