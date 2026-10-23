@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { EgConfig } from '@lsa-eg/config'
+import { CAP_KEYMAP } from '@lsa/model'
 import type { BusService, DeviceLive } from './bus/bus.service.js'
 import { CapsService } from './caps/caps.service.js'
 import { deviceEnabled, keyCapState, keyUplink, type CapState, type CapsConfig } from './caps/caps.js'
@@ -192,6 +193,15 @@ async function main() {
     check(!!q[1] && q[1]['dev.comm'] === 'ONLINE' && q[1]['dev.link'] === 1, 'dev.comm / dev.link 照送（子站网关页不再显示离线）')
     up.onModuleDestroy()
     rmSync(dir, { recursive: true, force: true })
+  }
+
+  console.log('9. 照子站实际下发的 capKeys（后端 @lsa/model CAP_KEYMAP，0.19.1 起 thermalRegions 只圈区域量）')
+  {
+    const real: CapsConfig = { caps: { thermalRegions: 'pending', camVideo: 'confirmed' }, capKeys: CAP_KEYMAP as Record<string, string[]> }
+    check(keyUplink('CAM-AH01-B', 'ir.max', real) && keyUplink('CAM-AH01-B', 'ir.min', real) && keyUplink('CAM-AH01-B', 'ir.avg', real) && keyUplink('CAM-AH01-B', 'ir.center', real), '测温区待定：全画面 ir.max / min / avg / center 照送（不归测温区）')
+    check(!keyUplink('CAM-AH01-B', 'ir.R1.max', real) && !keyUplink('CAM-AH01-B', 'ir.R3.avg', real) && !keyUplink('CAM-AH01-B', 'ir.rise', real) && !keyUplink('CAM-AH01-B', 'ir.rmax', real) && !keyUplink('CAM-AH01-B', 'ir.hot', real) && !keyUplink('CAM-AH01-B', 'ir.dmax', real), '测温区待定：ir.R* / ir.rise / ir.rmax / ir.hot / ir.dmax 不送')
+    check(keyUplink('CAM-AH01-B', 'cam.online', real) && keyUplink('CAM-AH01-B', 'dev.comm', real), 'cam.* / dev.* 照送')
+    check(deviceEnabled('CAM-AH01-B', { ...real, caps: { thermalRegions: 'unsupported', camVideo: 'unsupported' } }, ['ir.max', 'ir.R1.max', 'cam.online']), '测温区、双光都不支持：全画面 / cam.* 不归能力，摄像机照常连（只挡区域量）')
   }
 
   Date.now = realNow
