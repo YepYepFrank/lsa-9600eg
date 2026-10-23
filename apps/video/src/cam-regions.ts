@@ -32,6 +32,7 @@
  * 备份写在 $EG_CONFIG_DIR/cam-regions-backup-<时间>.json（install.sh 挪到 /var/lib/lsa-eg/），审计追加到 $EG_CONFIG_DIR/audit.log。 */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { DriverError } from './driver-base.js'
 import { RESTV1_FRAME, regionTypeOf, type Restv1Driver } from './restv1.js'
 
 export const DEFAULT_EMISSIVITY = 0.95
@@ -102,9 +103,23 @@ export function globalWritable(g: Row): Row {
   for (const k of GLOBAL_KEYS) if (k in g) out[k] = g[k]
   return out
 }
-const sameGlobal = (a: Row, b: Row) => GLOBAL_KEYS.every(k => Number(a[k]) === Number(b[k]))
+/** 全局参数一样：只比两边都有的字段（摄像机少回一个字段时不至于永远「不一样」） */
+const sameGlobal = (a: Row, b: Row) => GLOBAL_KEYS.filter(k => k in a && k in b).every(k => Number(a[k]) === Number(b[k]))
+/** 全局参数的范围（厂家 restv1 V1.8 §2.61）：不对返回说法，对返回 null */
+export function globalProblem(g: Row): string | null {
+  const lim: Record<(typeof GLOBAL_KEYS)[number], [number, number, boolean]> = { envtemp: [-20, 550, false], detectdist: [0, 1000, true], radrate: [0.01, 1, false], humidity: [0, 100, false] }
+  const bad = GLOBAL_KEYS.filter(k => k in g).filter(k => {
+    const v = g[k]
+    const [lo, hi, open] = lim[k]
+    return typeof v !== 'number' || !Number.isFinite(v) || (open ? v <= lo : v < lo) || v > hi
+  })
+  return bad.length ? `超出范围或不是数：${bad.map(k => `${k}=${JSON.stringify(g[k])}`).join('、')}` : null
+}
 
 const is10001 = (e: unknown) => /：10001\b/.test((e as Error)?.message ?? '')
+/** 写一格出错时那一格肯定没动：摄像机明确回了错误码（API / TOKEN / AUTH），或者请求根本没发出去（DATA：区号不对）。
+ *  超时、连接断了、别的错 → 可能已经写进去了，要按备份写回 */
+const surelyNotWritten = (e: unknown) => e instanceof DriverError && ['API', 'TOKEN', 'AUTH', 'DATA'].includes(e.code)
 const enabledOf = (rows: Row[]) => rows.map((r, id) => ({ id, r })).filter(({ r }) => r['regionEnable'] === true)
 const sameRect = (a: unknown, b: Record<string, number>) => {
   const o = (a ?? {}) as Row
@@ -183,6 +198,10 @@ export async function applyDefaultRegions(
   const backup: Backup = { at: (o.now ?? new Date()).toISOString(), camera: o.camera, regions: before, ...(glob ? { glob } : {}) }
   const res: ApplyResult = { ok: false, backup, written: [], mismatch: [], temps: [], notes: [] }
   defaultRegionRows(distance, style0) // 距离不对先拒
+  if (before.length < 3) {
+    res.error = `摄像机只回了 ${before.length} 个区：要有 R1–R3 三个位置（写之前的样子也要在，出错才能按备份写回），不写`
+    return res
+  }
   const on = enabledOf(before)
   const keep = on.filter(({ id }) => id > 2)
   if (on.length && !o.force) {
@@ -200,8 +219,12 @@ export async function applyDefaultRegions(
   // 写 R1：照读回的写法，摄像机回 10001 换下一种；试出来的写法 R2、R3 照用
   let style: CamStyle | null = null
   const tried: string[] = []
+  /** 正在写的那一格；allRejected = 几种写法都回 10001（摄像机明确没收，那一格没动） */
+  let at = -1
+  let allRejected = false
   try {
     for (const [i, rect] of DEFAULT_STRIPS.entries()) {
+      at = i
       if (i === 0) {
         for (const s of stylesToTry(style0)) {
           try {
@@ -213,7 +236,10 @@ export async function applyDefaultRegions(
             tried.push(`${styleText(s)}：${(e as Error).message}`)
           }
         }
-        if (!style) throw new Error(`几种写法摄像机都不收（${tried.join('；')}）`)
+        if (!style) {
+          allRejected = true
+          throw new Error(`几种写法摄像机都不收（${tried.join('；')}）`)
+        }
         if (tried.length) res.notes.push(`照读回的写法（${styleText(style0)}）摄像机回 10001，改用 ${styleText(style)} 写进去了`)
       } else await d.setRegion(i, regionRow(`R${i + 1}`, rect, distance, style!))
       res.written.push(i)
@@ -221,11 +247,14 @@ export async function applyDefaultRegions(
   } catch (e) {
     res.error = `写 R${res.written.length + 1} 失败：${(e as Error).message}`
     const back: string[] = []
-    for (const id of res.written) {
+    // 写失败的那一格：摄像机明确回了错误码（10001、10008 …）就没动；超时、连接断了可能已经写进去了，一样按备份写回
+    const ids = [...res.written, ...(at >= 0 && !res.written.includes(at) && !allRejected && !surelyNotWritten(e) ? [at] : [])]
+    const s1 = style ?? style0
+    for (const id of ids) {
       const old = before[id]
       if (!old) continue
       try {
-        back.push((await putBack(d, id, old, regionRow(`R${id + 1}`, DEFAULT_STRIPS[id]!, distance, style!), style!.local)).text)
+        back.push((await putBack(d, id, old, regionRow(`R${id + 1}`, DEFAULT_STRIPS[id]!, distance, s1), s1.local)).text)
       } catch (e2) {
         back.push(`R${id + 1} 写回失败（${(e2 as Error).message}）`)
       }
@@ -234,8 +263,14 @@ export async function applyDefaultRegions(
     return res
   }
   res.style = style!
-  // 读回核对（矩形字样 region / rectangle 算一种）
-  const after = await d.regionsRaw()
+  // 读回核对（矩形字样 region / rectangle 算一种）。读回失败（19999、超时）不抛：区已经写了，结果和备份要交回去存盘、记审计
+  let after: Row[]
+  try {
+    after = await d.regionsRaw()
+  } catch (e) {
+    res.error = `R1–R3 已经写了，但写完读回失败：${(e as Error).message}（没核对；要撤销用备份恢复）`
+    return res
+  }
   for (const [i, rect] of DEFAULT_STRIPS.entries()) {
     const got = after[i] ?? {}
     if (got['regionEnable'] !== true) res.mismatch.push(`R${i + 1} 没启用`)
@@ -316,6 +351,15 @@ export async function probeRegions(d: Restv1Driver, o: { camera: string; now?: D
     } catch (e) {
       if (!is10001(e)) {
         res.error = `试写区号 ${slot}（${styleText(s)}）出错：${(e as Error).message}`
+        if (surelyNotWritten(e)) break
+        // 超时 / 断开时可能已经写进去了：一样按备份写回
+        try {
+          const b = await putBack(d, slot, before[slot]!, row, s.local)
+          disabledInstead = b.how === 'disabled'
+          res.restored = b.text
+        } catch (e2) {
+          res.restored = `R${slot + 1} 写回失败（${(e2 as Error).message}）：用备份恢复`
+        }
         break
       }
       res.tries.push({ style: styleText(s), accepted: false, error: (e as Error).message })
@@ -340,7 +384,13 @@ export async function probeRegions(d: Restv1Driver, o: { camera: string; now?: D
     break
   }
   if (!res.works && !res.error) res.error = `几种写法摄像机都不收：${res.tries.map(x => `${x.style}：${x.error}`).join('；')}`
-  const after = await d.regionsRaw()
+  let after: Row[]
+  try {
+    after = await d.regionsRaw()
+  } catch (e) {
+    res.error = `${res.error ? `${res.error}；` : ''}试完读回失败：${(e as Error).message}（没核对摄像机是不是回到原样；要的话用备份恢复）`
+    return res
+  }
   res.unchanged = before.every((r, i) => (i === slot && disabledInstead ? after[i]?.['regionEnable'] !== true && String(after[i]?.['regionName'] ?? '') === String(r['regionName'] ?? '') : sameRow(after[i], r)))
   // 收了的那次读回要对得上：启用、名字 PROBE、矩形、坐标
   const rb = res.tries.find(x => x.accepted)?.readback
@@ -361,18 +411,21 @@ export interface RestoreResult {
 }
 
 /** 按备份写回（区号 = 下标）：只写跟现在不一样的区；全局测温参数（备份里有）不一样也写回；再读回核对 */
-export async function restoreRegions(d: Restv1Driver, b: Backup): Promise<RestoreResult> {
+export async function restoreRegions(d: Restv1Driver, b: Backup, o: { camera?: string } = {}): Promise<RestoreResult> {
   const res: RestoreResult = { ok: false, written: [], skipped: 0, mismatch: [], notes: [] }
   if (!Array.isArray(b.regions) || !b.regions.length) return { ...res, error: '备份文件里没有区域配置（regions）' }
+  if (o.camera && b.camera && o.camera !== b.camera) return { ...res, error: `备份是摄像机 ${b.camera} 的，现在接的是 ${o.camera}：不写` }
   const cur = await d.regionsRaw()
   const local = styleOf(cur).local
   const disabled = new Set<number>()
+  const failed: string[] = []
   for (const [id, row] of b.regions.entries()) {
     if (id > 11) break
     if (sameRow(cur[id], row)) {
       res.skipped++
       continue
     }
+    // 某一区写不回也接着写别的区和全局参数，最后一起报
     try {
       const p = await putBack(d, id, row, cur[id], local)
       if (p.how === 'disabled') {
@@ -381,10 +434,12 @@ export async function restoreRegions(d: Restv1Driver, b: Backup): Promise<Restor
       }
       res.written.push(id)
     } catch (e) {
-      return { ...res, error: `写回 R${id + 1} 失败：${(e as Error).message}（已写回 ${res.written.length} 个，可以再跑一次）` }
+      failed.push(`R${id + 1}（${(e as Error).message}）`)
     }
   }
-  if (b.glob) {
+  const gp = b.glob ? globalProblem(b.glob) : null
+  if (b.glob && gp) res.mismatch.push(`备份里的全局测温参数${gp}，没写回`)
+  else if (b.glob) {
     try {
       const g = await d.globalParamRaw()
       if (!sameGlobal(g, b.glob)) {
@@ -397,7 +452,14 @@ export async function restoreRegions(d: Restv1Driver, b: Backup): Promise<Restor
       res.mismatch.push(`全局测温参数写回失败：${(e as Error).message}`)
     }
   }
-  const after = await d.regionsRaw()
+  if (failed.length) res.error = `写回失败：${failed.join('、')}（别的区和全局参数照样写了，可以再跑一次）`
+  let after: Row[]
+  try {
+    after = await d.regionsRaw()
+  } catch (e) {
+    res.error = `${res.error ? `${res.error}；` : ''}写完读回失败：${(e as Error).message}（没核对）`
+    return res
+  }
   for (const [id, row] of b.regions.entries()) {
     if (id > 11) break
     const got = after[id] ?? {}
@@ -406,7 +468,7 @@ export async function restoreRegions(d: Restv1Driver, b: Backup): Promise<Restor
     if (!sameType(got['regionType'], row['regionType'])) res.mismatch.push(`R${id + 1} 类型 ${String(got['regionType'])}（备份 ${String(row['regionType'])}）`)
     if (!sameCoords(got['region'], row['region'])) res.mismatch.push(`R${id + 1} 坐标 ${JSON.stringify(got['region'])}（备份 ${JSON.stringify(row['region'])}）`)
   }
-  res.ok = res.mismatch.length === 0
+  res.ok = res.mismatch.length === 0 && !res.error
   return res
 }
 
@@ -501,7 +563,7 @@ async function cli(): Promise<number> {
     const r = await video<RestoreResult>('/api/video/cam-regions/restore', b)
     for (const n of r.notes ?? []) console.log(`说明：${n}`)
     if (r.error) {
-      console.error(`!! ${r.error}`)
+      console.error(`!! ${r.error}${r.mismatch?.length ? `；读回不一致：${r.mismatch.join('；')}` : ''}`)
       audit(dir, '恢复测温区', false, `${b.camera}：${r.error}`)
       return 1
     }

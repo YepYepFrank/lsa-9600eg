@@ -124,7 +124,7 @@ class CamRegionsController {
   async restore(@Body() b: Backup) {
     const d = this.driver()
     try {
-      return await restoreRegions(d, b)
+      return await restoreRegions(d, b, { camera: this.svc.cfg.local.camera.restv1 })
     } catch (e) {
       throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
     }
