@@ -5,7 +5,7 @@
 #   sudo bash install-conv.sh                    启用：导入镜像 → 生成 config/conv（已有就不动）→ 选串口 → 起 conv
 #   sudo bash install-conv.sh --serial <设备>     指定串口。不给时：/dev/serial/by-id/ 下只有一个（USB 转 485）就用它；
 #                                                有多个就列出来让选；一个都没有就用 /dev/ttyS1（X26A 的 COM2）
-#   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared meter；缺省前五个都开（0.7.1 起红外也开：S19 五种传感器全配，SAM 红外 ir.t_max / ir.t_avg 只显示、上送）；
+#   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared meter；缺省开局放、气体、温湿度、弧光四路，红外关（0.8.1：本项目 SAM 没有自带红外，测温只靠双目摄像机；0.7.1–0.8.0 缺省是开的）；
 #                                                电表 meter 按 eg.yaml 自动：有这面柜电表（kind: meter，PM-<柜号>）的那台 EG 才打开、设备名和
 #                                                从站号（attrs.slave 或 proto 里的「从站 N」，缺省 6）照 eg.yaml 填；寄存器表在 config/conv/sensors/meter.yaml）
 #   --addr pd=2,gas=3,temperature=4,arc=5       从站地址（缺省用同事的：红外 1、局放 2、气体 3、温湿度 4、弧光 5）
@@ -188,9 +188,11 @@ gen_config() {
       continue
     fi
     if [ "$n" = temperature ]; then yset "$f" device "$a"; else yset "$f" device "$b"; fi
-    yset "$f" enabled true   # 0.7.1：红外也开（S19 A4）；现场没装的用 --sensors 关掉
+    # 0.8.1（用户 10-23 定）：本项目每台 SAM 配湿度、温度、烟雾、局放（超声）、弧光，没有自带红外（测温只靠双目摄像机）—— 红外缺省关；
+    # 真装了的用 --sensors pd,gas,temperature,arc,infrared 打开。0.7.1–0.8.0 缺省是开的（S19 A4 当时按五种全配）
+    if [ "$n" = infrared ]; then yset "$f" enabled false; else yset "$f" enabled true; fi
   done
-  echo "转换程序配置：从镜像模板生成 config/conv/（单元 ${code:-?}；温湿度 → $a，其余 → $b；局放、气体、温湿度、弧光、红外打开（没装的用 --sensors 关）；从站地址用同事的缺省）"
+  echo "转换程序配置：从镜像模板生成 config/conv/（单元 ${code:-?}；温湿度 → $a，其余 → $b；局放、气体、温湿度、弧光打开，红外关（没装的 / 装了红外的用 --sensors 改）；从站地址用同事的缺省）"
   if [ -f config/conv/sensors/meter.yaml ]; then
     if [ -n "$m" ]; then echo "  电表：打开，$m（从站 $(meter_slave "$m")；寄存器表 config/conv/sensors/meter.yaml）"; else echo "  电表：本单元没有（eg.yaml 里没有 kind: meter），关"; fi
   fi

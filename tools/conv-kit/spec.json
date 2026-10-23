@@ -12,8 +12,8 @@
           "optional": false,
           "type": "number",
           "cap": "samIr",
-          "capState": "pending",
-          "note": "能力「SAM 红外测温」现场口径是「待定」（等 T03 · 清单 S19 A4、D7）：本柜装了才发，检查工具不报缺"
+          "capState": "unsupported",
+          "note": "能力「SAM 红外测温」本项目「不支持」（用户 2026-10-23 定：SAM 没有自带红外，测温只靠双目摄像机）：不发，检查工具不判缺、不提"
         },
         {
           "key": "ir.t_avg",
@@ -23,8 +23,8 @@
           "optional": false,
           "type": "number",
           "cap": "samIr",
-          "capState": "pending",
-          "note": "能力「SAM 红外测温」现场口径是「待定」（等 T03 · 清单 S19 A4、D7）：本柜装了才发，检查工具不报缺"
+          "capState": "unsupported",
+          "note": "能力「SAM 红外测温」本项目「不支持」（用户 2026-10-23 定：SAM 没有自带红外，测温只靠双目摄像机）：不发，检查工具不判缺、不提"
         },
         {
           "key": "us.amp",
