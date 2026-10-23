@@ -111,11 +111,15 @@ export function keyCapState(device: string, key: string, c: CapsConfig | null): 
   return states.includes('confirmed') ? 'confirmed' : states.includes('pending') ? 'pending' : 'unsupported'
 }
 
-/** 设备是否启用：至少匹配上一条能力、且匹配上的全都不启用 → 不启用；一条都匹配不上的照常（如 EG 自己） */
-export function deviceEnabled(device: string, c: CapsConfig | null): boolean {
+/** 设备是否启用：至少匹配上一条能力、且匹配上的全都不启用 → 不启用；一条都匹配不上的照常（如 EG 自己）。
+ *  0.8.1（现场 AH01-B）：给了 keys（这台设备点表里的遥测 key，不含 dev.* 这类各设备都有的）时，只要有一个 key 不归任何能力，整台照常启用 ——
+ *  子站的 camVideo（双光实况与录像）没有遥测、capKeys 是空的，摄像机只匹配上 thermalRegions（CAM:ir.*）；测温区改成待定后
+ *  整台被判不启用，cam.online / cam.vis / cam.ir / dev.* 都不上送了，子站网关页显示离线 */
+export function deviceEnabled(device: string, c: CapsConfig | null, keys?: readonly string[]): boolean {
   if (!c) return true
   const mine = capsOfDevice(device, c)
-  return !mine.length || mine.some(cap => capEnabled(cap, c))
+  if (!mine.length || mine.some(cap => capEnabled(cap, c))) return true
+  return !!keys?.some(k => keyCapState(device, k, c) === null)
 }
 
 /** 设备是否进 EG 本地 TB（v1.2）：至少匹配上一条能力、且匹配上的全都是 unsupported → 不进；有 pending / confirmed 或一条都匹配不上的照常 */

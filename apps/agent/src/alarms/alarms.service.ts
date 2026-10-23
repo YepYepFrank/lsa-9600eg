@@ -260,7 +260,10 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
 
   private observed(a: TbAlarm): Observed | null {
     const device = a.originatorName
-    if (!device || !this.devices.has(device)) return null
+    if (!device) return null
+    // 0.8.1（现场 AH01-B）：已经记进事件库的告警，设备后来不在 eg.yaml 里了（拆柜改归别的单元）也照常跟着本地 TB 走 ——
+    // 不然开机清扫在本地 TB 上清掉了它，事件库还一直是 ACTIVE，本地页顶栏一直挂着、子站也收不到恢复
+    if (!this.devices.has(device) && !this.store.known(a.id.id)) return null
     const cleared = !!a.cleared || !!a.status?.startsWith('CLEARED')
     const d = normalizeDetails(a.details)
     const key = typeof d['key'] === 'string' ? d['key'] : null

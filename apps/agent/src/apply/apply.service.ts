@@ -367,7 +367,8 @@ export class ApplyService {
   }
 
   /** 开机清扫（排进应用队列，不与下发并发）：EG 规则的告警类型里，本地设备配置已经没有的，活动告警清掉；
-   *  0.7.3：发起设备已经不在本机 eg.yaml 设备清单里的（拆柜后改归别的单元，如 SAM-AH01-A 不再归 EG-AH01-B），活动告警也清掉。
+   *  0.7.3：发起设备已经不在本机 eg.yaml 设备清单里的（拆柜后改归别的单元，如 SAM-AH01-A 不再归 EG-AH01-B），活动告警也清掉；
+   *  0.8.1：柜级名字的（PM-AH01、取消了的 PM6-AH01）也清，只要告警类型是 EG 规则出的。
    *  应用新 eg.yaml（apply-config / 拆柜 rebind）以后 agent 会重启，所以也是开机清扫这一步 */
   private sweepOnce(): Promise<void> {
     if (!this.tb.available || this.debugTbDown) return Promise.resolve()
@@ -387,7 +388,7 @@ export class ApplyService {
         this.log.log(`开机清扫：规则已停用 / 改名、还挂着的活动告警清掉 ${n} 条（不再有规则的类型 ${gone.join('、')}）`)
         this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '清除遗留告警', target: gone.join('、'), ok: true, detail: `开机清扫：清掉 ${n} 条` })
       }
-      const foreign = await this.clearForeign()
+      const foreign = await this.clearForeign(known)
       for (const [dev, k] of foreign) {
         this.log.log(`开机清扫：${dev} 已不归本单元（${this.cfg.unit.code}），还挂着的活动告警清掉 ${k} 条`)
         this.audit.write({ user: 'system', name: '配置下发', via: 'system', ip: '-', action: '清除遗留告警', target: dev, ok: true, detail: `开机清扫：设备不再归本单元 ${this.cfg.unit.code}（不在 eg.yaml 设备清单里），清掉 ${k} 条` })
@@ -436,11 +437,12 @@ export class ApplyService {
   }
 
   /** 0.7.3：拆柜后不再归本单元的设备（如 EG-AH01-B 上的 SAM-AH01-A），本地 TB 里还挂着的活动告警清掉；返回 设备名 → 条数。
-   *  只清「名字里带的单元号不是本单元」的：<前缀>-<柜号>-<字母>，前缀 SAM / PM / PM2 / PM6 / CAM / EG，且不在本机 eg.yaml 设备清单里。
-   *  柜级的名字（PM-AH01、EG-AH01，拿不准归哪个单元）、带本单元号的（含本单元的子设备）、认不出的名字一律不清，只记一行日志。
+   *  清「名字里带的单元号不是本单元」的：<前缀>-<柜号>-<字母>，前缀 SAM / PM / PM2 / PM6 / CAM / EG，且不在本机 eg.yaml 设备清单里。
+   *  0.8.1（现场 AH01-B 实查：PM-AH01、PM6-AH01 的「设备失联」一直挂着，这两台早就不在 eg.yaml 里）：不在 eg.yaml 里的设备，
+   *  告警类型是 EG 规则出的（ruleTypes）也清 —— 本机不再采它，它的告警在本地 TB 上永远不会自己恢复。类型不是 EG 规则出的、认不出名字的照旧不清，只记一行日志。
    *  设备清单里一台下挂设备都没有（待接入、eg.yaml 不全）时整步跳过 —— 不能当成「清单为空」把告警全清掉。
    *  r181eg / s182eg / AH09 的本地 TB 实查（10-22）：告警的发起设备都在 eg.yaml 里，没有别的虚拟设备 */
-  private async clearForeign(): Promise<Map<string, number>> {
+  private async clearForeign(ruleTypes: ReadonlySet<string>): Promise<Map<string, number>> {
     const out = new Map<string, number>()
     const unit = this.cfg.unit.code
     const subs = this.cfg.devices.filter(d => d.kind !== 'eg' && d.name !== this.cfg.eg.name)
@@ -451,11 +453,12 @@ export class ApplyService {
     const mine = new Set([this.cfg.eg.name, ...this.cfg.devices.map(d => d.name)])
     const skipped = new Set<string>()
     try {
-      const r = await this.tb.get<{ data: { id: { id: string }; originatorName?: string }[] }>('/api/v2/alarms?pageSize=500&page=0&statusList=ACTIVE')
+      const r = await this.tb.get<{ data: { id: { id: string }; originatorName?: string; type?: string }[] }>('/api/v2/alarms?pageSize=500&page=0&statusList=ACTIVE')
       for (const a of r.data) {
         const dev = a.originatorName
         if (!dev || mine.has(dev)) continue
-        if (!foreignUnitDevice(dev, unit)) {
+        // 本机设备的子设备（如测温区 CAM-AH01-B-R1）一律不清
+        if ([...mine].some(n => dev.startsWith(`${n}-`)) || (!foreignUnitDevice(dev, unit) && !ruleTypes.has(a.type ?? ''))) {
           skipped.add(dev)
           continue
         }
@@ -469,7 +472,7 @@ export class ApplyService {
     } catch (e) {
       this.log.warn(`查不归本单元设备的遗留告警失败：${(e as Error).message}`)
     }
-    if (skipped.size) this.log.log(`开机清扫：活动告警的发起设备 ${[...skipped].join('、')} 不在 eg.yaml 里、名字看不出归别的单元，不清`)
+    if (skipped.size) this.log.log(`开机清扫：活动告警的发起设备 ${[...skipped].join('、')} 不在 eg.yaml 里，名字看不出归别的单元、告警类型也不是 EG 规则出的，不清`)
     return out
   }
 

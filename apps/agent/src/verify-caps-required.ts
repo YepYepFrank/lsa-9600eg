@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import type { EgConfig } from '@lsa-eg/config'
 import type { BusService, DeviceLive } from './bus/bus.service.js'
 import { CapsService } from './caps/caps.service.js'
-import { keyCapState, type CapState, type CapsConfig } from './caps/caps.js'
+import { deviceEnabled, keyCapState, type CapState, type CapsConfig } from './caps/caps.js'
 import type { ConvExpectService } from './conv/conv-expect.service.js'
 import { QualityService } from './quality/quality.service.js'
 import { WarmupService } from './warmup/warmup.service.js'
@@ -114,6 +114,31 @@ async function main() {
   check(keyCapState(DEV, 'tev.amp', null) === null, '子站没下发能力 → null')
   check(keyCapState(DEV, 'us.amp', { caps: { a: 'unsupported', b: 'confirmed' }, capKeys: { a: ['SAM:us.*'], b: ['SAM:us.amp'] } }) === 'confirmed', '几条能力都匹配上：有 confirmed 就算 confirmed')
   check(keyCapState(DEV, 'us.cnt', { caps: {}, capKeys: { a: ['SAM:us.*'] } }) === 'unsupported', 'capKeys 有、caps 没写的能力 → unsupported（同 capEnabled）')
+
+  console.log('7. 0.8.1 整台启不启用（现场 AH01-B：测温区改待定后摄像机整台不上送）')
+  {
+    // 子站的 capKeys：camVideo 没有遥测（空数组），摄像机只对得上 thermalRegions
+    const cc: CapsConfig = {
+      caps: { thermalRegions: 'pending', camVideo: 'confirmed', meterBasic: 'unsupported', meterHarmonics: 'pending', pdAmplitude: 'pending', envTH: 'unsupported', samIr: 'pending', tev: 'unsupported', uhf: 'unsupported', arc: 'unsupported', smokePpm: 'unsupported' },
+      // SAM 的点表 key 全归能力（同子站 CAP_KEYMAP：us / env / ir.t_* / tev / uhf / uv / smoke）
+      capKeys: { thermalRegions: ['CAM:ir.*'], camVideo: [], meterBasic: ['PM:el.*'], meterHarmonics: ['PM:el.h*'], pdAmplitude: ['SAM:us.*'], envTH: ['SAM:env.*'], samIr: ['SAM:ir.t_max', 'SAM:ir.t_avg'], tev: ['SAM:tev.*'], uhf: ['SAM:uhf.*'], arc: ['SAM:uv.*'], smokePpm: ['SAM:smoke.*'] },
+    }
+    check(!deviceEnabled('CAM-AH01-B', cc), '不给点表：摄像机只对得上 thermalRegions（待定）→ 整台不启用（0.8.0 的样子）')
+    check(deviceEnabled('CAM-AH01-B', cc, ['ir.max', 'ir.R1.max', 'cam.online', 'cam.bitrate']), '给了点表：cam.online / cam.bitrate 不归任何能力 → 整台照常启用')
+    check(!deviceEnabled('PM-AH01', cc, ['el.Ia', 'el.hu.A']) && !deviceEnabled('SAM-AH01-B', cc, ['us.amp', 'env.t']), '点表里的量都归不启用的能力（电表、SAM）→ 照旧整台不启用')
+    const cfg = {
+      cabinet: { code: 'AH01', group: 'mv' },
+      eg: { name: 'EG-AH01-B' },
+      devices: [{ name: 'EG-AH01-B', kind: 'eg' }, { name: 'CAM-AH01-B', kind: 'camera' }, { name: 'SAM-AH01-B', kind: 'sam' }],
+    } as unknown as EgConfig
+    const cs = new CapsService(cfg)
+    ;(cs as unknown as { log: { log: () => void } }).log = { log: () => undefined }
+    cs.set(cc, null)
+    check(cs.deviceEnabled('CAM-AH01-B'), 'CapsService 按 eg.yaml 取摄像机点表：测温区待定、双光确认 → 摄像机照常上送')
+    check(!cs.deviceEnabled('SAM-AH01-B'), 'SAM 的量全归能力（局放待定、温湿度不支持）→ SAM 照旧不上送（不因 dev.link 变成启用）')
+    cs.set({ ...cc, caps: { ...cc.caps, thermalRegions: 'confirmed' } }, null)
+    check(cs.deviceEnabled('CAM-AH01-B'), '测温区改回已确认：照常')
+  }
 
   Date.now = realNow
   done()

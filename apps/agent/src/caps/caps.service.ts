@@ -1,7 +1,12 @@
 /* 能力清单与下挂设备状态参数的当前值（阶段 A，接口 v1.1）。只存状态、不依赖别的服务：
  * ApplyService 应用配置后（含启动时读 applied-config.json）调 set()；上送（UplinkService）、质量码（QualityService）、
- * caps.actual（CapsActualService）、本地页（/api/caps）来读。 */
-import { Injectable, Logger } from '@nestjs/common'
+ * caps.actual（CapsActualService）、本地页（/api/caps）来读。
+ * 0.8.1：另外按 eg.yaml 记下每台下挂设备点表里的遥测 key（判「整台不启用」时，有不归任何能力的 key 就照常启用，见 caps.ts deviceEnabled）；
+ * 自检里直接 new、不给配置时照旧只看能力。 */
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
+import type { EgConfig } from '@lsa-eg/config'
+import { pointsOf } from '@lsa/points'
+import { EG_CONFIG } from '../config.js'
 import { capEnabled, deviceEnabled, deviceLocal, keyCapState, type CapState, type CapsConfig } from './caps.js'
 import { DEFAULT_GAS, type GasParams } from '../warmup/warmup.js'
 
@@ -21,6 +26,15 @@ export class CapsService {
   private gasP: GasParams = DEFAULT_GAS
   private readonly listeners: (() => void)[] = []
   private enabledCache = new Map<string, boolean>()
+  /** 设备名 → 点表里的遥测 key（不含 dev.*） */
+  private readonly keys = new Map<string, string[]>()
+
+  constructor(@Optional() @Inject(EG_CONFIG) cfg?: EgConfig) {
+    for (const d of cfg?.devices ?? []) {
+      if (d.kind === 'eg' || d.kind === 'pm') continue
+      this.keys.set(d.name, (pointsOf(d.kind, cfg!.cabinet.group, true) as { key: string }[]).map(p => p.key).filter(k => !k.startsWith('dev.')))
+    }
+  }
 
   /** 应用配置后调用（null = 子站没下发能力 / 参数，全部照旧）；gas = 传感器预热参数（0.17，extras.gas*） */
   set(c: CapsConfig | null, devComm: DevCommParams | null, gas: GasParams | null = null): void {
@@ -73,7 +87,7 @@ export class CapsService {
   deviceEnabled(device: string): boolean {
     let v = this.enabledCache.get(device)
     if (v === undefined) {
-      v = deviceEnabled(device, this.current)
+      v = deviceEnabled(device, this.current, this.keys.get(device))
       this.enabledCache.set(device, v)
     }
     return v
