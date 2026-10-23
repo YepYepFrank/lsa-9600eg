@@ -21,6 +21,7 @@
     "verify:cam-url": "node --import @swc-node/register/esm-register src/verify-cam-url.ts",
     "verify:sweep-foreign": "node --import @swc-node/register/esm-register src/verify-sweep-foreign.ts",
     "verify:events-foreign": "node --import @swc-node/register/esm-register src/verify-events-foreign.ts",
+    "verify:boot-cfg": "node --import @swc-node/register/esm-register src/verify-boot-cfg.ts",
     "verify:caps-required": "node --import @swc-node/register/esm-register src/verify-caps-required.ts",
     "verify:g1": "node --import @swc-node/register/esm-register src/verify-g1.ts",
     "verify:g2": "node --import @swc-node/register/esm-register src/verify-g2.ts",
