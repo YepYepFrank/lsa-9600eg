@@ -263,10 +263,13 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
     if (!device) return null
     // 0.8.1（现场 AH01-B）：已经记进事件库的告警，设备后来不在 eg.yaml 里了（拆柜改归别的单元）也照常跟着本地 TB 走 ——
     // 不然开机清扫在本地 TB 上清掉了它，事件库还一直是 ACTIVE，本地页顶栏一直挂着、子站也收不到恢复
-    if (!this.devices.has(device) && !this.store.known(a.id.id)) return null
+    const mine = this.devices.has(device)
+    if (!mine && !this.store.known(a.id.id)) return null
     const cleared = !!a.cleared || !!a.status?.startsWith('CLEARED')
     const d = normalizeDetails(a.details)
     const key = typeof d['key'] === 'string' ? d['key'] : null
+    // 不在 eg.yaml 里的设备查不了点表，单位沿用事件库里记着的
+    const unit = d['unit'] ?? (mine ? (key ? this.unitOf(device, key) : null) : (this.store.get(a.id.id)?.details?.['unit'] ?? null))
     return {
       eventId: a.id.id,
       device,
@@ -275,7 +278,7 @@ export class AlarmsService implements OnModuleInit, OnModuleDestroy {
       state: cleared ? 'CLEARED' : 'ACTIVE',
       occurredAt: a.startTs || a.createdTime || Date.now(),
       clearedAt: cleared ? a.clearTs || a.endTs || Date.now() : null,
-      details: { ...d, unit: d['unit'] ?? (key ? this.unitOf(device, key) : null), ruleVersion: this.ruleVersion() },
+      details: { ...d, unit, ruleVersion: this.ruleVersion() },
     }
   }
 

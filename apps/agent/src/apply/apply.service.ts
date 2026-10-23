@@ -441,6 +441,7 @@ export class ApplyService {
    *  0.8.1（现场 AH01-B 实查：PM-AH01、PM6-AH01 的「设备失联」一直挂着，这两台早就不在 eg.yaml 里）：不在 eg.yaml 里的设备，
    *  告警类型是 EG 规则出的（ruleTypes）也清 —— 本机不再采它，它的告警在本地 TB 上永远不会自己恢复。类型不是 EG 规则出的、认不出名字的照旧不清，只记一行日志。
    *  设备清单里一台下挂设备都没有（待接入、eg.yaml 不全）时整步跳过 —— 不能当成「清单为空」把告警全清掉。
+   *  eg.yaml 漏写了一台其实还接着线的设备时，它的 EG 规则告警开机会被清掉（协调复审认可：eg.yaml 要写全，清掉后真有问题会重新报）。
    *  r181eg / s182eg / AH09 的本地 TB 实查（10-22）：告警的发起设备都在 eg.yaml 里，没有别的虚拟设备 */
   private async clearForeign(ruleTypes: ReadonlySet<string>): Promise<Map<string, number>> {
     const out = new Map<string, number>()

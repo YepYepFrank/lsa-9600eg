@@ -151,6 +151,13 @@ async function main() {
     check(Object.keys(cs.uplinkValues('SAM-AH01-B', { 'us.amp': 25.8, 'env.t': 26.1, 'ir.t_max': 30 })).join(',') === 'env.t', 'SAM：局放待定、SAM 红外待定的不送，温湿度（已确认）照送')
     cs.set({ ...cc, caps: { ...cc.caps, thermalRegions: 'confirmed' } }, null)
     check(cs.uplinkValues('CAM-AH01-B', row) === row, '测温区改回已确认：整行原样送（缓存跟着清）')
+    // 老子站（后端 7f0f03b 以前）下发的 capKeys 没有 samIr：SAM 的 ir.t_* 不归任何能力
+    const { samIr: _s, ...oldKeys } = cc.capKeys
+    const allPending = Object.fromEntries(Object.keys(oldKeys).map(k => [k, 'pending' as const]))
+    cs.set({ caps: allPending, capKeys: oldKeys }, null)
+    const samRow = { 'us.amp': 25.8, 'us.cnt': 4, 'env.t': 26.1, 'uv.int': 3, 'smoke.ppm': 0, 'ir.t_max': 30.2, 'dev.comm': 'ONLINE' }
+    const samKept = Object.keys(cs.uplinkValues('SAM-AH01-B', samRow))
+    check(samKept.join(',') === 'ir.t_max,dev.comm', `老子站（capKeys 没有 samIr）、SAM 的能力全待定：不整台送 —— 只有不归能力的 ir.t_max 和 dev.* 送（${samKept.join('、')}）`)
   }
 
   console.log('8. 上送入队（真的 UplinkService，子站连不上也照样入队）：测温区待定 + 双光已确认 → cam.* 照常送、ir.* 不送')

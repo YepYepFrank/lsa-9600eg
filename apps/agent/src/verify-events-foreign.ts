@@ -26,7 +26,7 @@ async function main() {
   const store = new EventsStore(join(dir, 'events.db'))
   const t0 = Date.now() - 3600_000
   const seed = (eventId: string, device: string) =>
-    store.observe({ eventId, device, type: '设备失联', severity: 'MAJOR', state: 'ACTIVE', occurredAt: t0, clearedAt: null, details: {} }, t0, null)
+    store.observe({ eventId, device, type: '设备失联', severity: 'MAJOR', state: 'ACTIVE', occurredAt: t0, clearedAt: null, details: { key: 'dev.link', unit: '' } }, t0, null)
   seed(ID.samA, 'SAM-AH01-A')
   seed(ID.pm6, 'PM6-AH01')
   seed(ID.gone, 'PM-AH01')
@@ -72,6 +72,7 @@ async function main() {
 
   await reconcile()
   check(store.known(ID.samA)?.state === 'CLEARED', `SAM-AH01-A（已不在 eg.yaml）本地 TB 上清了 → 事件库记 CLEARED（${store.known(ID.samA)?.state}）`)
+  check(store.get(ID.samA)?.details['unit'] === '', `不在 eg.yaml 里的设备：单位沿用事件库里记着的（${JSON.stringify(store.get(ID.samA)?.details['unit'])}），不被改成 null`)
   check(store.known(ID.gone)?.state === 'CLEARED', `PM-AH01 那条本地 TB 上已删（404）→ 事件库记 CLEARED（${store.known(ID.gone)?.state}）`)
   check(store.known(ID.pm6)?.state === 'ACTIVE', 'PM6-AH01 本地 TB 上还活动 → 事件库照旧 ACTIVE（等开机清扫清掉）')
   check(store.known(ID.mine)?.state === 'ACTIVE', '本单元 SAM-AH01-B 照常')
