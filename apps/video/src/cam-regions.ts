@@ -26,7 +26,8 @@
  *
  * 命令行（install.sh --cam-regions-default / --cam-regions-probe / --cam-regions-restore 在 lsa-eg-video 容器里调）：写区域由 eg-video 用它正在用的驱动做
  * （POST /api/video/cam-regions/…，摄像机最多 2 个会话、没有退出登录，不另外登录），本脚本只存备份、记审计、打印结果：
- *   node --import @swc-node/register/esm-register src/cam-regions.ts default [--force --yes] [--distance <米>] [--set-global]
+ *   node --import @swc-node/register/esm-register src/cam-regions.ts default [--force] [--yes] [--distance <米>] [--set-global]   （0.8.2：不给 --yes 只预览）
+ *   node --import @swc-node/register/esm-register src/cam-regions.ts disable <区号[,区号…]> [--yes]                         （0.8.2：停用指定的区）
  *   node --import @swc-node/register/esm-register src/cam-regions.ts probe
  *   node --import @swc-node/register/esm-register src/cam-regions.ts restore <备份文件>
  * 备份写在 $EG_CONFIG_DIR/cam-regions-backup-<时间>.json（install.sh 挪到 /var/lib/lsa-eg/），审计追加到 $EG_CONFIG_DIR/audit.log。 */
@@ -184,9 +185,16 @@ export interface ApplyResult {
   error?: string
   /** 写到一半出错时按备份写回的情况 */
   rolledBack?: string
+  /** 拒绝了（区不够 / 有启用的区没给 force）：摄像机没动 */
+  refused?: boolean
+  /** 只是预览（没给 yes）：摄像机没动，plan 是会做什么 */
+  preview?: boolean
+  plan?: string
 }
 
-/** 写缺省 R1–R3。backup 一定先取到（取不到就不写）；已有启用的区、没给 force → 拒绝；给了 force 没给 yes → 列出会被覆盖的、不写 */
+/** 写缺省 R1–R3。backup 一定先取到（取不到就不写）；已有启用的区、没给 force → 拒绝；
+ *  0.8.2：没给 yes 一律只预览（列出会写哪三个位置、哪些启用的区不动、全局参数怎么改），不写 —— 跟 --force --yes 一个口径
+ *  （0.8.1 时摄像机上没有启用的区就不加 --yes 直接写，现场 10-23 以为是预览） */
 export async function applyDefaultRegions(
   d: Restv1Driver,
   o: { force?: boolean; yes?: boolean; distance?: number; setGlobal?: boolean; camera: string; now?: Date; waitTempMs?: number },
@@ -200,18 +208,28 @@ export async function applyDefaultRegions(
   defaultRegionRows(distance, style0) // 距离不对先拒
   if (before.length < 3) {
     res.error = `摄像机只回了 ${before.length} 个区：要有 R1–R3 三个位置（写之前的样子也要在，出错才能按备份写回），不写`
+    res.refused = true
     return res
   }
   const on = enabledOf(before)
   const keep = on.filter(({ id }) => id > 2)
   if (on.length && !o.force) {
-    res.error = `摄像机上已经有 ${on.length} 个启用的测温区（${on.map(({ r, id }) => `${String(r['regionName'] || `R${id + 1}`)}/${String(r['regionType'] ?? '?')}`).join('、')}），不写；确认要覆盖 R1–R3 三个位置加 --force --yes（先不加 --yes 看会覆盖什么）`
+    res.error = `摄像机上已经有 ${on.length} 个启用的测温区（${on.map(({ r, id }) => `${String(r['regionName'] || `R${id + 1}`)}/${String(r['regionType'] ?? '?')}`).join('、')}），不写；要覆盖 R1–R3 三个位置加 --force（只预览），确认后再加 --yes；不要的区也可以先 --cam-region-disable <区号> 停用`
+    res.refused = true
     return res
   }
   const cover = [0, 1, 2].map(id => `R${id + 1} 位置（区号 ${id}）现在 ${rowText(before[id], id)}`)
   const keepText = keep.length ? `；这些启用的区不在 R1–R3 位置，不动：${keep.map(({ r, id }) => `${rowText(r, id)}（区号 ${id}）`).join('、')}` : ''
-  if (o.force && !o.yes) {
-    res.error = `--force 会覆盖：${cover.join('；')}${keepText}。确认要覆盖再加 --yes（写之前照样整份备份）`
+  if (!o.yes) {
+    const g = style0.local
+      ? `；辐射率 ${DEFAULT_EMISSIVITY}、距离 ${distance} m 写在各区上`
+      : !glob
+        ? '；测温区没有单独的辐射率 / 距离，全局测温参数读不到'
+        : o.setGlobal
+          ? `；全局测温参数会改：辐射率 ${String(glob['radrate'])} → ${DEFAULT_EMISSIVITY}、检测距离 ${String(glob['detectdist'])} → ${distance} m（整台摄像机，原值进备份）`
+          : `；全局测温参数不动（现在辐射率 ${String(glob['radrate'])}、检测距离 ${String(glob['detectdist'])} m；要改成 ${DEFAULT_EMISSIVITY} 加 --cam-set-global，检测距离跟着 --cam-distance，缺省 2 m）`
+    res.preview = true
+    res.plan = `会写：${cover.join('；')}${keepText}；写法先照读回的（${styleText(style0)}）${g}。没写；确认后加 --yes（写之前整份备份）`
     return res
   }
   if (o.force) res.notes.push(`--force 覆盖了：${cover.join('；')}${keepText}`)
@@ -288,13 +306,13 @@ export async function applyDefaultRegions(
     if (!glob) res.notes.push('测温区没有单独的辐射率 / 距离（按全局测温参数算），全局测温参数读不到：到摄像机管理页看「全局测温参数」')
     else if (Number(glob['radrate']) === DEFAULT_EMISSIVITY && Number(glob['detectdist']) === distance) res.notes.push(`测温区按全局测温参数算：辐射率 ${String(glob['radrate'])}、检测距离 ${String(glob['detectdist'])} m（已经是要的值）`)
     else if (!o.setGlobal)
-      res.notes.push(`测温区没有单独的辐射率 / 距离，按全局测温参数算：现在辐射率 ${String(glob['radrate'])}、检测距离 ${String(glob['detectdist'])} m；要改成 ${DEFAULT_EMISSIVITY} / ${distance} m 加 --set-global（改的是整台摄像机，全画面测温也跟着变；备份里留着原值，恢复时一起写回）`)
+      res.notes.push(`测温区没有单独的辐射率 / 距离，按全局测温参数算：现在辐射率 ${String(glob['radrate'])}、检测距离 ${String(glob['detectdist'])} m；要改成 ${DEFAULT_EMISSIVITY} 加 --cam-set-global（检测距离跟着 --cam-distance，缺省 2 m；改的是整台摄像机，全画面测温也跟着变；备份里留着原值，恢复时一起写回）`)
     else {
       const want = { ...globalWritable(glob), radrate: DEFAULT_EMISSIVITY, detectdist: distance }
       try {
         await d.setGlobalParam(want)
         const g2 = await d.globalParamRaw()
-        if (sameGlobal(g2, want)) res.notes.push(`全局测温参数：辐射率 ${String(glob['radrate'])} → ${DEFAULT_EMISSIVITY}、检测距离 ${String(glob['detectdist'])} → ${distance} m（--set-global）`)
+        if (sameGlobal(g2, want)) res.notes.push(`全局测温参数：辐射率 ${String(glob['radrate'])} → ${DEFAULT_EMISSIVITY}、检测距离 ${String(glob['detectdist'])} → ${distance} m（--cam-set-global）`)
         else res.mismatch.push(`全局测温参数读回是 ${JSON.stringify(globalWritable(g2))}（要的是 ${JSON.stringify(want)}）`)
       } catch (e) {
         res.mismatch.push(`全局测温参数写不进：${(e as Error).message}`)
@@ -397,6 +415,67 @@ export async function probeRegions(d: Restv1Driver, o: { camera: string; now?: D
   const rbOk = !!rb && rb['regionEnable'] === true && rb['regionName'] === 'PROBE' && isRect(rb['regionType']) && sameRect(rb['region'], DEFAULT_STRIPS[0])
   if (res.works && !rbOk && !res.error) res.error = `试写收了，但读回对不上：${JSON.stringify(rb)}`
   res.ok = !!res.works && rbOk && res.unchanged && !res.error
+  return res
+}
+
+export interface DisableResult {
+  ok: boolean
+  backup: Backup
+  /** 实际停用了的区号 */
+  written: number[]
+  /** 原来就没启用、没动的区号 */
+  already: number[]
+  mismatch: string[]
+  /** 只是预览（没给 yes）：摄像机没动 */
+  preview?: boolean
+  plan?: string
+  error?: string
+}
+
+/** 停用指定的区（0.8.2：现场不登摄像机页面也能停掉用户手画的 Area6，以前是改备份副本再 restore 绕过去的）。
+ *  ids 是区号 0–11（输出里「区号 5」那个数）；先整份备份；没给 yes 只预览；只改 regionEnable，名字 / 类型 / 坐标照旧；
+ *  写完读回核对：要停的都停了、别的区跟写之前一样 */
+export async function disableRegions(d: Restv1Driver, o: { ids: number[]; yes?: boolean; camera: string; now?: Date }): Promise<DisableResult> {
+  const before = await d.regionsRaw()
+  const style = styleOf(before)
+  const glob = await d.globalParamRaw().catch(() => undefined)
+  const backup: Backup = { at: (o.now ?? new Date()).toISOString(), camera: o.camera, regions: before, ...(glob ? { glob } : {}) }
+  const res: DisableResult = { ok: false, backup, written: [], already: [], mismatch: [] }
+  const ids = [...new Set(o.ids)]
+  const bad = ids.filter(id => !Number.isInteger(id) || id < 0 || id >= before.length)
+  if (!ids.length || bad.length) return { ...res, error: `区号不对：${bad.join('、') || '（没给）'}（摄像机有 ${before.length} 个区，区号 0–${before.length - 1}；--cam-regions-probe / --cam-regions-default --force 的输出里「区号 N」那个数）` }
+  const todo = ids.filter(id => before[id]!['regionEnable'] === true)
+  res.already = ids.filter(id => before[id]!['regionEnable'] !== true)
+  if (!o.yes) {
+    res.preview = true
+    res.plan = `会停用：${todo.map(id => `${rowText(before[id], id)}（区号 ${id}）`).join('、') || '（没有要停的）'}${res.already.length ? `；原来就没启用、不动：区号 ${res.already.join('、')}` : ''}。只改启用开关，名字 / 坐标照旧。没写；确认后加 --yes（写之前整份备份）`
+    return res
+  }
+  const failed: string[] = []
+  for (const id of todo) {
+    try {
+      await d.setRegion(id, writableOf({ ...before[id]!, regionEnable: false }, style.local))
+      res.written.push(id)
+    } catch (e) {
+      failed.push(`区号 ${id}（${(e as Error).message}）`)
+    }
+  }
+  if (failed.length) res.error = `停用失败：${failed.join('、')}（要撤销用备份恢复）`
+  let after: Row[]
+  try {
+    after = await d.regionsRaw()
+  } catch (e) {
+    res.error = `${res.error ? `${res.error}；` : ''}写完读回失败：${(e as Error).message}（没核对；要撤销用备份恢复）`
+    return res
+  }
+  for (const id of todo) if (after[id]?.['regionEnable'] === true) res.mismatch.push(`区号 ${id} 还是启用的`)
+  for (const [id, r] of before.entries()) {
+    if (todo.includes(id)) {
+      const g = after[id] ?? {}
+      if (String(g['regionName'] ?? '') !== String(r['regionName'] ?? '') || !sameCoords(g['region'], r['region'])) res.mismatch.push(`区号 ${id} 的名字 / 坐标变了：${rowText(g, id)}`)
+    } else if (!sameRow(after[id], r)) res.mismatch.push(`区号 ${id} 不该动却变了：${rowText(after[id], id)}`)
+  }
+  res.ok = !res.error && res.mismatch.length === 0
   return res
 }
 
@@ -521,10 +600,15 @@ async function cli(): Promise<number> {
     const q = new URLSearchParams({ force: force ? '1' : '0', yes: yes ? '1' : '0', setGlobal: setGlobal ? '1' : '0', distance: String(distance) })
     const r = await video<ApplyResult>(`/api/video/cam-regions/default?${q}`)
     const camera = r.backup.camera
-    // 只是列出会覆盖什么（--force 没给 --yes）：没动摄像机，不存备份
-    if (force && !yes) {
+    // 拒绝（有启用的区、没给 --force）：没动摄像机，不存备份
+    if (r.refused) {
       console.error(`!! ${r.error}`)
       return 1
+    }
+    // 预览（0.8.2：没给 --yes 一律只预览）：没动摄像机，不存备份
+    if (r.preview) {
+      console.log(`预览：${r.plan}`)
+      return 0
     }
     const name = saveBackup(dir, r.backup)
     for (const n of r.notes ?? []) console.log(`说明：${n}`)
@@ -537,7 +621,27 @@ async function cli(): Promise<number> {
     console.log(r.ok ? '读回核对：一致' : `!! 读回核对不一致：${r.mismatch.join('；')}`)
     console.log(`区域温度：${r.temps.map(x => `${x.name} 最高 ${x.max ?? '—'} 平均 ${x.avg ?? '—'}`).join('，')}${r.temps.some(x => x.max === null) ? '（还有没数的：过一会儿到本地页「本柜总览」看）' : ''}`)
     console.log('下一步：到子站网关页，把这台的「测温区」能力改回「已确认」')
-    audit(dir, '写缺省测温区', r.ok, `${camera}：R1–R3 三竖条、写法 ${r.style ? styleText(r.style) : '?'}、距离 ${distance} m${force ? '（--force --yes）' : ''}${setGlobal ? '（--set-global）' : ''}；备份 ${name}${r.ok ? '' : `；读回不一致：${r.mismatch.join('；')}`}`)
+    audit(dir, '写缺省测温区', r.ok, `${camera}：R1–R3 三竖条、写法 ${r.style ? styleText(r.style) : '?'}、距离 ${distance} m${force ? '（--force --yes）' : ''}${setGlobal ? '（--cam-set-global）' : ''}；备份 ${name}${r.ok ? '' : `；读回不一致：${r.mismatch.join('；')}`}`)
+    return r.ok ? 0 : 1
+  }
+  if (cmd === 'disable') {
+    const ids = String(argv[1] ?? '').split(',').filter(Boolean).map(Number)
+    const yes = argv.includes('--yes')
+    const r = await video<DisableResult>(`/api/video/cam-regions/disable?${new URLSearchParams({ ids: ids.join(','), yes: yes ? '1' : '0' })}`)
+    if (r.error && !r.written.length && !yes) {
+      console.error(`!! ${r.error}`)
+      return 1
+    }
+    if (r.preview) {
+      console.log(`预览：${r.plan}`)
+      return 0
+    }
+    const camera = r.backup.camera
+    const name = saveBackup(dir, r.backup)
+    if (r.already.length) console.log(`说明：区号 ${r.already.join('、')} 原来就没启用，没动`)
+    if (r.error) console.error(`!! ${r.error}`)
+    console.log(`已停用：${r.written.length ? `区号 ${r.written.join('、')}` : '（没有）'}；读回核对${r.mismatch.length ? `不一致：${r.mismatch.join('；')}` : '一致'}`)
+    audit(dir, '停用测温区', r.ok, `${camera}：停用区号 ${r.written.join('、') || '-'}${r.error ? `；${r.error}` : ''}${r.mismatch.length ? `；不一致：${r.mismatch.join('；')}` : ''}；备份 ${name}`)
     return r.ok ? 0 : 1
   }
   if (cmd === 'probe') {
@@ -571,7 +675,7 @@ async function cli(): Promise<number> {
     audit(dir, '恢复测温区', r.ok, `${b.camera}：按备份 ${b.at} 写回 ${r.written.length} 个区${r.notes.length ? `；${r.notes.join('；')}` : ''}${r.ok ? '' : `；不一致：${r.mismatch.join('；')}`}`)
     return r.ok ? 0 : 1
   }
-  console.error('用法：cam-regions.ts default [--force --yes] [--distance <米>] [--set-global] | probe | restore <备份文件>')
+  console.error('用法：cam-regions.ts default [--force] [--yes] [--distance <米>] [--set-global] | disable <区号[,区号…]> [--yes] | probe | restore <备份文件>')
   return 2
 }
 
