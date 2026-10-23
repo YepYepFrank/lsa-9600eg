@@ -140,7 +140,7 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
     this.store = new OutboxStore(resolve(this.cfg.dir, 'outbox.db'))
     const s = this.store.stats()
     if (s.depth) this.log.log(`outbox 里有上次没送完的 ${s.depth} 条，连上后补传`)
-    // 能力全都不启用的设备（阶段 A caps）：源头丢，不进 outbox —— 改成启用后从那一刻起送，以前的不补传
+    // 能力全都是 unsupported 的设备（阶段 A caps，0.8.1 起）：源头丢，不进 outbox —— 改成启用后从那一刻起送，以前的不补传
     this.bus.onTelemetry((dev, entries, own) => {
       if (!this.caps.deviceEnabled(dev)) return
       // 0.17：需要预热的设备，转换程序发来的读数行里并上 dev.warmup_s —— 与读数同一行到子站，子站那边不会出现「有读数没有预热状态」
@@ -160,6 +160,9 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
             if (!Object.keys(v).length) continue
           }
         }
+        // 0.8.1：按量挡 —— 对应能力不是 confirmed 的量不送（测温区待定时 ir.* 不送，cam.* / dev.* 照常）
+        v = this.caps.uplinkValues(dev, v)
+        if (!Object.keys(v).length) continue
         if (ws !== null && !(WARMUP_KEY in v) && Object.keys(v).some(k => k !== 'q' && !k.startsWith('dev.'))) v = { ...v, [WARMUP_KEY]: ws }
         // I3：电表的 el.* 在入队这一刻换成一次值（子站一律按一次量处理）；补传队列里的旧数入队时已按当时变比换过
         this.pending.push({ dev, kind: 't', ts: e.ts, body: JSON.stringify(this.meters.toPrimary(dev, v)) })

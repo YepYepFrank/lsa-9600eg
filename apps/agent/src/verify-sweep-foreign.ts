@@ -3,7 +3,8 @@
  *   pnpm verify:sweep-foreign
  *
  * ApplyService 的 clearForeign（开机清扫里那一步）+ 假的本地 TB（/api/v2/alarms 回活动告警、/api/alarm/<id>/clear 记下来）；
- * foreignUnitDevice 的判法；另核 sweepOnce 里调了它、记审计。 */
+ * foreignUnitDevice 的判法；另核 sweepOnce 里调了它、记审计。
+ * 0.8.1（现场 AH01-B）：不在 eg.yaml 里的柜级名字（PM-AH01、PM6-AH01），告警类型是 EG 规则出的也清；本机设备的子设备不清。 */
 import 'reflect-metadata'
 import { readFileSync } from 'node:fs'
 import { ApplyService, foreignUnitDevice } from './apply/apply.service.js'
@@ -44,9 +45,12 @@ function rig(devices: { name: string; kind: string }[], active: Alarm[], failOn:
     tb,
     log: { log: (m: string) => logs.push(m), warn: (m: string) => logs.push(m) },
   })
-  const run = () => (svc as unknown as { clearForeign: () => Promise<Map<string, number>> }).clearForeign.call(svc)
+  const run = () => (svc as unknown as { clearForeign: (t: ReadonlySet<string>) => Promise<Map<string, number>> }).clearForeign.call(svc, RULE_TYPES)
   return { cleared, logs, run }
 }
+
+/** EG 规则出的告警类型（节选，sweepOnce 里按 RULE_ALARM 算） */
+const RULE_TYPES = new Set(['设备失联', '过温', '局放异常'])
 
 const ACTIVE: Alarm[] = [
   { id: { id: 'a1' }, type: '设备失联', originatorName: 'SAM-AH01-A' },
@@ -56,6 +60,7 @@ const ACTIVE: Alarm[] = [
   { id: { id: 'e1' }, type: 'EG 离线', originatorName: 'EG-AH01-B' },
   { id: { id: 'c1' }, type: '摄像机离线', originatorName: 'CAM-AH01-B' },
   { id: { id: 'r1' }, type: '区域过温', originatorName: 'CAM-AH01-B-R1' },
+  { id: { id: 'r2' }, type: '过温', originatorName: 'CAM-AH01-B-R1' },
   { id: { id: 'g1' }, type: 'EG 离线', originatorName: 'EG-AH01' },
   { id: { id: 'p1' }, type: '电表失联', originatorName: 'PM-AH01' },
   { id: { id: 'v1' }, type: '网关告警', originatorName: 'tb-gateway-AH01-B' },
@@ -86,11 +91,26 @@ async function main() {
   const m = await r.run()
   check(r.cleared.sort().join(',') === 'a1,a2,c2', `只清 a1、a2（SAM-AH01-A）、c2（CAM-AH01-A）：清了 ${r.cleared.join('、')}`)
   check(m.get('SAM-AH01-A') === 2 && m.get('CAM-AH01-A') === 1 && m.size === 2, `按设备记条数：${[...m].map(([d, n]) => `${d} ${n}`).join('、')}`)
-  check(!r.cleared.includes('r1'), '本单元的测温区子设备 CAM-AH01-B-R1 的告警不清（不在 eg.yaml 里也不清）')
+  check(!r.cleared.includes('r1') && !r.cleared.includes('r2'), '本单元的测温区子设备 CAM-AH01-B-R1 的告警不清（不在 eg.yaml 里、类型是规则出的也不清）')
   check(!['b1', 'e1', 'c1', 'p1'].some(x => r.cleared.includes(x)), '本单元设备、EG 自己、柜级电表 PM-AH01 不清')
-  check(!['g1', 'v1', 'x1'].some(x => r.cleared.includes(x)), '柜级 EG-AH01、认不出的 tb-gateway-…、没有设备名的不清')
+  check(!['g1', 'v1', 'x1'].some(x => r.cleared.includes(x)), '柜级 EG-AH01、认不出的 tb-gateway-…、没有设备名的不清（类型不是 EG 规则出的）')
   const skipLine = r.logs.find(l => l.includes('名字看不出归别的单元'))
   check(!!skipLine && skipLine.includes('CAM-AH01-B-R1') && skipLine.includes('EG-AH01') && skipLine.includes('tb-gateway-AH01-B'), `不清的记一行：${skipLine}`)
+
+  console.log('2b. 0.8.1 现场 AH01-B：PM-AH01、PM6-AH01 早就不在 eg.yaml 里，「设备失联」一直挂着')
+  {
+    const field: Alarm[] = [
+      { id: { id: 'f1' }, type: '设备失联', originatorName: 'PM-AH01' },
+      { id: { id: 'f2' }, type: '设备失联', originatorName: 'PM6-AH01' },
+      { id: { id: 'f3' }, type: '设备失联', originatorName: 'SAM-AH01-A' },
+      { id: { id: 'f4' }, type: '网关告警', originatorName: 'PM-AH01' },
+      { id: { id: 'f5' }, type: '设备失联', originatorName: 'SAM-AH01-B' },
+    ]
+    const z = rig(DEVICES.filter(d => d.name !== 'PM-AH01'), field)
+    const mz = await z.run()
+    check(z.cleared.sort().join(',') === 'f1,f2,f3' && mz.get('PM-AH01') === 1 && mz.get('PM6-AH01') === 1, `清 PM-AH01、PM6-AH01、SAM-AH01-A 的「设备失联」：清了 ${z.cleared.join('、')}`)
+    check(!z.cleared.includes('f4') && !z.cleared.includes('f5'), '类型不是 EG 规则出的（网关告警）、本单元的 SAM-AH01-B 不清')
+  }
 
   console.log('3. 设备清单为空（待接入、eg.yaml 里没写设备）：整步跳过')
   const e1 = rig([], ACTIVE)
@@ -110,7 +130,7 @@ async function main() {
   console.log('6. 开机清扫里调了它，并记审计')
   const src = readFileSync(new URL('./apply/apply.service.ts', import.meta.url), 'utf8')
   const sweep = src.slice(src.indexOf('private sweepOnce'), src.indexOf('private async regenerate'))
-  check(/await this\.clearForeign\(\)/.test(sweep) && /action: '清除遗留告警', target: dev/.test(sweep) && /不再归本单元/.test(sweep), 'sweepOnce：clearForeign → 每台设备一条审计（action 清除遗留告警，写明不再归本单元）')
+  check(/await this\.clearForeign\(known\)/.test(sweep) && /action: '清除遗留告警', target: dev/.test(sweep) && /不再归本单元/.test(sweep), 'sweepOnce：clearForeign → 每台设备一条审计（action 清除遗留告警，写明不再归本单元）')
   done()
 }
 void main().catch(e => {

@@ -7,8 +7,10 @@
  *
  * EG 怎么用：
  *   - 规则：不看能力（子站对不启用能力的规则直接下 on:false）
- *   - 上送：**一台设备匹配上的能力全都不启用**（至少匹配上一条）时，这台不进 v1/gateway/connect、不上送（源头丢，不进 outbox），
- *     免得子站 TB 自动建出设备；改成 confirmed 后从那一刻起送，以前的不补传
+ *   - 上送（0.8.1 改，协调定）：**按量挡** —— 对应能力不是 confirmed 的量不送（源头丢，不进 outbox），不归任何能力的量（cam.* / dev.* / q）照常；
+ *     **一台设备匹配上的能力全都是 unsupported**（至少匹配上一条，且点表里没有不归能力的量）时整台不进 v1/gateway/connect、不上送，
+ *     免得子站 TB 自动建出设备。改成 confirmed 后从那一刻起送，以前的不补传。
+ *     （0.8.0 及以前：只要没有一项 confirmed 就整台不送、有 confirmed 的设备连待定的量一起送 —— 测温区待定时摄像机整台离线）
  *   - 本地库（v1.2，协调会话 2026-10-08）：匹配上的能力**全都是 unsupported** 的设备不进 EG 本地 TB（IoT Gateway 不订阅它）；
  *     有 pending 的照常进本地 TB —— pending 多是装了传感器、型号 / 口径没定，现场调试要先看到真实读数才能定 confirmed 还是 unsupported
  *   - 本地页：pending 照常显示数据、标「待定（数据仅供调试核对）」，unsupported 隐藏
@@ -111,11 +113,23 @@ export function keyCapState(device: string, key: string, c: CapsConfig | null): 
   return states.includes('confirmed') ? 'confirmed' : states.includes('pending') ? 'pending' : 'unsupported'
 }
 
-/** 设备是否启用：至少匹配上一条能力、且匹配上的全都不启用 → 不启用；一条都匹配不上的照常（如 EG 自己） */
-export function deviceEnabled(device: string, c: CapsConfig | null): boolean {
+/** 设备整台上不上送（连不连子站）。0.8.1 起（现场 AH01-B，协调定）：只有匹配上的能力**全都是 unsupported** 才整台不上送；
+ *  有 confirmed / pending 的照常连上子站，具体哪些量送由 keyUplink 按量挡。一条能力都匹配不上的照常（如 EG 自己）。
+ *  给了 keys（这台设备点表里的遥测 key，不含 dev.* 这类各设备都有的）时，有 key 不归任何能力也照常 —— 子站的 camVideo（双光实况与录像）
+ *  没有遥测、capKeys 是空的，摄像机只匹配上 thermalRegions（CAM:ir.*），测温区不支持时 cam.online 等照样要送。
+ *  0.8.0 及以前：匹配上的能力只要没有 confirmed 就整台不上送 —— 测温区改待定后摄像机整台不送，子站网关页显示离线 */
+export function deviceEnabled(device: string, c: CapsConfig | null, keys?: readonly string[]): boolean {
   if (!c) return true
   const mine = capsOfDevice(device, c)
-  return !mine.length || mine.some(cap => capEnabled(cap, c))
+  if (!mine.length || mine.some(cap => c.caps[cap] !== 'unsupported')) return true
+  return !!keys?.some(k => keyCapState(device, k, c) === null)
+}
+
+/** 这个量送不送子站（0.8.1，按量挡）：对应能力 confirmed、或不归任何能力（cam.* / dev.* / q）→ 送；pending / unsupported → 不送。
+ *  如测温区待定：子站 capKeys.thermalRegions 圈的 ir.* 不送，cam.* / dev.* 照常 */
+export function keyUplink(device: string, key: string, c: CapsConfig | null): boolean {
+  const s = keyCapState(device, key, c)
+  return s === null || s === 'confirmed'
 }
 
 /** 设备是否进 EG 本地 TB（v1.2）：至少匹配上一条能力、且匹配上的全都是 unsupported → 不进；有 pending / confirmed 或一条都匹配不上的照常 */
