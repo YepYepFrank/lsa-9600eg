@@ -7,7 +7,7 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
 import type { EgConfig } from '@lsa-eg/config'
 import { pointsOf } from '@lsa/points'
 import { EG_CONFIG } from '../config.js'
-import { capEnabled, deviceEnabled, deviceLocal, keyCapState, type CapState, type CapsConfig } from './caps.js'
+import { capEnabled, deviceEnabled, deviceLocal, keyCapState, keyUplink, type CapState, type CapsConfig } from './caps.js'
 import { DEFAULT_GAS, type GasParams } from '../warmup/warmup.js'
 
 /** 下挂设备离线判据（§13）：fails ≥ failN 且距 last_ok 超过 max(minMs, periods × 周期) */
@@ -26,6 +26,8 @@ export class CapsService {
   private gasP: GasParams = DEFAULT_GAS
   private readonly listeners: (() => void)[] = []
   private enabledCache = new Map<string, boolean>()
+  /** 设备|量 → 送不送（能力清单变了清空） */
+  private keyCache = new Map<string, boolean>()
   /** 设备名 → 点表里的遥测 key（不含 dev.*） */
   private readonly keys = new Map<string, string[]>()
 
@@ -43,6 +45,7 @@ export class CapsService {
     this.comm = devComm ?? DEFAULT_DEVCOMM
     this.gasP = gas ?? DEFAULT_GAS
     this.enabledCache = new Map()
+    this.keyCache = new Map()
     if (JSON.stringify([this.current, this.comm, this.gasP]) === before) return
     if (c) {
       const off = Object.entries(c.caps).filter(([, s]) => s !== 'confirmed').map(([k, s]) => `${k}=${s}`)
@@ -83,7 +86,25 @@ export class CapsService {
     return deviceLocal(device, this.current)
   }
 
-  /** 这台设备是否上送（整台匹配上的能力都不启用 = 不上送） */
+  /** 一行遥测里能送子站的量（0.8.1 按量挡：对应能力不是 confirmed 的去掉）；全都能送时原样返回同一个对象 */
+  uplinkValues(device: string, v: Record<string, unknown>): Record<string, unknown> {
+    if (!this.current) return v
+    let out: Record<string, unknown> | null = null
+    for (const k of Object.keys(v)) {
+      const id = `${device}|${k}`
+      let ok = this.keyCache.get(id)
+      if (ok === undefined) {
+        ok = keyUplink(device, k, this.current)
+        this.keyCache.set(id, ok)
+      }
+      if (ok) continue
+      out ??= { ...v }
+      delete out[k]
+    }
+    return out ?? v
+  }
+
+  /** 这台设备整台是否上送（0.8.1：匹配上的能力全都是 unsupported、点表里也没有不归能力的量 = 不上送） */
   deviceEnabled(device: string): boolean {
     let v = this.enabledCache.get(device)
     if (v === undefined) {

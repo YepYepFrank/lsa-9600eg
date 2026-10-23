@@ -1,4 +1,4 @@
-/* 阶段 A 自检（EG 侧，接口 v1.2：pending 进本地 TB 不上送，unsupported 全不进）：能力下发与上报、§13 下挂设备状态、摄像机三路、eg.time_sync、规则停用 / 改名清活动告警。
+/* 阶段 A 自检（EG 侧，接口 v1.2：pending 进本地 TB 不上送（0.8.1 起按量挡），unsupported 全不进）：能力下发与上报、§13 下挂设备状态、摄像机三路、eg.time_sync、规则停用 / 改名清活动告警。
  *
  *   pnpm --filter @lsa-eg/agent verify:a
  * 对着一台在跑的 EG（本机开发环境或虚拟样机）：
@@ -24,12 +24,12 @@ function unit(): void {
   console.log('0. 能力清单的纯函数')
   check(prefixOf('PM2-AH12') === 'PM2' && prefixOf('SAM-AH12-A') === 'SAM' && prefixOf('EG') === 'EG', '设备前缀取第一个「-」之前')
   check(keyMatch('*', 'x') && keyMatch('el.*', 'el.Ia') && keyMatch('el.h*', 'el.hu.A') && !keyMatch('el.h*', 'el.Ia') && keyMatch('us.cnt', 'us.cnt') && !keyMatch('us.cnt', 'us.cnt2'), 'key：整个、末尾 *、单独 *')
-  // 0.7.1：PM6 取消，「整台由能力决定」改拿电表演示（电表的能力全都不是 confirmed 时整台不启用）；烟雾是 SAM 的 smoke.*
+  // 0.7.1：PM6 取消，「整台由能力决定」改拿电表演示；烟雾是 SAM 的 smoke.*。0.8.1：全都 unsupported 才整台不启用，有 pending 的照常连、按量挡
   const c: CapsConfig = {
     caps: { pdCount: 'confirmed', smokePpm: 'pending', meterBasic: 'unsupported', meterHarmonics: 'pending', meterThd: 'unsupported' },
     capKeys: { pdCount: ['SAM:us.cnt'], smokePpm: ['SAM:smoke.*'], meterBasic: ['PM:el.*', 'PM2:el.*'], meterHarmonics: ['PM:el.h*'], meterThd: ['PM:el.THDu'] },
   }
-  check(deviceEnabled('SAM-AH12-A', c) && !deviceEnabled('PM-AH12', c) && deviceEnabled('CAM-AH12', c) && deviceEnabled('EG-AH12', c), '整台不启用：电表（meterBasic unsupported、谐波 pending，没有一项 confirmed）；SAM 有一项 confirmed 照常；匹配不上的照常')
+  check(deviceEnabled('SAM-AH12-A', c) && deviceEnabled('PM-AH12', c) && !deviceEnabled('PM-AH12', { ...c, caps: { ...c.caps, meterHarmonics: 'unsupported' } }) && deviceEnabled('CAM-AH12', c) && deviceEnabled('EG-AH12', c), '整台不启用（0.8.1）：电表的能力全都 unsupported 才算；谐波 pending 时照常连（量按量挡）；SAM 有一项 confirmed 照常；匹配不上的照常')
   check(deviceEnabled('PM-X', null), '没下发能力 = 全部启用')
   check(deviceLocal('PM-AH12', c) && !deviceLocal('PM-AH12', { ...c, caps: { ...c.caps, meterHarmonics: 'unsupported' } }) && deviceLocal('PM-X', null), 'v1.2 本地库：有 pending 的进本地 TB；全都 unsupported 的不进')
   const act = capsActual(c, ['SAM-AH12-A', 'PM-AH12'], (d, k) => d === 'SAM-AH12-A' && k === 'us.cnt')
@@ -94,17 +94,17 @@ async function main() {
     devComm: { failN: 5, minMs: 30_000, periods: 5 },
   })
   const ALL_ON = { thermalRegions: 'confirmed', camVideo: 'confirmed', envTH: 'confirmed', pdAmplitude: 'confirmed', pdCount: 'confirmed', arcIntensity: 'confirmed', arcEvents: 'confirmed', smokePpm: 'confirmed', meterBasic: 'confirmed', meterHarmonics: 'pending' }
-  /** 电表整台不启用：基础量 unsupported、谐波 pending（还进本地 TB） */
+  /** 电表基础量 unsupported、谐波 pending（还进本地 TB）；0.8.1 起整台照常连子站、el.* 按量挡掉 */
   const METER_OFF = { ...ALL_ON, meterBasic: 'unsupported', meterHarmonics: 'pending' }
 
-  console.log('\n1. 能力下发：电表基础量 unsupported、谐波 pending（电表整台不上送）')
+  console.log('\n1. 能力下发：电表基础量 unsupported、谐波 pending（0.8.1：电表照常连、el.* 不送）')
   const r1 = await put({ version: ver(1), thresholds: base, rules: rules(['EG-rh']), ...capsBody(METER_OFF) })
   check(r1.status === 'APPLIED', `PUT /api/config 带 caps / capKeys / devComm → ${r1.status}${r1.error ? `：${r1.error}` : ''}`)
   const ci = await agent<{ delivered: boolean; caps: Record<string, string>; actual: Record<string, string> | null; devComm: { failN: number } }>(dir, '/api/caps')
   check(ci.delivered && ci.caps['meterBasic'] === 'unsupported' && ci.devComm.failN === 5, `GET /api/caps 照下发的：${JSON.stringify(ci.caps)}`)
   const st = await agent<{ devices: { name: string; capsEnabled?: boolean; comm?: { comm: string } }[] }>(dir, '/api/status')
   const en = Object.fromEntries(st.devices.map(d => [d.name, d.capsEnabled]))
-  if (meterDev) check(en[meterDev] === false && en[sam] === true, `/api/status：${meterDev} 不启用、${sam} 启用`)
+  if (meterDev) check(en[meterDev] === true && en[sam] === true, `/api/status：${meterDev}（有一项 pending）、${sam} 都照常连（0.8.1 按量挡）`)
   const act = await until(async () => {
     const v = await tb.attr(cfg.eg.name, 'CLIENT_SCOPE', 'caps.actual')
     return typeof v === 'string' ? (JSON.parse(v) as Record<string, string>) : null

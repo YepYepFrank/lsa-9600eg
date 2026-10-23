@@ -10,8 +10,11 @@ import { join } from 'node:path'
 import type { EgConfig } from '@lsa-eg/config'
 import type { BusService, DeviceLive } from './bus/bus.service.js'
 import { CapsService } from './caps/caps.service.js'
-import { deviceEnabled, keyCapState, type CapState, type CapsConfig } from './caps/caps.js'
+import { deviceEnabled, keyCapState, keyUplink, type CapState, type CapsConfig } from './caps/caps.js'
+import type { AuditService } from './audit/audit.service.js'
 import type { ConvExpectService } from './conv/conv-expect.service.js'
+import type { MetersService } from './meters/meters.service.js'
+import { UplinkService } from './uplink/uplink.service.js'
 import { QualityService } from './quality/quality.service.js'
 import { WarmupService } from './warmup/warmup.service.js'
 import { check, done } from './verify/lib.js'
@@ -115,17 +118,23 @@ async function main() {
   check(keyCapState(DEV, 'us.amp', { caps: { a: 'unsupported', b: 'confirmed' }, capKeys: { a: ['SAM:us.*'], b: ['SAM:us.amp'] } }) === 'confirmed', '几条能力都匹配上：有 confirmed 就算 confirmed')
   check(keyCapState(DEV, 'us.cnt', { caps: {}, capKeys: { a: ['SAM:us.*'] } }) === 'unsupported', 'capKeys 有、caps 没写的能力 → unsupported（同 capEnabled）')
 
-  console.log('7. 0.8.1 整台启不启用（现场 AH01-B：测温区改待定后摄像机整台不上送）')
+  console.log('7. 0.8.1 上送按量挡（现场 AH01-B：测温区改待定后摄像机整台不上送；协调定：按量挡，全都 unsupported 才整台不送）')
   {
-    // 子站的 capKeys：camVideo 没有遥测（空数组），摄像机只对得上 thermalRegions
+    // 子站现在的 capKeys：camVideo 没有遥测（空数组），摄像机只对得上 thermalRegions（CAM:ir.*）
     const cc: CapsConfig = {
-      caps: { thermalRegions: 'pending', camVideo: 'confirmed', meterBasic: 'unsupported', meterHarmonics: 'pending', pdAmplitude: 'pending', envTH: 'unsupported', samIr: 'pending', tev: 'unsupported', uhf: 'unsupported', arc: 'unsupported', smokePpm: 'unsupported' },
+      caps: { thermalRegions: 'pending', camVideo: 'confirmed', meterBasic: 'unsupported', meterHarmonics: 'unsupported', pdAmplitude: 'pending', envTH: 'confirmed', samIr: 'pending', tev: 'unsupported', uhf: 'unsupported', arc: 'unsupported', smokePpm: 'unsupported' },
       // SAM 的点表 key 全归能力（同子站 CAP_KEYMAP：us / env / ir.t_* / tev / uhf / uv / smoke）
       capKeys: { thermalRegions: ['CAM:ir.*'], camVideo: [], meterBasic: ['PM:el.*'], meterHarmonics: ['PM:el.h*'], pdAmplitude: ['SAM:us.*'], envTH: ['SAM:env.*'], samIr: ['SAM:ir.t_max', 'SAM:ir.t_avg'], tev: ['SAM:tev.*'], uhf: ['SAM:uhf.*'], arc: ['SAM:uv.*'], smokePpm: ['SAM:smoke.*'] },
     }
-    check(!deviceEnabled('CAM-AH01-B', cc), '不给点表：摄像机只对得上 thermalRegions（待定）→ 整台不启用（0.8.0 的样子）')
-    check(deviceEnabled('CAM-AH01-B', cc, ['ir.max', 'ir.R1.max', 'cam.online', 'cam.bitrate']), '给了点表：cam.online / cam.bitrate 不归任何能力 → 整台照常启用')
-    check(!deviceEnabled('PM-AH01', cc, ['el.Ia', 'el.hu.A']) && !deviceEnabled('SAM-AH01-B', cc, ['us.amp', 'env.t']), '点表里的量都归不启用的能力（电表、SAM）→ 照旧整台不启用')
+    const off = { ...cc, caps: { ...cc.caps, thermalRegions: 'unsupported' as const } }
+    check(deviceEnabled('CAM-AH01-B', cc), '测温区待定（不是 unsupported）→ 摄像机整台照常连子站')
+    check(!deviceEnabled('CAM-AH01-B', off), '不给点表、测温区 unsupported → 摄像机整台不送（只对得上这一项）')
+    check(deviceEnabled('CAM-AH01-B', off, ['ir.max', 'cam.online']), '给了点表：cam.online 不归任何能力 → 测温区 unsupported 也照常连')
+    check(!deviceEnabled('PM-AH01', cc, ['el.Ia', 'el.hu.A']), '电表的能力全都 unsupported → 整台不送')
+    check(deviceEnabled('PM-AH01', { ...cc, caps: { ...cc.caps, meterHarmonics: 'pending' } }, ['el.Ia', 'el.hu.A']), '电表有一项待定 → 整台照常连（量按量挡）')
+    check(!keyUplink('CAM-AH01-B', 'ir.R1.max', cc) && keyUplink('CAM-AH01-B', 'cam.online', cc) && keyUplink('CAM-AH01-B', 'dev.comm', cc) && keyUplink('CAM-AH01-B', 'q', cc), 'keyUplink：测温区待定 → ir.* 不送；cam.* / dev.* / q 照常')
+    const narrow: CapsConfig = { ...cc, capKeys: { ...cc.capKeys, thermalRegions: ['CAM:ir.R*', 'CAM:ir.rise', 'CAM:ir.rmax'] } }
+    check(keyUplink('CAM-AH01-B', 'ir.max', narrow) && !keyUplink('CAM-AH01-B', 'ir.R2.avg', narrow) && !keyUplink('CAM-AH01-B', 'ir.rmax', narrow), '子站把 thermalRegions 收窄到区域量时：全画面 ir.max 照常、ir.R* / ir.rmax 不送')
     const cfg = {
       cabinet: { code: 'AH01', group: 'mv' },
       eg: { name: 'EG-AH01-B' },
@@ -133,11 +142,49 @@ async function main() {
     } as unknown as EgConfig
     const cs = new CapsService(cfg)
     ;(cs as unknown as { log: { log: () => void } }).log = { log: () => undefined }
+    cs.set(off, null)
+    check(cs.deviceEnabled('CAM-AH01-B'), 'CapsService 按 eg.yaml 取摄像机点表：测温区 unsupported 也照常连（cam.* 不归能力）')
     cs.set(cc, null)
-    check(cs.deviceEnabled('CAM-AH01-B'), 'CapsService 按 eg.yaml 取摄像机点表：测温区待定、双光确认 → 摄像机照常上送')
-    check(!cs.deviceEnabled('SAM-AH01-B'), 'SAM 的量全归能力（局放待定、温湿度不支持）→ SAM 照旧不上送（不因 dev.link 变成启用）')
+    const row = { 'ir.max': 41.2, 'ir.R1.max': 40.1, 'cam.online': 4, 'cam.bitrate': 2048, 'dev.comm': 'ONLINE', q: '{}' }
+    const kept = Object.keys(cs.uplinkValues('CAM-AH01-B', row))
+    check(kept.join(',') === 'cam.online,cam.bitrate,dev.comm,q', `uplinkValues：一行里去掉 ir.*，其余照送（${kept.join('、')}）`)
+    check(Object.keys(cs.uplinkValues('SAM-AH01-B', { 'us.amp': 25.8, 'env.t': 26.1, 'ir.t_max': 30 })).join(',') === 'env.t', 'SAM：局放待定、SAM 红外待定的不送，温湿度（已确认）照送')
     cs.set({ ...cc, caps: { ...cc.caps, thermalRegions: 'confirmed' } }, null)
-    check(cs.deviceEnabled('CAM-AH01-B'), '测温区改回已确认：照常')
+    check(cs.uplinkValues('CAM-AH01-B', row) === row, '测温区改回已确认：整行原样送（缓存跟着清）')
+  }
+
+  console.log('8. 上送入队（真的 UplinkService，子站连不上也照样入队）：测温区待定 + 双光已确认 → cam.* 照常送、ir.* 不送')
+  Date.now = realNow
+  {
+    const dir = mkdtempSync(join(tmpdir(), 'lsa-capsup-'))
+    const cfg = {
+      dir,
+      cabinet: { code: 'AH01', group: 'mv' },
+      unit: { id: '', code: 'AH01-B', at: '', index: 2 },
+      eg: { name: 'EG-AH01-B', token: 'x', attrs: {} },
+      station: { mqtt: 'mqtt://127.0.0.1:1', token: 'x' },
+      local: { outbox: { maxAgeDays: 7, maxMb: 64, backfillRate: 2000 } },
+      devices: [{ name: 'EG-AH01-B', kind: 'eg' }, { name: 'CAM-AH01-B', kind: 'camera', attrs: {} }],
+    } as unknown as EgConfig
+    const cs = new CapsService(cfg)
+    ;(cs as unknown as { log: { log: () => void } }).log = { log: () => undefined }
+    cs.set({ caps: { thermalRegions: 'pending', camVideo: 'confirmed' }, capKeys: { thermalRegions: ['CAM:ir.*'], camVideo: [] } }, null)
+    let feed: ((d: string, e: { ts: number; values: Record<string, unknown> }[], own: boolean) => void) | null = null
+    const bus = { onTelemetry: (fn: typeof feed) => (feed = fn), onAttributes: () => undefined } as unknown as BusService
+    const meters = { toPrimary: (_d: string, v: Record<string, unknown>) => v } as unknown as MetersService
+    const up = new UplinkService(cfg, bus, { write: () => undefined } as unknown as AuditService, cs, meters, { warmupOf: () => null } as unknown as QualityService)
+    ;(up as unknown as { log: Record<string, () => void> }).log = { log: () => undefined, warn: () => undefined, error: () => undefined }
+    up.onModuleInit()
+    const ts = Date.now()
+    feed!('CAM-AH01-B', [{ ts, values: { 'ir.max': 41.2, 'ir.R1.max': 40.1, 'cam.online': 4, 'cam.bitrate': 2048 } }], false)
+    feed!('CAM-AH01-B', [{ ts: ts + 1, values: { 'ir.R2.max': 39 } }], false)
+    feed!('CAM-AH01-B', [{ ts: ts + 2, values: { 'dev.comm': 'ONLINE', 'dev.link': 1 } }], true)
+    const q = (up as unknown as { pending: { dev: string; kind: string; body: string }[] }).pending.filter(p => p.dev === 'CAM-AH01-B' && p.kind === 't').map(p => JSON.parse(p.body) as Record<string, unknown>)
+    check(q.length === 2, `入队 2 行（只有 ir.* 的那行整行不送）：${q.map(x => Object.keys(x).join(',')).join(' | ')}`)
+    check(!!q[0] && q[0]['cam.online'] === 4 && q[0]['cam.bitrate'] === 2048 && !('ir.max' in q[0]) && !('ir.R1.max' in q[0]), 'cam.online / cam.bitrate 照送，ir.max / ir.R1.max 不送')
+    check(!!q[1] && q[1]['dev.comm'] === 'ONLINE' && q[1]['dev.link'] === 1, 'dev.comm / dev.link 照送（子站网关页不再显示离线）')
+    up.onModuleDestroy()
+    rmSync(dir, { recursive: true, force: true })
   }
 
   Date.now = realNow
