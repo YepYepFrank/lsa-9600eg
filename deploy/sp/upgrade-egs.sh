@@ -38,6 +38,7 @@ KEY="$KEYDIR/eg-upgrade_ed25519"
 KH="$KEYDIR/eg-upgrade.known_hosts"
 LOGROOT=/var/log/lsa9600sp/eg-upgrade
 POLL_S=10
+PROGRESS_S="${LSA_EGUP_PROGRESS_S:-30}"   # 每台在拷 / 在装时，屏幕上每这么多秒报一行进度（明细在 <批次>/<单元>.log）
 JOB_TIMEOUT_S=3600
 SP_CHECK_S=180
 # 发布公钥（一键安装文件 --role sp 装的）与签名身份 / 命名空间（和 EG 的 lsa-eg-upgrade、打包的 sign-release.mjs 一致）
@@ -513,7 +514,7 @@ result() {  # result <单元号> <结果> <原因>：写一行，失败就让后
 # 每台的阶段（网页进度用，§9.4）：copy / install / selfcheck / spcheck / done（成功才写 done；失败停在出事的那一段，结果看 .result）
 phase_set() { [ "$(cat "$BD/$1.phase" 2>/dev/null)" = "$2" ] || echo "$2" > "$BD/$1.phase"; }
 up_one() {
-  local c="$1" h="${HOST[$1]}" log="$BD/$1.log" out ph job st t_end ok row
+  local c="$1" h="${HOST[$1]}" log="$BD/$1.log" out ph job st t_end ok row t_say
   T0=$(date +%s)
   exec >> "$log" 2>&1
   echo "== $(ts) $c（$h）→ $TO"
@@ -521,6 +522,7 @@ up_one() {
   else
     phase_set "$c" copy
     echo "拷安装文件（$SIZE 字节）…"
+    echo "$(ts) [$c] 拷安装文件到 EG（$((SIZE / 1048576)) MB）…" >&3
     out="$(sshx "$h" "put $SHA $SIZE" < "$RUN" 2>&1)"
     echo "$out"
     grep -q "^OK put $SHA" <<< "$out" || { result "$c" 失败 "拷安装文件没成功：$(tail -1 <<< "$out")"; return; }
@@ -538,8 +540,14 @@ up_one() {
     echo "$job" > "$BD/$c.job"
   fi
   # 查进度：SSH 断了就重连再查（EG 上的任务照跑）
-  t_end=$(( $(date +%s) + JOB_TIMEOUT_S )); ph=''
+  t_end=$(( $(date +%s) + JOB_TIMEOUT_S )); ph=''; t_say=$(( $(date +%s) + PROGRESS_S ))
+  echo "$(ts) [$c] EG 开始安装（几分钟，期间每 ${PROGRESS_S} s 报一次）" >&3
   while [ "$(date +%s)" -lt "$t_end" ]; do
+    # 屏幕上的进度（0.8.1，现场：安装那几分钟没输出，以为卡住了）
+    if [ "$(date +%s)" -ge "$t_say" ]; then
+      echo "$(ts) [$c] EG 正在安装（${ph:-查进度中}，已 $(( $(date +%s) - T0 )) s）" >&3
+      t_say=$(( $(date +%s) + PROGRESS_S ))
+    fi
     if st="$(sshx "$h" status 2>&1)"; then
       [ "$(kv job "$st")" = "$job" ] || { echo "EG 上最近的任务不是 $job：$(kv job "$st")"; }
       ph="$(kv phase "$st")"
