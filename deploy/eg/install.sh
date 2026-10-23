@@ -27,9 +27,11 @@
 #   --cam-ntp-off 关掉并记住，--cam-ntp-on 重新打开；--status 显示它。摄像机那边把 NTP 服务器设成 EG 的 LAN1 地址
 #   0.19.0：本地页改了摄像机地址（config/local.yaml）自动同步放行 —— 宿主机 systemd 单元 lsa-eg-camntp.path 盯 local.yaml，
 #   变了跑 install.sh --cam-ntp-sync（只在放行跟当前地址对不上时重写防火墙，记 /var/log/lsa-eg-camntp.log）
-# 摄像机缺省测温区（0.8.0，restv1 真机）：--cam-regions-default [--force] [--cam-distance <米>] 给没画测温区的摄像机写 R1–R3
-#   （左 / 中 / 右三竖条、辐射率 0.95、距离缺省 2 m）；摄像机上已有启用的测温区就拒绝，--force 才覆盖 R1–R3。
-#   写之前整份备份到 /var/lib/lsa-eg/cam-regions-backup-<时间>.json；--cam-regions-restore <备份文件> 原样写回。在 lsa-eg-video 容器里跑
+# 摄像机缺省测温区（0.8.0，restv1 真机）：--cam-regions-default [--force --yes] [--cam-distance <米>] [--cam-set-global] 给没画测温区的摄像机写 R1–R3
+#   （左 / 中 / 右三竖条、辐射率 0.95、距离缺省 2 m）；摄像机上已有启用的测温区就拒绝；--force 先列出会覆盖什么，再加 --yes 才覆盖 R1–R3。
+#   0.8.1：写法照摄像机读回的来（真机 rectangle、区域没有本地参数）；区域没有本地参数时辐射率 / 距离是全局的，--cam-set-global 才改；
+#   --cam-regions-probe 只在一个空区上试写、读回、马上写回（先在现场验写法）。
+#   写之前整份备份到 /var/lib/lsa-eg/cam-regions-backup-<时间>.json；--cam-regions-restore <备份文件> 写回跟备份不一样的区。在 lsa-eg-video 容器里跑
 # 软件看门狗（I13，X26A 没有硬件看门狗）：装时启用 softdog + systemd RuntimeWatchdogSec（系统卡死 60 s 没喂狗就重启）；
 #   --watchdog-off 关掉并记住，--watchdog-on 重新打开；--status 显示它。本机有硬件看门狗时直接用它、不加载 softdog。
 # 转换程序（EG 0.6.2 起只走 install-conv.sh 这一套）：发布件带它的镜像（CONV_IMAGE.txt、images-conv.tar.gz），install.sh 只负责导入，缺省不启用；
@@ -54,6 +56,8 @@ UPGKEY=''
 UPGFROM=''
 MODE='install'
 FORCE=0
+YES=0
+CAM_SET_GLOBAL=0
 RESTORE_TB=0
 TB_BACKUP=1
 while [ $# -gt 0 ]; do
@@ -74,6 +78,9 @@ while [ $# -gt 0 ]; do
     --cam-ntp-on) MODE='cam-ntp-on' ;;
     --cam-ntp-sync) MODE='cam-ntp-sync' ;;
     --cam-regions-default) MODE='cam-regions-default' ;;
+    --cam-regions-probe) MODE='cam-regions-probe' ;;
+    --cam-set-global) CAM_SET_GLOBAL=1 ;;
+    --yes) YES=1 ;;
     --cam-regions-restore) CAMREG_FILE="${2:?--cam-regions-restore 后面给备份文件（/var/lib/lsa-eg/cam-regions-backup-<时间>.json）}"; MODE='cam-regions-restore'; shift ;;
     --cam-distance) CAM_DIST="${2:?--cam-distance 后面给测温距离（米，0–1000）}"; shift ;;
     --watchdog-off) MODE='wd-off' ;;
@@ -836,14 +843,19 @@ if [ "$MODE" = 'fw-on' ]; then
 fi
 # 摄像机缺省测温区（0.8.0）：在 lsa-eg-video 容器里跑 cam-regions.ts（同一套 restv1 驱动、口令只从 local.yaml 取）
 CAMREG_DIR=/var/lib/lsa-eg
-if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-restore' ]; then
+if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-probe' ] || [ "$MODE" = 'cam-regions-restore' ]; then
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx lsa-eg-video || { echo '!! lsa-eg-video 没在跑：先 sudo bash install.sh 把全部起来' >&2; exit 1; }
   install -d -m 700 "$CAMREG_DIR"
   rc=0
-  if [ "$MODE" = 'cam-regions-default' ]; then
+  if [ "$MODE" = 'cam-regions-default' ] || [ "$MODE" = 'cam-regions-probe' ]; then
     args=(default)
-    [ "${FORCE:-0}" = 1 ] && args+=(--force)
-    [ -z "${CAM_DIST:-}" ] || args+=(--distance "$CAM_DIST")
+    [ "$MODE" = 'cam-regions-probe' ] && args=(probe)
+    if [ "$MODE" = 'cam-regions-default' ]; then
+      [ "${FORCE:-0}" = 1 ] && args+=(--force)
+      [ "${YES:-0}" = 1 ] && args+=(--yes)
+      [ "${CAM_SET_GLOBAL:-0}" = 1 ] && args+=(--set-global)
+      [ -z "${CAM_DIST:-}" ] || args+=(--distance "$CAM_DIST")
+    fi
     docker exec lsa-eg-video node --import @swc-node/register/esm-register src/cam-regions.ts "${args[@]}" || rc=$?
     for f in config/cam-regions-backup-*.json; do
       [ -e "$f" ] || continue
