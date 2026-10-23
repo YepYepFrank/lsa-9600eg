@@ -132,11 +132,11 @@ S19 = {'caps': {'pdAmplitude': 'confirmed', 'pdCount': 'confirmed', 'tev': 'conf
 pd_only = {'SAM-AH01-B': {'us.amp', 'us.cnt', 'tev.amp', 'tev.level'}}
 feed_us = {'SAM-AH01-B': ['us.amp', 'us.cnt']}
 
-print('5. 点表全局缺省（子站 0.18.3：地电波、SAM 红外改回「待定」）')
+print('5. 点表全局缺省（地电波 / 特高频不支持；0.8.1：SAM 红外也不支持 —— 本项目 SAM 没有自带红外）')
 infos0 = []
 m00 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, infos=infos0)
 check(not m00, '不给 --applied、地电波一直没来：按全局缺省「待定」不报缺', repr(m00))
-check(lc.keydefs('sam')['tev.amp'].get('capState') == 'unsupported' and lc.keydefs('sam')['uhf.amp'].get('capState') == 'unsupported' and lc.keydefs('sam')['ir.t_max'].get('capState') == 'pending', 'spec.json（后端 3cd2228 导出）：tev.* / uhf.* unsupported，ir.t_* pending')
+check(lc.keydefs('sam')['tev.amp'].get('capState') == 'unsupported' and lc.keydefs('sam')['uhf.amp'].get('capState') == 'unsupported' and lc.keydefs('sam')['ir.t_max'].get('capState') == 'unsupported', 'spec.json：tev.* / uhf.* unsupported，ir.t_* unsupported（0.8.1）')
 
 print('5b. 转换程序 q 标 absent（0.19.0 的转换程序起会发；本单元地电波 confirmed，S19 那样）')
 m7 = run({'SAM-AH01-B': 'sam'}, pd_only, feed_us, applied=S19)
