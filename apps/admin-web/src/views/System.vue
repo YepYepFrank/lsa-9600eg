@@ -89,9 +89,10 @@ onMounted(async () => {
             <dt>子站配置生成于</dt><dd>{{ dt(Date.parse(cfg.eg.generatedAt)) }}</dd>
             <dt>告警规则与阈值</dt>
             <dd>
-              版本 {{ cfg.applied?.version ?? '—' }}
+              <!-- 0.8.2：没应用过子站下发的配置就是「—」（以前印 eg.yaml 里的 cfg，0.19.1 以前接入的 EG 是模板占位 c-0321） -->
+              版本 {{ cfg.applied?.appliedAt ? cfg.applied.version : '—' }}
               <template v-if="cfg.applied?.appliedAt">（{{ dt(cfg.applied.appliedAt) }} 由子站 {{ cfg.applied.by }} 下发）</template>
-              <template v-else>（部署时带来的，未经子站下发）</template>
+              <template v-else>（还没应用过子站下发的配置，用的是部署时带来的规则）</template>
               <template v-if="cfg.applied?.rulesOff.length">；停用 {{ cfg.applied.rulesOff.join('、') }}</template>
             </dd>
             <dt>eg-agent</dt><dd>{{ store.status?.version }}</dd>
