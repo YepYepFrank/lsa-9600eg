@@ -385,6 +385,8 @@ sudo bash /opt/lsa-eg/test/test.sh down
 
 **用一键加柜换机（0.19.0 起，推荐）**：新机 `.run --role eg --lan1 <摄像机网口> --join-key '<子站给的一行>'` 装到「待接入」，子站上 `join-egs.sh --unit <单元号> --eg <新机地址>` 就行（上表 2–4 步它都做）。子站上还留着**旧机**的本地 TB 系统管理员口令（`tb/provision/out/eg/<单元号>/tb-sysadmin.json`），新机的本地 TB 还是出厂口令 —— 以前 provision 按旧口令登录 401、接不上；**0.19.0 起 join-egs.sh 遇到 401 且新机还在「待接入」时，自动改用出厂口令再试一次**，成功就重新生成口令文件（旧的作废），输出里写「换过机，已改用出厂口令」。已接入的 EG 不走这条（照常报错）。老子站（没有这个改动）上换机：先把那个 `tb-sysadmin.json` 挪走再跑 join-egs.sh。
 
+**新机沿用旧机的地址**（换机常见）：子站记着旧机的 SSH 主机密钥，预检会报「EG 的 SSH 主机密钥跟子站记的不一样：如果是换了新机（沿用旧地址），加 --replaced 重跑」。确认旧机已经换下后：`join-egs.sh --unit <单元号> --eg <地址> --replaced` —— 接入前清掉这个地址的两份旧密钥（`/opt/lsa9600sp/keys/eg-upgrade.known_hosts`、`tb/provision/out/known_hosts`），新旧指纹记到 `/var/log/lsa9600sp/eg-join-hostkey.log`；主机密钥没变时 `--replaced` 什么也不清；`--plan` 不清。没换机却报主机密钥变了，先查清楚（可能有人冒充），别加 `--replaced`。0.19.1 及以前没有这个开关：手工 `ssh-keygen -R <地址> -f <那两个文件>`（见 0.19.1 发布说明已知问题）。
+
 旧机上没送出去的 outbox、本地录像与未上传的证据**不迁移**（坏机一般也取不出来）；能开机的旧机可先接回上行网等积压送完（诊断页积压 0）再拆。新机的 `hostBootId` 会变，子站按「重启」记一次。
 
 **逐台升级**（现在的做法）：每台 EG 跑新的一键安装文件 `--role eg`（或把新发布件拷进 `/opt/lsa-eg` 再 `install.sh`，§6）。每台约 30 s、agent 中断 1–2 s，不丢数据。建议顺序：先 1 台跑一天 → 再按母线段分批；每台装完看 `install.sh --status` 与子站网关页（在线、积压 0、版本对）。出问题 `install.sh --rollback`（约 11 s）。

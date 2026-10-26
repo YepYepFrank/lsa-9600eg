@@ -4,6 +4,12 @@ for a in "$@"; do case "$a" in *@*) uh="$a" ;; esac; done
 cmd="${!#}"; user="${uh%@*}"; host="${uh#*@}"; D="/fake/eg/$host"
 [ -d "$D" ] || { echo "ssh: connect to host $host port 22: No route to host" >&2; exit 255; }
 echo "$(date +%s) $user@$host $cmd" >> /fake/calls
+# 换机沿用旧地址（0.8.2 --replaced）：EG 目录里有 hostkey_new，且 -o UserKnownHostsFile 那份还记着这个地址的旧密钥 → 跟真 ssh 一样报主机密钥变了
+kh=''; for a in "$@"; do case "$a" in UserKnownHostsFile=*) kh="${a#UserKnownHostsFile=}" ;; esac; done
+if [ -f "$D/hostkey_new" ] && [ -n "$kh" ] && grep -q "^$host " "$kh" 2>/dev/null; then
+  printf '%s\n' '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@' '@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @' '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@' "Host key for $host has changed and you have requested strict checking." 'Host key verification failed.' >&2
+  exit 255
+fi
 if [ "$user" = lsa-sp ]; then [ -f "$D/tunnel" ] && { echo 'This account is currently not available.'; exit 1; }; echo 'lsa-sp@host: Permission denied (publickey).' >&2; exit 255; fi
 [ -f "$D/auth" ] || { echo "lsa-upg@$host: Permission denied (publickey)." >&2; exit 255; }
 read -r verb a1 a2 <<< "$cmd"
