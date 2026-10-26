@@ -4,7 +4,7 @@
 #   sudo bash join-egs.sh --keygen [--sp-addr <子站地址>]
 #       生成隧道 key（升级 key 有就复用，和 upgrade-egs.sh 同一把），打印 join-key —— EG 上装软件时带上：
 #       sudo bash LSA-9600SP-<版本>.run --role eg --lan1 <网口> --join-key '<这一行>'
-#   sudo bash join-egs.sh --unit AH05-A --eg <EG 的 LAN2 地址> [--conv auto | --conv-serial … --sensors … --addr … --dev … --baud …] [--plan] [--force]
+#   sudo bash join-egs.sh --unit AH05-A --eg <EG 的 LAN2 地址> [--conv auto | --conv-serial … --sensors … --addr … --dev … --baud …] [--plan] [--force] [--replaced]
 #       接一台：预检 → 建实体（provision-eg，走隧道）→ 打配置（pack-eg）→ 推送、生效 → 等它在线、配置生效 → 转换程序 → 撤隧道授权。
 #       单元号 = EG 名去掉 EG-（舱室单元 AH05-A；照旧一柜一台的柜单元号就是柜号 AH05）
 #   sudo bash join-egs.sh --cabinet AH05 --eg AH05-A=<地址>,AH05-B=<地址> [--plan]
@@ -20,6 +20,9 @@
 # 一台失败就停在那一台的那一步，说清用什么命令重来；--cabinet / --split 接着做后面的单元，最后汇总。日志：/var/log/lsa9600sp/eg-join/<单元号>-<时间>/。
 # 预检看 EG hello 的 unit=（0.18.0，舱室 EG 方案 §3.2）：待接入（没有 unit）放行；就是这个单元（重装）放行；是别的单元拒绝、--force 才放；
 # 只报 cabinet= 的老 EG（0.6.x）当照旧一柜一台，单元号 = 柜号。舱室单元（AH05-A）要 EG 0.7.0 起（老 EG 读不了 eg.yaml schema 2）。
+# 换 EG 沿用旧地址（0.8.2）：子站钉着旧机的 SSH 主机密钥，预检认出「主机密钥变了」会提示加 --replaced；
+#   加了 --replaced（不是 --plan）就在接入前清掉这个地址的两份旧密钥（升级入口 keys/eg-upgrade.known_hosts、provision 的 tb/provision/out/known_hosts），
+#   新旧指纹记到 /var/log/lsa9600sp/eg-join-hostkey.log；只在确认旧机已经换下时用（主机密钥变了也可能是有人冒充）。没加不自动清。
 set -uo pipefail
 export LC_ALL=C.UTF-8   # 截短提示用 ${x:0:N}：按字符截，不把中文截成半个字
 SP=/opt/lsa9600sp
@@ -38,7 +41,7 @@ ONLINE_TIMEOUT_S=180
 SPLIT_LIST_TIMEOUT_S=300
 TERMINAL=' done rolled-back rollback-failed check-failed failed '
 
-MODE='' TARGET='' EGARG='' PLAN=0 FORCE=0 LIST='' SPADDR=''
+MODE='' TARGET='' EGARG='' PLAN=0 FORCE=0 REPLACED=0 LIST='' SPADDR=''
 CONV='' CSER='' CSEN='' CADDR='' CDEV='' CBAUD=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,21 +54,39 @@ while [ $# -gt 0 ]; do
     --from-file) LIST="${2:?--from-file 后面给清单文件}"; MODE=batch; shift ;;
     --plan) PLAN=1 ;;
     --force) FORCE=1 ;;
+    --replaced) REPLACED=1 ;;
     --conv) CONV="${2:?--conv auto}"; shift ;;
     --conv-serial) CSER="${2:?}"; shift ;;
     --sensors) CSEN="${2:?}"; shift ;;
     --addr) CADDR="${2:?}"; shift ;;
     --dev) CDEV="${2:?}"; shift ;;
     --baud) CBAUD="${2:?}"; shift ;;
-    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
 done
-[ -n "$MODE" ] || { sed -n '2,26p' "$0"; exit 2; }
+[ -n "$MODE" ] || { sed -n '2,25p' "$0"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo '要 root：sudo bash join-egs.sh …' >&2; exit 1; }
 
 ts() { date '+%F %T'; }
+# 换 EG 沿用旧地址（0.8.2）：子站记的主机密钥两份 —— 升级入口 / 隧道用的、provision 隧道用的
+PROV_KH="$SP_B/tb/provision/out/known_hosts"
+HOSTKEY_LOG=/var/log/lsa9600sp/eg-join-hostkey.log
+hostkey_changed() { grep -q 'REMOTE HOST IDENTIFICATION HAS CHANGED' <<< "$1"; }  # sete-ok：判断函数
+# forget_hostkey <地址> <单元号>：确认主机密钥真的变了才清（--replaced 加在正常接入上不误清）；返回 0 清了 / 1 没变不用清
+forget_hostkey() {
+  local h="$1" u="$2" out old new f
+  out="$(sshx "$h" hello 2>&1)"
+  hostkey_changed "$out" || return 1
+  old="$(ssh-keygen -F "$h" -l -f "$KH" 2>/dev/null | awk '!/^#/ { print $2; exit }')"
+  new="$(ssh-keyscan -T 10 -t ed25519 "$h" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{ print $2; exit }')"
+  for f in "$KH" "$PROV_KH"; do [ -f "$f" ] && ssh-keygen -R "$h" -f "$f" >/dev/null 2>&1; done
+  mkdir -p "$(dirname "$HOSTKEY_LOG")"
+  printf '%s\tby=%s\tunit=%s\teg=%s\told=%s\tnew=%s\t--replaced：清掉两份旧主机密钥（%s、%s）\n' "$(ts)" "${SUDO_USER:-root}" "$u" "$h" "${old:--}" "${new:--}" "$KH" "$PROV_KH" >> "$HOSTKEY_LOG"
+  echo "  --replaced：$h 的 SSH 主机密钥变了（旧 ${old:-?} → 新 ${new:-?}），清掉子站记的两份旧密钥，记在 $HOSTKEY_LOG"
+  return 0
+}
 stamp() { date +%Y%m%d-%H%M%S; }
 envget() { grep -E "^$1=" "$SP_ENV" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
 kv() { sed -n "s/^$1=//p" <<< "$2" | tail -1; }
@@ -198,7 +219,8 @@ preflight() {
   hello="$(sshx "$h" hello 2>&1)"; rc=$?
   if [ "$rc" != 0 ] || ! grep -q '^entry=' <<< "$hello"; then
     echo 'ok=0'
-    if grep -q 'Permission denied' <<< "$hello"; then echo "why=升级入口没授权：EG 装的时候没带 --join-key，或者带的是别的子站的"
+    if hostkey_changed "$hello"; then echo "why=EG 的 SSH 主机密钥跟子站记的不一样：如果是换了新机（沿用旧地址），加 --replaced 重跑（接入前清掉这个地址的旧密钥、记日志）；没换机就先查清楚，可能有人冒充"
+    elif grep -q 'Permission denied' <<< "$hello"; then echo "why=升级入口没授权：EG 装的时候没带 --join-key，或者带的是别的子站的"
     else hello="$(tr '\n' ' ' <<< "$hello")"; echo "why=连不上 EG：${hello:0:80}（EG 开着吗、地址对吗、22 口通吗）"; fi
     return
   fi
@@ -265,6 +287,10 @@ join_one() {
     exit 1
   }
 
+  if [ "$REPLACED" = 1 ]; then
+    if [ "$PLAN" = 1 ]; then echo "  --replaced：--plan 只看不改，不清旧主机密钥（真接入时才清）"
+    elif ! forget_hostkey "$EGH" "$U"; then echo "  --replaced：$EGH 的主机密钥没变，不用清"; fi
+  fi
   echo "== $(ts) 预检：单元 $U ← EG $EGH（子站 $A）"
   PF="$(preflight "$U" "$EGH")"   # 拆柜时 up.sh 已经跑过：子站上有这个单元了，照常预检
   sed 's/^/  /' <<< "$PF"
