@@ -520,6 +520,21 @@ chk "eg1 升好了（$(cat /fake/eg/eg1/ver)）" [ "$(cat /fake/eg/eg1/ver)" = "
 # 正常做完（含 STOP 后做完）照旧写 ended_at、没有 interrupted
 { [ -n "$(mB ended_at)" ] && [ -z "$(mB interrupted)" ]; } && ok "STOP 后做完的批次（9 节的 $BATCH）：有 ended_at、没有 interrupted" || bad 'STOP 后做完的批次 meta 不对' 
 
+say "9b. 拷包进度（0.8.2）：EG 慢慢收（约 7 s），屏幕每 2 s 一行「拷包 x%」，<单元>.copy 拷完已传 = 总"
+reset_egs
+sz=$(stat -c %s /w/a.run); echo $(( sz / 25 + 1 )) > /fake/eg/eg1/put_slow
+LSA_EGUP_PROGRESS_S=2 bash "$UP" --run /w/a.run --only AH01-A > /tmp/cp.out 2>&1; rc=$?
+rm -f /fake/eg/eg1/put_slow
+BDC="$(sed -n 's/^日志：//p' /tmp/cp.out | tail -1)"
+n_pct=$(grep -c '\[AH01-A\] 拷包 [0-9]*%（' /tmp/cp.out)
+grep '\[AH01-A\] 拷包' /tmp/cp.out | sed 's/^/    /' | head -6
+chk "升级 rc 0（$rc）" [ "$rc" = 0 ]
+chk "屏幕拷包进度 $n_pct 行（≥ 2）" [ "$n_pct" -ge 2 ]
+chk '拷完一行「拷包完成」' grep -q '\[AH01-A\] 拷包完成（' /tmp/cp.out
+read -r c_pos c_size c_rate c_at < "$BDC/AH01-A.copy" 2>/dev/null
+chk "AH01-A.copy：已传 = 总 = $sz（$c_pos / $c_size，速率 $c_rate B/s）" [ "$c_pos/$c_size" = "$sz/$sz" ]
+chk '临时输出 AH01-A.put.out 删了' [ ! -e "$BDC/AH01-A.put.out" ]
+
 say "10. 执行器：上限"
 reset_egs
 for n in $(seq 25); do req scan '{}' > /dev/null; done

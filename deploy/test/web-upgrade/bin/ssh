@@ -10,7 +10,13 @@ case "$verb" in
   hello) [ -f "$D/hello_slow" ] && sleep "$(cat "$D/hello_slow")"
     printf 'entry=%s\neg_version=%s\nfree_mb=99999\nrunning=0\nmaint=\nsig_keys=%s\nsig_required=%s\n' "$([ -f "$D/entry6" ] && echo 6 || echo 5)" "$(cat "$D/ver")" \
       "$([ -f "$D/nokeys" ] && echo 0 || echo 1)" "$([ -f "$D/entry6" ] && echo 1 || echo 0)" ;;
-  put) got="$(sha256sum | cut -d' ' -f1)"; [ "$got" = "$a1" ] || { echo "ERR 收到的 sha256 $got 不是 $a1"; exit 2; }
+  put)
+    # put_slow = 每次读多少字节（慢慢读，像网络拷包；拷包进度用，0.8.2）
+    if [ -f "$D/put_slow" ]; then
+      got="$(bs="$(cat "$D/put_slow")"; while :; do dd bs="$bs" count=1 iflag=fullblock status=none > "$D/chunk" || break; [ -s "$D/chunk" ] || break; cat "$D/chunk"; sleep 0.3; done | sha256sum | cut -d' ' -f1)"
+      rm -f "$D/chunk"
+    else got="$(sha256sum | cut -d' ' -f1)"; fi
+    [ "$got" = "$a1" ] || { echo "ERR 收到的 sha256 $got 不是 $a1"; exit 2; }
     echo "$got" > "$D/put_sha"; echo "OK put $a1" ;;
   put-sig) cat > /dev/null; echo "OK put-sig $a1" ;;
   start) rm -f "$D/donet"; echo "job-$host-$(date +%s)" > "$D/job"; date +%s > "$D/started"; cp /fake/to "$D/target"; echo "OK start $(cat "$D/job")" ;;
