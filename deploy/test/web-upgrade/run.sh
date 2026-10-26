@@ -395,6 +395,10 @@ for _ in $(seq 60); do [ -n "$(mB ended_at)" ] && break; sleep 1; done
 chk "批次做完、写了 ended_at（$(mB ended_at)）" [ -n "$(mB ended_at)" ]
 chk "canary AH02-A 成功、AH01-A 因为停了没开（$(cut -f1,5 "$BD/summary.tsv" | tr '\t\n' ': ')）" [ "$(cut -f1,5 "$BD/summary.tsv" | tr '\t\n' ':,')" = 'AH01-A:没做,AH02-A:成功,' ]
 chk 'eg1 没被升' [ "$(cat /fake/eg/eg1/ver)" = "$OLD" ]
+# F8（0.8.2）：手工停止跟失败分开说
+chk "没开始的那台说明是「已手工停止」不是「前面有失败」（$(awk -F'\t' '$1 == "AH01-A" { print $6 }' "$BD/summary.tsv")）" grep -q $'^AH01-A\t.*\t没做\t已手工停止，没开始（接着做用 --resume '"$BATCH"'）$' "$BD/summary.tsv"
+chk "meta result=stopped（$(mB result)）" [ "$(mB result)" = stopped ]
+chk '汇总最后一行：已手工停止：完成 1 台、未开始 1 台' grep -rqs "已手工停止：完成 1 台、未开始 1 台；接着做用 --resume $BATCH" "$BD"
 chk "unit 退出时的 --finish 不改已经 done 的结果" [ "$(status "$g1")" = done ]
 x=$(req stop "{\"batch\":\"$BATCH\"}"); y=$(req stop '{"batch":"20990101-000000"}'); runner
 rejected "$x" '已经结束' && ok '已结束的批次 stop：拒收' || { bad '已结束的批次 stop 没拒'; show "$x"; }
