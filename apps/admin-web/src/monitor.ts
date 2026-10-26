@@ -59,7 +59,24 @@ const POINTS = 288
 export interface CapsInfo {
   delivered: boolean
   caps: Record<string, 'confirmed' | 'pending' | 'unsupported'> | null
+  /** 能力 → ["设备前缀:key"]（key 支持末尾 *、单独 *），子站随配置下发 */
+  capKeys?: Record<string, string[]> | null
   actual: Record<string, 'ok' | 'nodata' | 'absent'> | null
+}
+/** 这个量送不送子站（0.8.2，跟 eg-agent caps.ts keyUplink 同一个判法）：对应能力里有 confirmed、或不归任何能力 → null（送）；
+ *  否则 'pending' / 'unsupported'（EG 0.8.1 起按量挡，这些不送子站）。子站没下发能力 → null */
+export function keyUplinkState(info: CapsInfo | null, device: string, key: string): 'pending' | 'unsupported' | null {
+  if (!info?.delivered || !info.caps || !info.capKeys) return null
+  const pre = device.includes('-') ? device.slice(0, device.indexOf('-')) : device
+  const match = (p: string) => {
+    const i = p.indexOf(':')
+    if (i <= 0 || p.slice(0, i) !== pre) return false
+    const k = p.slice(i + 1)
+    return k === '*' || (k.endsWith('*') ? key.startsWith(k.slice(0, -1)) : k === key)
+  }
+  const states = Object.entries(info.capKeys).filter(([, pats]) => pats.some(match)).map(([cap]) => info.caps![cap] ?? 'unsupported')
+  if (!states.length || states.includes('confirmed')) return null
+  return states.includes('pending') ? 'pending' : 'unsupported'
 }
 /** 卡片该怎么显示：任一能力 confirmed 显示；都不 confirmed 但有 pending 显示「待定」；全都 unsupported 隐藏；子站没写的能力不影响 */
 export function cardState(info: CapsInfo | null, caps: string[]): 'show' | 'pending' | 'hidden' {

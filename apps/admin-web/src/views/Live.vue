@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { api } from '../session'
 import { store } from '../store'
 import { ago, hms, period, QTEXT, val } from '../utils/fmt'
+import { keyUplinkState, type CapsInfo } from '../monitor'
 import type { Live, PointDef, RawMessage } from '../types'
 
 const props = defineProps<{ device?: string }>()
@@ -37,7 +38,26 @@ watch(sel, () => {
   void load()
 }, { immediate: true })
 const timer = window.setInterval(() => !document.hidden && load(), 2000)
-onBeforeUnmount(() => clearInterval(timer))
+// 能力清单（0.8.2：标哪些量按量挡、不送子站）：一分钟读一次就够
+const caps = ref<CapsInfo | null>(null)
+async function loadCaps() {
+  try {
+    caps.value = await api<CapsInfo>('caps')
+  } catch {
+    /* 读不到就不标（老 agent 没有 capKeys 也一样） */
+  }
+}
+void loadCaps()
+const capsTimer = window.setInterval(() => !document.hidden && loadCaps(), 60_000)
+onBeforeUnmount(() => {
+  clearInterval(timer)
+  clearInterval(capsTimer)
+})
+const UPLINK_TEXT = { pending: '不上送（能力待定）', unsupported: '不上送（不支持）' } as const
+function uplink(r: Row): string | null {
+  const st = keyUplinkState(caps.value, sel.value, r.key)
+  return st ? UPLINK_TEXT[st] : null
+}
 
 /** 只有同事的程序知道的南向统计：eg-agent 不替它编，没报就是「未上报」，不算异常 */
 const SOURCE_ONLY = new Set(['dev.crc_24h', 'dev.retry_24h'])
@@ -146,6 +166,9 @@ const pretty = (s: string) => {
         <el-table-column label="到达" width="100"><template #default="{ row }"><span class="num">{{ hms(row.at) }}</span></template></el-table-column>
         <el-table-column label="周期" width="70"><template #default="{ row }">{{ period(row.periodMs) }}</template></el-table-column>
         <el-table-column label="来源" width="90"><template #default="{ row }"><span :class="row.own ? 'info' : 't2'">{{ row.own ? 'agent 算' : '传感器' }}</span></template></el-table-column>
+        <el-table-column label="上送子站" width="130">
+          <template #default="{ row }"><span v-if="uplink(row)" class="tag minor" title="子站给本单元的这项能力不是「已确认」：EG 0.8.1 起这个量只进本地、不送子站；到子站网关页改成已确认后才送">{{ uplink(row) }}</span><span v-else class="t2">送</span></template>
+        </el-table-column>
       </el-table>
     </section>
 
