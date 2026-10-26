@@ -596,7 +596,12 @@ up_one() {
 }
 todo=()
 for c in "${GO[@]}"; do [ -f "$BD/$c.result" ] || todo+=("$c"); done
-if [ -f "$BD/STOP" ] && [ "$MODE" = resume ]; then echo '这一批之前有失败、已经停下：只续查已经开始的，不再开新的'; fi
+# 停下的原因（0.8.2，联调 F8）：有一台「失败」的 = 失败停下；没有失败、只有 STOP（网页「停止」/ 手工放的）= 手工停止
+batch_failed() { cat "$BD"/*.result 2>/dev/null | awk -F'\t' '$5 == "失败" { f = 1 } END { exit !f }'; }
+if [ -f "$BD/STOP" ] && [ "$MODE" = resume ]; then
+  if batch_failed; then echo '这一批之前有失败、已经停下：只续查已经开始的，不再开新的'
+  else echo '这一批之前手工停止了：只续查已经开始的，不再开新的'; fi
+fi
 # canary 先做，做完核对通过才往下
 for c in "${todo[@]}"; do
   [ "$c" = "$CANARY" ] || continue
@@ -623,16 +628,19 @@ for p in "${pids[@]}"; do wait "$p"; done
 echo
 echo "== $(ts) 汇总（批次 $BATCH，目标 EG $TO）"
 printf '%-8s %-18s %-8s %-6s %s\n' 单元 原版本 耗时s 结果 说明
-fails=0
+fails=0; n_done=0; n_notstarted=0
+if [ -f "$BD/STOP" ] && ! batch_failed; then STOPKIND=manual; else STOPKIND=failed; fi
 while IFS=$'\t' read -r c _ _ _; do
   if [ -f "$BD/$c.result" ]; then
     IFS=$'\t' read -r _ from to s r why < "$BD/$c.result" || true
     cat "$BD/$c.result" >> "$BD/summary.tsv"
   else
-    from="$(plan_from "$c")"; s='-'; r='没做'; why='前面有失败，停下了（修好后 --resume '"$BATCH"' 接着做）'
+    from="$(plan_from "$c")"; s='-'; r='没做'
+    if [ "$STOPKIND" = manual ]; then why='已手工停止，没开始（接着做用 --resume '"$BATCH"'）'
+    else why='前面有失败，停下了（修好后 --resume '"$BATCH"' 接着做）'; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$c" "$from" "$TO" - "$r" "$why" >> "$BD/summary.tsv"
   fi
-  [ "$r" = 成功 ] || fails=$((fails + 1))
+  case "$r" in 成功) n_done=$((n_done + 1)) ;; 没做) n_notstarted=$((n_notstarted + 1)) ;; *) fails=$((fails + 1)) ;; esac
   printf '%-8s %-18s %-8s %-6s %s\n' "$c" "$from" "$s" "$r" "$why"
   if [ "$r" = 失败 ]; then
     rb='sudo bash /opt/lsa-eg/install.sh --rollback'
@@ -641,4 +649,11 @@ while IFS=$'\t' read -r c _ _ _; do
   fi
 done < "$BD/plan.tsv"
 echo "日志：$BD"
-[ "$fails" = 0 ]
+# 退出码（0.8.2）：0 全部成功；1 有失败（含前面失败、后面没做的）；3 手工停止（没有失败，只是没做完）
+if [ "$fails" -gt 0 ]; then meta_set result failed; exit 1; fi
+if [ "$n_notstarted" -gt 0 ]; then
+  echo "已手工停止：完成 $n_done 台、未开始 $n_notstarted 台；接着做用 --resume $BATCH"
+  meta_set result stopped; exit 3
+fi
+meta_set result ok
+exit 0
