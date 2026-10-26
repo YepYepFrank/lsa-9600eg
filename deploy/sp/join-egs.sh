@@ -219,7 +219,8 @@ preflight() {
   hello="$(sshx "$h" hello 2>&1)"; rc=$?
   if [ "$rc" != 0 ] || ! grep -q '^entry=' <<< "$hello"; then
     echo 'ok=0'
-    if hostkey_changed "$hello"; then echo "why=EG 的 SSH 主机密钥跟子站记的不一样：如果是换了新机（沿用旧地址），加 --replaced 重跑（接入前清掉这个地址的旧密钥、记日志）；没换机就先查清楚，可能有人冒充"
+    if hostkey_changed "$hello" && [ "$REPLACED" = 1 ]; then echo "why=EG 的 SSH 主机密钥跟子站记的不一样：加了 --replaced，真接入时会先清掉这个地址的旧密钥再预检（--plan 只看不改，不清）"
+    elif hostkey_changed "$hello"; then echo "why=EG 的 SSH 主机密钥跟子站记的不一样：如果是换了新机（沿用旧地址），加 --replaced 重跑（接入前清掉这个地址的旧密钥、记日志）；没换机就先查清楚，可能有人冒充"
     elif grep -q 'Permission denied' <<< "$hello"; then echo "why=升级入口没授权：EG 装的时候没带 --join-key，或者带的是别的子站的"
     else hello="$(tr '\n' ' ' <<< "$hello")"; echo "why=连不上 EG：${hello:0:80}（EG 开着吗、地址对吗、22 口通吗）"; fi
     return

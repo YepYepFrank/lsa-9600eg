@@ -1,0 +1,3 @@
+#!/bin/bash
+# 假 ssh-keyscan：给 EG 目录里 hostkey_new 的那台出一行新密钥
+h="${!#}"; [ -f "/fake/eg/$h/hostkey_new" ] && echo "$h ssh-ed25519 AAAANEW"; exit 0

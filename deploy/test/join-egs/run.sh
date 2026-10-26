@@ -121,6 +121,24 @@ printf '# 一批\nAH05-A 10.0.5.1\nAH05-B 10.0.5.9\nAH09 10.0.0.9\n' > /tmp/list
 out="$($J --from-file /tmp/list --plan 2>&1)"; rc=$?
 check 'grep -q "AH05-A .*能" <<< "$out" && grep -q "AH05-B .*否.*连不上" <<< "$out" && grep -q "AH09 .*能" <<< "$out" && grep -q "合计：3 台，能接 2 台" <<< "$out"' '逐台结论：AH05-A 能、AH05-B 连不上、AH09（老 EG、照旧一柜一台）能'
 
+echo '15. 换 EG 沿用旧地址（0.8.2 --replaced）：主机密钥变了'
+KH=/opt/lsa9600sp/keys/eg-upgrade.known_hosts; PKH=$SPB/tb/provision/out/known_hosts
+reset; hello 10.0.5.1 4 0 '' '' tunnel; touch /fake/eg/10.0.5.1/hostkey_new; mkdir -p "$(dirname "$PKH")"
+printf '10.0.5.1 ssh-ed25519 AAAAOLD\n10.0.5.9 ssh-ed25519 AAAAKEEP\n' > "$KH"; printf '10.0.5.1 ssh-ed25519 AAAAOLD\n' > "$PKH"
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc != 0 ] && grep -q "主机密钥跟子站记的不一样.*加 --replaced 重跑" <<< "$out"' "不加 --replaced：预检不过，提示加 --replaced（rc $rc）"
+check 'grep -q "^10.0.5.1 " "$KH" && grep -q "^10.0.5.1 " "$PKH"' '不加 --replaced：两份旧密钥都没动'
+out="$($J --unit AH05-A --eg 10.0.5.1 --plan --replaced 2>&1)"
+check 'grep -q "加了 --replaced，真接入时会先清掉这个地址的旧密钥再预检（--plan 只看不改，不清）" <<< "$out" && grep -q "^10.0.5.1 " "$KH" && grep -q "^10.0.5.1 " "$PKH"' '--plan --replaced：说明真接入时会清，这次不清'
+out="$($J --unit AH05-A --eg 10.0.5.1 --replaced 2>&1)"; rc=$?
+check '[ $rc = 0 ] && grep -q "单元 AH05-A 接入完成" <<< "$out"' "--replaced：接入成功（rc $rc）"
+check 'grep -q "主机密钥变了（旧 SHA256:OLDOLDOLD → 新 SHA256:NEWNEWNEW），清掉子站记的两份旧密钥" <<< "$out"' '输出新旧指纹、清了两份'
+check '! grep -q "^10.0.5.1 " "$KH" && ! grep -q "^10.0.5.1 " "$PKH" && grep -q "^10.0.5.9 " "$KH"' '两份里 10.0.5.1 的旧密钥都清掉，别的地址（10.0.5.9）不动'
+check 'grep -q "unit=AH05-A.*eg=10.0.5.1.*old=SHA256:OLDOLDOLD.*new=SHA256:NEWNEWNEW" /var/log/lsa9600sp/eg-join-hostkey.log' '审计日志一行（单元、地址、新旧指纹）'
+reset; hello 10.0.5.1 4 0 '' '' tunnel; printf '10.0.5.1 ssh-ed25519 AAAAOLD\n' > "$KH"
+out="$($J --unit AH05-A --eg 10.0.5.1 --replaced 2>&1)"; rc=$?
+check '[ $rc = 0 ] && grep -q "主机密钥没变，不用清" <<< "$out" && grep -q "^10.0.5.1 " "$KH" && [ ! -e /var/log/lsa9600sp/eg-join-hostkey.log ]' "主机密钥没变时 --replaced 什么也不清（rc $rc）"
+
 echo
 echo "合计：$pass 过，$fail 不过"
 [ "$fail" = 0 ]

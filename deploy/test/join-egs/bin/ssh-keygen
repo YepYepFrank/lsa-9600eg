@@ -1,0 +1,8 @@
+#!/bin/bash
+# 假 ssh-keygen（测试镜像里没有 openssh-client）：只仿 join-egs.sh 用到的 -F <host> -l -f <文件>、-R <host> -f <文件>、-lf -
+f=''; F=''; R=''; l=0
+while [ $# -gt 0 ]; do case "$1" in -F) F="$2"; shift ;; -R) R="$2"; shift ;; -f) f="$2"; shift ;; -l) l=1 ;; -lf) l=1; f="$2"; shift ;; esac; shift; done
+if [ -n "$R" ]; then [ -f "$f" ] || exit 1; grep -v "^$R " "$f" > "$f.tmp"; cp "$f" "$f.old"; mv "$f.tmp" "$f"; echo "# Host $R found"; echo "$f updated."; exit 0; fi
+if [ -n "$F" ]; then grep -q "^$F " "$f" 2>/dev/null || exit 1; echo "# Host $F found: line 1"; echo "256 SHA256:OLDOLDOLD $F (ED25519)"; exit 0; fi
+if [ "$f" = - ] && [ "$l" = 1 ]; then read -r h _ _; echo "256 SHA256:NEWNEWNEW $h (ED25519)"; exit 0; fi
+exit 1
