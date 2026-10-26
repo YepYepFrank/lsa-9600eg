@@ -117,9 +117,13 @@ function copy(t: string) {
       <div class="panel-h">EG 本身<span class="t2">{{ store.config.eg.eg.name }} · EG 级信号（分合位、电源）也发到 <code>lsa/{{ store.config.eg.eg.name }}/telemetry</code></span></div>
       <div class="panel-b">
         <dl class="kv">
+          <!-- 0.8.2：eg.yaml 里的 cfg / cfgWant 不印（0.19.1 以前接入的 EG 是模板占位 c-0321，看着像运行版本）；运行配置取 agent 实际应用的 -->
+          <dt>运行配置</dt><dd>{{ store.config.applied?.appliedAt ? store.config.applied.version : '—' }}</dd>
           <template v-for="(v, k) in store.config.eg.eg.attrs" :key="k">
-            <dt>{{ { ip: '设备网地址', ipUp: '上行地址', fw: '固件', cfg: '运行配置', cfgWant: '目标配置', pt: '点表版本', sn: '序列号', cab: '柜号' }[k] ?? k }}</dt>
-            <dd>{{ v }}</dd>
+            <template v-if="k !== 'cfg' && k !== 'cfgWant'">
+              <dt>{{ { ip: '设备网地址', ipUp: '上行地址', fw: '固件', pt: '点表版本', sn: '序列号', cab: '柜号' }[k] ?? k }}</dt>
+              <dd>{{ v }}</dd>
+            </template>
           </template>
         </dl>
       </div>
