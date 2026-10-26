@@ -514,7 +514,7 @@ result() {  # result <单元号> <结果> <原因>：写一行，失败就让后
 # 每台的阶段（网页进度用，§9.4）：copy / install / selfcheck / spcheck / done（成功才写 done；失败停在出事的那一段，结果看 .result）
 phase_set() { [ "$(cat "$BD/$1.phase" 2>/dev/null)" = "$2" ] || echo "$2" > "$BD/$1.phase"; }
 up_one() {
-  local c="$1" h="${HOST[$1]}" log="$BD/$1.log" out ph job st t_end ok row t_say
+  local c="$1" h="${HOST[$1]}" log="$BD/$1.log" out ph job st t_end ok row t_say pid t0 pos now el rate
   T0=$(date +%s)
   exec >> "$log" 2>&1
   echo "== $(ts) $c（$h）→ $TO"
@@ -522,10 +522,29 @@ up_one() {
   else
     phase_set "$c" copy
     echo "拷安装文件（$SIZE 字节）…"
-    echo "$(ts) [$c] 拷安装文件到 EG（$((SIZE / 1048576)) MB）…" >&3
-    out="$(sshx "$h" "put $SHA $SIZE" < "$RUN" 2>&1)"
+    echo "$(ts) [$c] 拷安装文件到 EG（$((SIZE / 1048576)) MB，期间每 ${PROGRESS_S} s 报一次）…" >&3
+    # 拷包进度（0.8.2）：ssh 从 $RUN 读，读到哪看 /proc/<pid>/fdinfo/0 的 pos（子 shell 和 ssh 共用同一个打开的文件，偏移一起走；不用装 pv）。
+    # 屏幕每 PROGRESS_S 一行；网页读 <批次>/<单元>.copy：「已传字节 总字节 速率字节/秒 时刻（秒）」一行，拷完写成已传 = 总
+    sshx "$h" "put $SHA $SIZE" < "$RUN" > "$BD/$c.put.out" 2>&1 &
+    pid=$!; t0=$(date +%s); t_say=$(( t0 + PROGRESS_S ))
+    while kill -0 "$pid" 2>/dev/null; do
+      pos="$(awk '$1 == "pos:" { print $2 }' "/proc/$pid/fdinfo/0" 2>/dev/null)"
+      if [[ "$pos" =~ ^[0-9]+$ ]] && [ "$SIZE" -gt 0 ]; then
+        now=$(date +%s); el=$(( now - t0 )); rate=0; [ "$el" -gt 0 ] && rate=$(( pos / el ))
+        printf '%s %s %s %s\n' "$pos" "$SIZE" "$rate" "$now" > "$BD/$c.copy"
+        if [ "$now" -ge "$t_say" ]; then
+          echo "$(ts) [$c] 拷包 $(( pos * 100 / SIZE ))%（$(( pos / 1048576 )) / $(( SIZE / 1048576 )) MB，$(( rate / 1048576 )).$(( rate % 1048576 * 10 / 1048576 )) MB/s）" >&3
+          t_say=$(( now + PROGRESS_S ))
+        fi
+      fi
+      sleep 2
+    done
+    wait "$pid" 2>/dev/null
+    out="$(cat "$BD/$c.put.out" 2>/dev/null)"; rm -f "$BD/$c.put.out"
     echo "$out"
     grep -q "^OK put $SHA" <<< "$out" || { result "$c" 失败 "拷安装文件没成功：$(tail -1 <<< "$out")"; return; }
+    printf '%s %s %s %s\n' "$SIZE" "$SIZE" "$(( SIZE / ( $(date +%s) - t0 > 0 ? $(date +%s) - t0 : 1 ) ))" "$(date +%s)" > "$BD/$c.copy"
+    echo "$(ts) [$c] 拷包完成（$(( SIZE / 1048576 )) MB，$(( $(date +%s) - t0 )) s）" >&3
     if [ "$SIGSIZE" -gt 0 ] && [ "$(plan_entry "$c")" -ge 5 ]; then
       echo "拷签名（$SIGSIZE 字节）…"
       out="$(sshx "$h" "put-sig $SHA $SIGSIZE" < "$RUN.sig" 2>&1)"
