@@ -4,7 +4,7 @@
 #
 #   sudo bash install-conv.sh                    启用：导入镜像 → 生成 config/conv（已有就不动）→ 选串口 → 起 conv
 #   sudo bash install-conv.sh --serial <设备>     指定串口。不给时：以前记过串口就沿用，没记过一律 /dev/ttyS1（X26A 的 COM2，
-#                                                BIOS 里设成 RS-485；正式部署传感器 485 直接接 COM2，用户 2026-10-28 定）。
+#                                                BIOS 里设成 RS-485；正式部署传感器 485 接 COM2、后面串隔离中继器，用户 2026-10-28 定）。
 #                                                插着 USB 转 485 只提示一句，不自动用（USB 只给样机 / 调试，要用加 --serial）
 #   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared meter；缺省开局放、气体、温湿度、弧光四路，红外关（0.8.1：本项目 SAM 没有自带红外，测温只靠双目摄像机；0.7.1–0.8.0 缺省是开的）；
 #                                                电表 meter 按 eg.yaml 自动：有这面柜电表（kind: meter，PM-<柜号>）的那台 EG 才打开、设备名和
@@ -135,7 +135,7 @@ serial_byid() {  # ttyUSB / ttyACM 换成 /dev/serial/by-id 的稳定名字（�
 pick_serial() {
   local ids=() l
   if [ -z "$SERIAL" ]; then
-    # 2026-10-28 起缺省一律 COM2（正式部署传感器 485 直接接 COM2）；以前记过的串口沿用（样机 / 调试机上记的 USB 不会被换掉）
+    # 2026-10-28 起缺省一律 COM2（正式部署传感器 485 接 COM2、后面串隔离中继器）；以前记过的串口沿用（样机 / 调试机上记的 USB 不会被换掉）
     SERIAL="$(env_get EG_CONV_SERIAL)"; [ "$SERIAL" = /dev/null ] && SERIAL=''
     if [ -n "$SERIAL" ] && [ "$SERIAL" != /dev/ttyS1 ]; then
       echo "串口：沿用上次记的 $SERIAL（改回 COM2 加 --serial /dev/ttyS1）"
