@@ -41,6 +41,7 @@ class Bus:
     remap = {}       # 真地址 → 应答的地址（模拟地址设错）
     echo = False     # 模拟 485 模块回显
     dead = False     # 总线上谁都不应答
+    off = set()      # 这几个从站没接
 
 
 def serve_bus(conn):
@@ -58,7 +59,7 @@ def serve_bus(conn):
                     buf = b''
                     break
                 sid, fc = frame[0], frame[1]
-                if Bus.dead:
+                if Bus.dead or sid in Bus.off:
                     continue
                 real = {v: k for k, v in Bus.remap.items()}.get(sid, sid)
                 if sid in Bus.remap and Bus.remap[sid] != sid:
@@ -131,6 +132,7 @@ def make_media(tmp):
 
 class Rest(http.server.BaseHTTPRequestHandler):
     tokens = set()
+    serial = 'SN-1'   # 换测时换成另一台摄像机
 
     def log_message(self, *a):
         pass
@@ -159,7 +161,7 @@ class Rest(http.server.BaseHTTPRequestHandler):
         p = self.path
         ok = lambda d: self.send({'code': 200, 'msg': 'Success', 'data': d})
         if p == '/restv1/device/info':
-            return ok({'name': 'MOCK-CAM', 'serial': 'SN-1', 'version': {'firmwareVersion': '0000_B37_1.1.17', 'firmwareBuildTime': '2026-10-01'}})
+            return ok({'name': 'MOCK-CAM', 'serial': Rest.serial, 'version': {'firmwareVersion': '0000_B37_1.1.17', 'firmwareBuildTime': '2026-10-01'}})
         m = re.match(r'^/restv1/channel/rtsp/(\d)$', p)
         if m:
             ch = int(m.group(1))
@@ -281,6 +283,56 @@ def run(tmp, name, extra, env_extra=None):
     return p.returncode, p.stdout + p.stderr
 
 
+def run_loop(tmp, cam):
+    """--loop 要终端：在本进程里跑 sam_check.main()，假装 stdin 是终端、input() 按剧本答，每次答之前改模拟器（=换一套）"""
+    import csv
+    import io as _io
+    out = os.path.join(tmp, 'out-loop')
+    os.environ.update(NO_COLOR='1', LSA_CAM_PASS=RTSP_PASS, LSA_CAM_REST_PASS=REST_PASS)
+    buf = _io.StringIO()
+    real_out, real_in, real_argv = sys.stdout, sys.stdin, sys.argv
+    sys.stdout = buf
+    try:
+        spec = importlib.util.spec_from_file_location('sam_check_loop', TOOL)
+        sc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sc)
+
+        def unit2():
+            Bus.off = {4}
+            Rest.serial = 'SN-2'
+
+        def unit3():
+            Bus.off = set()
+
+        script = [('A-001', None), ('', unit2), ('C-003', unit3), ('q', None)]
+
+        def fake_input(prompt=''):
+            buf.write(prompt + '\n')
+            ans, act = script.pop(0)
+            if act:
+                act()
+            return ans
+
+        sc.input = fake_input
+        sys.stdin = type('T', (), {'isatty': lambda self: True, 'readline': lambda self: ''})()
+        sys.argv = ['sam_check.py', '--loop', '--wait', '3', '--port', 'tcp://127.0.0.1:%d' % PORTS['bus'], '--rounds', '2',
+                    '--interval', '0.05', '--local-yaml', '', '--no-func', '--out', out, '--rtsp-secs', '2', '--rest-user', REST_USER,
+                    '--cam', '127.0.0.1', '--cam-http-port', str(PORTS['http']), '--cam-rtsp-port', str(PORTS['rtsp'])] + ([] if cam else ['--no-cam'])
+        try:
+            code = sc.main()
+        except SystemExit as e:
+            code = e.code
+    finally:
+        sys.stdout, sys.stdin, sys.argv = real_out, real_in, real_argv
+        Bus.off, Rest.serial = set(), 'SN-1'
+    rows = []
+    fn = os.path.join(out, 'summary.csv')
+    if os.path.exists(fn):
+        with open(fn, encoding='utf-8-sig', newline='') as f:
+            rows = list(csv.reader(f))
+    return code, buf.getvalue(), rows
+
+
 FAILS = []
 
 
@@ -349,6 +401,19 @@ def main():
     code, t = run(tmp, '4', ['--no-cam', '--scan', '1-6'])
     Bus.dead = False
     expect('退出码 1，扫描说一个应答都没有', code == 1 and '一个应答都没有' in t, t)
+
+    print('场景 5：--loop 连续换三套（第 2 套温湿度没接、换了摄像机；第 3 套摄像机没换）')
+    code, t, rows = run_loop(tmp, cam)
+    expect('退出码 1（有一套不通过）', code == 1, t)
+    expect('summary.csv 三行', len(rows) == 4, t)
+    if len(rows) == 4:
+        expect('第 1 套通过', rows[1][1] == 'A-001' and rows[1][2] == '通过', str(rows))
+        expect('第 2 套不通过、写明温湿度', rows[2][2] == '不通过' and '温湿度' in rows[2][3], str(rows))
+        expect('第 2 套自动编号', rows[2][1] == 'unit-002', str(rows))
+        if cam:
+            expect('第 3 套报摄像机没换', '摄像机已更换' in rows[3][4], str(rows))
+            expect('第 2 套摄像机序列号变了', rows[1][5] == 'SN-1' and rows[2][5] == 'SN-2', str(rows))
+    expect('大字结论', '  A-001   通过' in t and 'unit-002   不通过' in t, t)
 
     print('\n%s' % ('全部通过' if not FAILS else '不通过：%s' % '；'.join(FAILS)))
     shutil.rmtree(tmp, ignore_errors=True)

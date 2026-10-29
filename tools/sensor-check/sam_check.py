@@ -16,6 +16,7 @@ EG 上的转换程序（容器 lsa-eg-conv）占着串口：脚本会先停掉�
 用法（在 EG 上）：
   sudo python3 sam_check.py                         # 全部：传感器 + 功能试验（逐项问）+ 摄像机
   sudo python3 sam_check.py --sn SAM-0001           # 报告里记上传感器单元编号
+  sudo python3 sam_check.py --loop                  # 连续换测：一台 EG 上热插拔换一套测一套，每套出「通过 / 哪一路有问题」，汇总 summary.csv
   sudo python3 sam_check.py --no-func               # 不做功能试验（无人值守）
   sudo python3 sam_check.py --no-cam                # 不查摄像机
   sudo python3 sam_check.py --cam-only              # 只查摄像机
@@ -980,6 +981,9 @@ def check_rtsp(cam, urls, args):
                 result(title, 'SKIP', '没有地址')
                 continue
             r = rtsp_probe(url, cam['rtsp_user'], cam['rtsp_pass'], args.rtsp_secs)
+            if r['ok'] is False and '401' not in r['err']:
+                time.sleep(5)
+                r = rtsp_probe(url, cam['rtsp_user'], cam['rtsp_pass'], args.rtsp_secs)
             if r['ok'] is False:
                 result(title, 'FAIL', '%s（%s）' % (r['err'], strip_cred(url)))
                 continue
@@ -1087,18 +1091,35 @@ def camera_conf(args):
             'rtsp_user': rtsp_user, 'rtsp_pass': rtsp_pass, 'rtsp': lc.get('rtsp', {})}
 
 
-def check_camera(args, outdir):
+def cam_mac(host):
+    """EG 上 ARP 表里摄像机地址对应的 MAC（换了摄像机，MAC 应该变）"""
+    try:
+        r = subprocess.run(['ip', 'neigh', 'show', host], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    m = re.search(r'lladdr ([0-9a-f:]{17})', r.stdout)
+    return m.group(1) if m else ''
+
+
+def check_camera(args, outdir, cam, prev=None):
+    """返回摄像机身份 {serial, mac}；prev 是上一套的（换测时核对是不是真换了）"""
     head('双目摄像机（LAN1）')
-    cam = camera_conf(args)
     host = cam['host']
+    ident = {'serial': '', 'mac': ''}
     hp, rp = args.cam_http_port, args.cam_rtsp_port
     p80, p554 = tcp_ok(host, hp), tcp_ok(host, rp)
     if p80 is not True and p554 is not True:
         result('摄像机网络', 'FAIL', '%s 的 %d / %d 都连不上（%s）：网线 / PoE 供电 / LAN1 地址（EG 应是 192.168.100.1/24）' % (host, hp, rp, p80))
-        return
+        return ident
     result('摄像机网络', 'PASS' if p80 is True and p554 is True else 'WARN',
            '%s  HTTP %d %s，RTSP %d %s' % (host, hp, '通' if p80 is True else '不通', rp, '通' if p554 is True else '不通'))
     got = check_restv1(cam, outdir) if p80 is True else {}
+    ident['serial'] = str((got.get('info') or {}).get('serial') or '')
+    ident['mac'] = cam_mac(host)
+    if ident['mac']:
+        out('       MAC：%s' % ident['mac'])
+    if prev and ((ident['serial'] and ident['serial'] == prev.get('serial')) or (ident['mac'] and ident['mac'] == prev.get('mac'))):
+        result('摄像机已更换', 'WARN', '序列号 / MAC 和上一套一样（%s %s）：摄像机没换？' % (ident['serial'] or '—', ident['mac'] or '—'))
     urls = {}
     for ch in (0, 1):
         if 'rtsp%d' % ch in got:
@@ -1110,8 +1131,9 @@ def check_camera(args, outdir):
             urls[(ch, kind)] = lr.get(k) if lr.get(k) and not args.cam else 'rtsp://%s:%d/%d/%s' % (host, rp, ch, kind)
     if p554 is not True:
         result('RTSP', 'FAIL', '%d 端口不通' % rp)
-        return
+        return ident
     check_rtsp(cam, urls, args)
+    return ident
 
 
 # ───────────────────────────── 转换程序（占串口）─────────────────────────────
@@ -1176,8 +1198,10 @@ def parse_args():
     ap.add_argument('--rest-user', default='', help='restv1 接口账号（缺省 local.yaml 的 restUser）')
     ap.add_argument('--rtsp-secs', type=int, default=4, help='每路拉流秒数（缺省 4）')
     ap.add_argument('--local-yaml', default='/opt/lsa-eg/config/local.yaml', help='EG 的 local.yaml（读摄像机配置；给空串不读）')
+    ap.add_argument('--loop', action='store_true', help='连续换测：每换一套回车（或扫码输入编号）测一套，q 退出；汇总 summary.csv')
+    ap.add_argument('--wait', type=int, default=None, help='开测前最多等设备上线几秒（--loop 缺省 120，单次缺省 0）')
     ap.add_argument('--keep-conv', action='store_true', help='不停转换程序（串口另有他用时自己负责）')
-    ap.add_argument('--out', default='', help='报告目录（缺省 ./sam-check-<编号>-<时间>）')
+    ap.add_argument('--out', default='', help='报告目录（缺省 ./sam-check-<编号>-<时间>；--loop 时 ./sam-check-batch-<时间>，每套一个子目录）')
     ap.add_argument('--version', action='version', version=VERSION)
     a = ap.parse_args()
     try:
@@ -1185,7 +1209,104 @@ def parse_args():
         a.scan_range = (max(1, int(lo)), min(247, int(hi)))
     except ValueError:
         ap.error('--scan 写成 1-32')
+    if a.wait is None:
+        a.wait = 120 if a.loop else 0
+    if a.loop and not sys.stdin.isatty():
+        ap.error('--loop 要在终端里跑（每套要回车 / 输入编号）')
     return a
+
+
+def wait_online(args, mb, slaves, cam):
+    """换上一套后：清掉摄像机的 ARP（新摄像机同一个 IP、MAC 不同），最多等 args.wait 秒，
+    直到预期的传感器都应答、弧光过了启动抑制、摄像机 HTTP / RTSP 端口都开了"""
+    if cam:
+        try:
+            subprocess.run(['ip', 'neigh', 'flush', 'to', cam['host']], capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    t0 = time.monotonic()
+    pend = {}
+    while True:
+        pend = {}
+        for key, sid in (slaves.items() if mb else []):
+            s = next(x for x in SENSORS if x[0] == key)
+            regs, err, _ = mb.read(sid, s[3], s[4], s[5], 0.3)
+            if regs is None:
+                pend[s[1]] = '没应答'
+            elif key == 'arc' and regs[0] & 0x80:
+                pend[s[1]] = '启动抑制中'
+        if cam:
+            if tcp_ok(cam['host'], args.cam_http_port, 1) is not True or tcp_ok(cam['host'], args.cam_rtsp_port, 1) is not True:
+                pend['摄像机'] = '端口没开'
+        left = args.wait - (time.monotonic() - t0)
+        if not pend or left <= 0:
+            break
+        sys.stdout.write('\r  等设备上线（还剩 %3d s）：%s        ' % (left, '，'.join('%s %s' % kv for kv in pend.items())))
+        sys.stdout.flush()
+        time.sleep(2)
+    if args.wait:
+        sys.stdout.write('\r' + ' ' * 100 + '\r')
+        out('  设备上线：%s（等了 %d s）' % ('都到了' if not pend else '没到齐，照常测：' + '，'.join(pend), time.monotonic() - t0))
+
+
+def run_unit(args, sn, outdir, mb, slaves, cam, prev_cam):
+    """测一套：返回 (结论, 不通过项, 注意项, 摄像机身份)"""
+    RESULTS.clear()
+    LOG.clear()
+    os.makedirs(outdir, exist_ok=True)
+    out('LSA-9600EG 传感器单元验收 v%s   %s   单元编号：%s   主机：%s' % (
+        VERSION, time.strftime('%Y-%m-%d %H:%M:%S'), sn or '（没填，--sn）', socket.gethostname()))
+    ident = {}
+    try:
+        if args.wait:
+            wait_online(args, mb, slaves, cam)
+        if mb and slaves:
+            found = check_sensors(mb, args, slaves)
+            if not args.no_func and found:
+                if 'th' in found:
+                    regs, _, _ = mb.read(found['th'], 3, 0, 2)
+                    if regs:
+                        TH0[0] = s16(regs[1]) * 0.1
+                functional(mb, args, found)
+        if cam:
+            ident = check_camera(args, outdir, cam, prev_cam) or {}
+    except KeyboardInterrupt:
+        out('\n（Ctrl+C，这一套中止）')
+        result('中止', 'FAIL', '人工 Ctrl+C')
+
+    head('汇总')
+    width = max([dwidth(n) for n, _, _ in RESULTS] + [4])
+    for n, lv, msg in RESULTS:
+        out('  %s %s  %s' % (tag(lv), n + ' ' * (width - dwidth(n)), msg[:110]))
+    fails = [(n, m) for n, lv, m in RESULTS if lv == 'FAIL']
+    warns = [(n, m) for n, lv, m in RESULTS if lv == 'WARN']
+    verdict = '不通过' if fails else '通过'
+    out('')
+    bar = '=' * 64
+    lv = 'FAIL' if fails else ('WARN' if warns else 'PASS')
+    big = '%s   %s   %s' % (sn or '本套', verdict, '（%d 项注意）' % len(warns) if warns and not fails else '')
+    out(('\x1b[1;%sm%s\x1b[0m' % (C[lv], bar)) if COLOR else bar)
+    out(('\x1b[1;%sm  %s\x1b[0m' % (C[lv], big)) if COLOR else '  ' + big)
+    for n, m in fails:
+        out('  %s %s：%s' % (tag('FAIL'), n, m[:90]))
+    for n, m in warns:
+        out('  %s %s：%s' % (tag('WARN'), n, m[:90]))
+    out(('\x1b[1;%sm%s\x1b[0m' % (C[lv], bar)) if COLOR else bar)
+    rp = os.path.join(outdir, 'report.txt')
+    with open(rp, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(LOG) + '\n')
+    print('报告：%s' % os.path.abspath(rp))
+    return verdict, fails, warns, ident
+
+
+def csv_row(path, row):
+    import csv
+    new = not os.path.exists(path)
+    with open(path, 'a', encoding='utf-8-sig' if new else 'utf-8', newline='') as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(['时间', '编号', '结论', '不通过项', '注意项', '摄像机序列号', '摄像机 MAC', '报告'])
+        w.writerow(row)
 
 
 def main():
@@ -1200,23 +1321,19 @@ def main():
     if args.only:
         keep = set(args.only.split(','))
         slaves = {k: v for k, v in slaves.items() if k in keep}
+    if args.cam_only:
+        slaves = {}
 
     stamp = time.strftime('%Y%m%d-%H%M%S')
-    outdir = args.out or 'sam-check-%s%s' % ((re.sub(r'[^\w.-]', '_', args.sn) + '-') if args.sn else '', stamp)
-    os.makedirs(outdir, exist_ok=True)
-    out('LSA-9600EG 传感器单元验收 v%s   %s   单元编号：%s   主机：%s' % (
-        VERSION, time.strftime('%Y-%m-%d %H:%M:%S'), args.sn or '（没填，--sn）', socket.gethostname()))
-
     stopped = False
     port = None
 
     def restore(*_):
         nonlocal stopped
         if stopped:
-            out('')
-            out('== 重新起转换程序 %s' % CONV)
+            print('\n== 重新起转换程序 %s' % CONV)
             r = subprocess.run(['docker', 'start', CONV], capture_output=True, text=True)
-            out('  ' + ('已起来' if r.returncode == 0 else '起不来：%s —— 手工 docker start %s' % (r.stderr.strip(), CONV)))
+            print('  ' + ('已起来' if r.returncode == 0 else '起不来：%s —— 手工 docker start %s' % (r.stderr.strip(), CONV)))
             stopped = False
 
     def on_sig(signum, _f):
@@ -1225,63 +1342,73 @@ def main():
 
     signal.signal(signal.SIGTERM, on_sig)
     try:
-        if not args.cam_only and slaves:
+        mb = None
+        if slaves:
             if not args.port.startswith('tcp://'):
                 if not os.path.exists(args.port):
-                    out('串口 %s 不存在。可用的：%s' % (args.port, ' '.join(sorted(
+                    print('串口 %s 不存在。可用的：%s' % (args.port, ' '.join(sorted(
                         p for d in ('/dev',) for p in (os.path.join(d, f) for f in os.listdir(d)) if re.search(r'tty(S\d|USB|ACM)', p))[:12])))
                     return 2
                 if not args.keep_conv and conv_running():
-                    out('== 转换程序 %s 占着串口：先停掉，跑完自动起来' % CONV)
+                    print('== 转换程序 %s 占着串口：先停掉，%s自动起来' % (CONV, '退出时' if args.loop else '跑完'))
                     r = subprocess.run(['docker', 'stop', '-t', '10', CONV], capture_output=True, text=True)
                     if r.returncode != 0:
-                        out('  停不掉：%s（要 sudo）' % r.stderr.strip())
+                        print('  停不掉：%s（要 sudo）' % r.stderr.strip())
                         return 2
                     stopped = True
                     time.sleep(1)
                 h = holders(args.port)
                 if h and not args.keep_conv:
-                    out('串口 %s 还被别的进程开着，读数会乱：\n  %s\n先停掉它们（或加 --keep-conv 硬跑）' % (args.port, '\n  '.join(h)))
+                    print('串口 %s 还被别的进程开着，读数会乱：\n  %s\n先停掉它们（或加 --keep-conv 硬跑）' % (args.port, '\n  '.join(h)))
                     return 2
             try:
                 port = SerialPort(args.port, args.baud)
             except (OSError, ValueError) as e:
-                out('打不开串口 %s：%s%s' % (args.port, e, '（要 sudo，或把用户加进 dialout 组）' if isinstance(e, PermissionError) else ''))
+                print('打不开串口 %s：%s%s' % (args.port, e, '（要 sudo，或把用户加进 dialout 组）' if isinstance(e, PermissionError) else ''))
                 return 2
             mb = Modbus(port, args.timeout)
-            found = check_sensors(mb, args, slaves)
-            if not args.no_func and found:
-                if 'th' in found:
-                    regs, _, _ = mb.read(found['th'], 3, 0, 2)
-                    if regs:
-                        TH0[0] = s16(regs[1]) * 0.1
-                functional(mb, args, found)
-            port.close()
-            port = None
-            restore()
-        if not args.no_cam:
-            check_camera(args, outdir)
+        cam = None if args.no_cam else camera_conf(args)
+
+        if not args.loop:
+            outdir = args.out or 'sam-check-%s%s' % ((re.sub(r'[^\w.-]', '_', args.sn) + '-') if args.sn else '', stamp)
+            verdict, fails, _, _ = run_unit(args, args.sn, outdir, mb, slaves, cam, None)
+            return 1 if fails else 0
+
+        # 连续换测
+        batch = args.out or 'sam-check-batch-%s' % stamp
+        os.makedirs(batch, exist_ok=True)
+        summary = os.path.join(batch, 'summary.csv')
+        n, npass, prev = 0, 0, None
+        sn = args.sn
+        print('\n连续换测：汇总在 %s' % os.path.abspath(summary))
+        while True:
+            if n or not sn:
+                try:
+                    a = input('\n→ 换上%s一套，插好后输入编号（可扫码）回车开始；直接回车自动编号；q 退出：' % ('下' if n else '第')).strip()
+                except EOFError:
+                    break
+                if a.lower() in ('q', 'quit', 'exit'):
+                    break
+                sn = a or 'unit-%03d' % (n + 1)
+            n += 1
+            outdir = os.path.join(batch, '%03d-%s' % (n, re.sub(r'[^\w.-]', '_', sn)))
+            verdict, fails, warns, ident = run_unit(args, sn, outdir, mb, slaves, cam, prev)
+            npass += 0 if fails else 1
+            prev = ident or prev
+            csv_row(summary, [time.strftime('%Y-%m-%d %H:%M:%S'), sn, verdict,
+                              '；'.join('%s：%s' % f for f in fails), '；'.join(w[0] for w in warns),
+                              (ident or {}).get('serial', ''), (ident or {}).get('mac', ''), os.path.join(outdir, 'report.txt')])
+            print('（已测 %d 套：通过 %d、不通过 %d）' % (n, npass, n - npass))
+            sn = ''
+        print('\n共测 %d 套：通过 %d、不通过 %d。汇总：%s' % (n, npass, n - npass, os.path.abspath(summary)))
+        return 0 if n == npass else 1
     except KeyboardInterrupt:
-        out('\n（Ctrl+C，中止）')
+        print('\n（Ctrl+C，退出）')
+        return 1
     finally:
         if port:
             port.close()
         restore()
-
-    head('汇总')
-    width = max([dwidth(n) for n, _, _ in RESULTS] + [4])
-    for n, lv, msg in RESULTS:
-        out('  %s %s  %s' % (tag(lv), n + ' ' * (width - dwidth(n)), msg[:110]))
-    fails = sum(1 for _, lv, _ in RESULTS if lv == 'FAIL')
-    warns = sum(1 for _, lv, _ in RESULTS if lv == 'WARN')
-    verdict = '不通过' if fails else ('通过（有 %d 项注意）' % warns if warns else '通过')
-    out('')
-    out('结论：%s   （%d 项：不通过 %d、注意 %d）' % (verdict, len(RESULTS), fails, warns))
-    rp = os.path.join(outdir, 'report.txt')
-    with open(rp, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(LOG) + '\n')
-    print('报告：%s' % os.path.abspath(rp))
-    return 1 if fails else 0
 
 
 if __name__ == '__main__':
