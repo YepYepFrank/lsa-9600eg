@@ -13,7 +13,7 @@ mknod /dev/ttyS1 c 4 65 2>/dev/null || true
 mknod /dev/ttyUSB0 c 188 0; mkdir -p /dev/serial/by-id
 BYID=/dev/serial/by-id/usb-FTDI_LSA_TEST_A1B2C3-if00-port0
 cd "$(mktemp -d)"
-run() { SERIAL="$1"; out="$(pick_serial 2>&1)"; rc=$?; }
+run() { SERIAL="$1"; pick_serial > /tmp/ps.out 2>&1; rc=$?; out="$(cat /tmp/ps.out)"; }   # 不能 $(…)：子 shell 里设的 SERIAL 带不出来
 
 echo "== 1. 没插 USB、没记过 → COM2"
 : > .env; run ''
