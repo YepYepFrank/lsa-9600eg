@@ -40,6 +40,7 @@ LOGROOT=/var/log/lsa9600sp/eg-upgrade
 POLL_S=10
 PROGRESS_S="${LSA_EGUP_PROGRESS_S:-30}"   # 每台在拷 / 在装时，屏幕上每这么多秒报一行进度（明细在 <批次>/<单元>.log）
 JOB_TIMEOUT_S=3600
+START_RECHECK_S="${LSA_EGUP_START_RECHECK_S:-300}"   # start 那条 SSH 断了以后，回查 EG 是不是已经开始升级，最多查这么久（0.8.3）
 SP_CHECK_S=180
 # 发布公钥（一键安装文件 --role sp 装的）与签名身份 / 命名空间（和 EG 的 lsa-eg-upgrade、打包的 sign-release.mjs 一致）
 SIGNERS="${LSA_RELEASE_SIGNERS:-$SP/release-signers}"
@@ -506,15 +507,31 @@ plan_cfg() { awk -F'\t' -v c="$1" '$1==c { print $4 }' "$BD/plan.tsv"; }
 plan_from() { awk -F'\t' -v c="$1" '$1==c { print $3 }' "$BD/plan.tsv"; }
 plan_entry() { awk -F'\t' -v c="$1" '$1==c { print ($5 == "" ? 0 : $5) }' "$BD/plan.tsv"; }
 result() {  # result <单元号> <结果> <原因>：写一行，失败就让后面的不再开
-  local c="$1" r="$2" why="$3" s=$(( $(date +%s) - T0 ))
+  local c="$1" r="$2" why="${3//[$'\r\t']/ }" s=$(( $(date +%s) - T0 ))   # 原因里常带 ssh 报错原文，去掉 \r（0.8.3：现场 run.log 被它覆盖成乱行）
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$c" "$(plan_from "$c")" "$TO" "$s" "$r" "$why" > "$BD/$c.result"
   echo "$(ts) [$c] $r：$why（${s} s）" >&3
   if [ "$r" = 成功 ]; then phase_set "$c" done; else touch "$BD/STOP"; fi
 }
 # 每台的阶段（网页进度用，§9.4）：copy / install / selfcheck / spcheck / done（成功才写 done；失败停在出事的那一段，结果看 .result）
 phase_set() { [ "$(cat "$BD/$1.phase" 2>/dev/null)" = "$2" ] || echo "$2" > "$BD/$1.phase"; }
+# started_job <EG 地址> <start 之前 EG 上最近的任务号>：start 那条 SSH 没回「OK start」时回查（0.8.3，现场 10-27）——
+# EG 收到 start 先写任务状态、马上起安装，安装重启服务 / 防火墙可能把这条 SSH 断掉（Broken pipe），「OK start」就回不来。
+# EG 上最近的任务是这个安装文件（sha）、而且不是 start 之前那个 → 已经开始了，打印任务号；
+# 查到了、但不是 → 确实没开始，不打印；一直连不上就查到 START_RECHECK_S 为止，返回 2（不知道开没开始）
+started_job() {
+  local h="$1" pre="$2" st j t_end=$(( $(date +%s) + START_RECHECK_S ))
+  while :; do
+    if st="$(sshx "$h" status 2>&1)"; then
+      j="$(kv job "$st")"
+      if [ "$(kv sha "$st")" = "$SHA" ] && [ -n "$j" ] && [ "$j" != "$pre" ]; then echo "$j"; fi
+      return 0
+    fi
+    [ "$(date +%s)" -lt "$t_end" ] || return 2
+    sleep "$POLL_S"
+  done
+}
 up_one() {
-  local c="$1" h="${HOST[$1]}" log="$BD/$1.log" out ph job st t_end ok row t_say pid t0 pos now el rate
+  local c="$1" h="${HOST[$1]}" log="$BD/$1.log" out ph job st t_end ok row t_say pid t0 pos now el rate pre rc
   T0=$(date +%s)
   exec >> "$log" 2>&1
   echo "== $(ts) $c（$h）→ $TO"
@@ -551,10 +568,21 @@ up_one() {
       echo "$out"
       grep -q "^OK put-sig $SHA" <<< "$out" || { result "$c" 失败 "拷签名没成功：$(tail -1 <<< "$out")"; sshx "$h" "drop $SHA" >/dev/null 2>&1; return; }
     fi
+    pre="$(kv job "$(sshx "$h" status 2>/dev/null)")"   # start 之前 EG 上最近的任务（start 断了时用来认新任务）
     out="$(sshx "$h" "start $SHA" 2>&1)"
     echo "$out"
-    grep -q '^OK start ' <<< "$out" || { result "$c" 失败 "EG 没开始升级：$(tail -1 <<< "$out")"; sshx "$h" "drop $SHA" >/dev/null 2>&1; return; }
-    job="$(awk '/^OK start / { print $3 }' <<< "$out")"
+    if grep -q '^OK start ' <<< "$out"; then
+      job="$(awk '/^OK start / { print $3 }' <<< "$out")"
+    else
+      echo "$(ts) [$c] 开始升级那条 SSH 没回「OK start」（$(tail -1 <<< "$out" | tr -d '\r')），回查 EG 是不是已经开始了（最多 ${START_RECHECK_S} s）…" >&3
+      job="$(started_job "$h" "$pre")"; rc=$?
+      if [ "$rc" = 2 ]; then
+        result "$c" 失败 "开始升级那条 SSH 断了，${START_RECHECK_S} s 内一直连不上 EG，不知道开没开始：先别回退 —— EG 回来后在 EG 上 install.sh --status 看版本，或 --resume $BATCH"; return
+      fi
+      [ -n "$job" ] || { result "$c" 失败 "EG 没开始升级：$(tail -1 <<< "$out")（回查 EG 上没有这个安装文件的新任务）"; sshx "$h" "drop $SHA" >/dev/null 2>&1; return; }
+      echo "回查到 EG 已开始升级：任务 $job"
+      echo "$(ts) [$c] 回查到 EG 已开始升级（任务 $job），接着查进度" >&3
+    fi
     phase_set "$c" install
     echo "$job" > "$BD/$c.job"
   fi

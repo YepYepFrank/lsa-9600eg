@@ -539,6 +539,34 @@ read -r c_pos c_size c_rate c_at < "$BDC/AH01-A.copy" 2>/dev/null
 chk "AH01-A.copy：已传 = 总 = $sz（$c_pos / $c_size，速率 $c_rate B/s）" [ "$c_pos/$c_size" = "$sz/$sz" ]
 chk '临时输出 AH01-A.put.out 删了' [ ! -e "$BDC/AH01-A.put.out" ]
 
+say "9c. start 那条 SSH 断了（0.8.3，现场 10-27 批次 20261027-112745）：EG 其实开始了 → 回查认出来、接着查到成功；真没开始 → 失败；原因里没有 \\r"
+reset_egs
+touch /fake/eg/eg1/start_drop
+LSA_EGUP_START_RECHECK_S=30 bash "$UP" --run /w/a.run --only AH01-A > /tmp/sd.out 2>&1; rc=$?
+rm -f /fake/eg/eg1/start_drop
+BDS="$(sed -n 's/^日志：//p' /tmp/sd.out | tail -1)"
+grep '\[AH01-A\] \(开始升级那条\|回查到\|成功\|失败\)' /tmp/sd.out | sed 's/^/    /'
+chk "start 断了、EG 其实开始了：rc 0（$rc）" [ "$rc" = 0 ]
+chk '屏幕说回查到已开始' grep -q '\[AH01-A\] 回查到 EG 已开始升级（任务 job-' /tmp/sd.out
+chk "结果成功、阶段 done（$(cut -f5 "$BDS/AH01-A.result" 2>/dev/null) / $(cat "$BDS/AH01-A.phase" 2>/dev/null)）" [ "$(cut -f5 "$BDS/AH01-A.result" 2>/dev/null)/$(cat "$BDS/AH01-A.phase" 2>/dev/null)" = 成功/done ]
+chk '没有留下 STOP、meta result=ok' eval '[ ! -e "$BDS/STOP" ] && grep -qx result=ok "$BDS/meta"'
+chk "eg1 升好了（$(cat /fake/eg/eg1/ver)）" [ "$(cat /fake/eg/eg1/ver)" = "$NEW" ]
+reset_egs
+touch /fake/eg/eg1/start_refuse
+LSA_EGUP_START_RECHECK_S=5 bash "$UP" --run /w/a.run --only AH01-A > /tmp/sr.out 2>&1; rc=$?
+rm -f /fake/eg/eg1/start_refuse
+BDR="$(sed -n 's/^日志：//p' /tmp/sr.out | tail -1)"
+chk "start 断了、EG 真没开始：rc 1（$rc）" [ "$rc" = 1 ]
+chk "结果失败、原因说回查没有新任务（$(cut -f6 "$BDR/AH01-A.result" 2>/dev/null)）" grep -q '回查 EG 上没有这个安装文件的新任务' "$BDR/AH01-A.result"
+chk 'run.log、.result 里没有 \r' eval '! grep -q $'"'"'\r'"'"' "$BDR/run.log" "$BDR/AH01-A.result"'
+chk "eg1 没动（$(cat /fake/eg/eg1/ver)）" [ "$(cat /fake/eg/eg1/ver)" != "$NEW" ]
+reset_egs
+touch /fake/eg/eg1/start_gone
+LSA_EGUP_START_RECHECK_S=5 bash "$UP" --run /w/a.run --only AH01-A > /tmp/sg.out 2>&1; rc=$?
+rm -f /fake/eg/eg1/start_gone /fake/eg/eg1/gone
+BDG="$(sed -n 's/^日志：//p' /tmp/sg.out | tail -1)"
+chk "start 断了、之后一直连不上：rc 1（$rc），原因说「不知道开没开始：先别回退」、不说「没开始」" eval 'grep -q "不知道开没开始：先别回退" "$BDG/AH01-A.result" && ! grep -q "EG 没开始升级" "$BDG/AH01-A.result"'
+
 say "10. 执行器：上限"
 reset_egs
 for n in $(seq 25); do req scan '{}' > /dev/null; done
