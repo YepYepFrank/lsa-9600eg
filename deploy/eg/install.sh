@@ -1011,6 +1011,22 @@ if [ -n "$JOINKEY" ]; then
   fi
 fi
 
+# ---------- 装之前先核本机与参数（0.8.3，现场 10-29：.run --role eg 误在子站主机上跑，网口检查前已经写了 journald、导了镜像）----------
+# 改系统的步骤（装离线包、journald、导入镜像、.env、防火墙）之前把能核的都核完，不对就什么都不动地退出
+if [ -d /opt/lsa9600sp ] && [ "$FORCE" != 1 ]; then
+  echo "!! 这台是子站主机（有 /opt/lsa9600sp）：EG 要装在 EG（X26A）上，不要装在子站主机上。确实要在这台装 EG 加 --force" >&2
+  exit 1
+fi
+if [ -n "$LAN1" ]; then
+  [ -e "/sys/class/net/$LAN1" ] || { echo "没有网口 $LAN1（本机：$(ls /sys/class/net | tr '\n' ' ')）" >&2; exit 1; }
+  # 对外网口：物理网卡（有 device 链接），不算 lo、docker、网桥、veth
+  nics=$(for n in /sys/class/net/*; do if [ -e "$n/device" ]; then basename "$n"; fi; done | wc -l)
+  if [ "$nics" -le 1 ] && [ "$FORCE" != 1 ]; then
+    echo "本机只有 $nics 个物理网口，--lan1 $LAN1 会把唯一的网口也挡掉（管理页谁都打不开）。单网口的机器不要给 --lan1；确实要这样加 --force" >&2
+    exit 1
+  fi
+fi
+
 # ---------- 0. 系统：只支持 Ubuntu Server 24.04 ----------
 os_id="$( . /etc/os-release 2>/dev/null; echo "${ID:-?}" )"
 os_ver="$( . /etc/os-release 2>/dev/null; echo "${VERSION_ID:-?}" )"
@@ -1106,16 +1122,8 @@ EOF
 fi
 env_set EG_APP_IMAGE "lsa-eg-app:$VERSION"
 sed -i '/^EG_AGENT_IMAGE=/d' .env
-if [ -n "$LAN1" ]; then
-  [ -e "/sys/class/net/$LAN1" ] || { echo "没有网口 $LAN1（本机：$(ls /sys/class/net | tr '\n' ' ')）" >&2; exit 1; }
-  # 对外网口：物理网卡（有 device 链接），不算 lo、docker、网桥、veth
-  nics=$(for n in /sys/class/net/*; do if [ -e "$n/device" ]; then basename "$n"; fi; done | wc -l)
-  if [ "$nics" -le 1 ] && [ "$FORCE" != 1 ]; then
-    echo "本机只有 $nics 个物理网口，--lan1 $LAN1 会把唯一的网口也挡掉（管理页谁都打不开）。单网口的机器不要给 --lan1；确实要这样加 --force" >&2
-    exit 1
-  fi
-  env_set EG_LAN1 "$LAN1"
-fi
+# 网口在「装之前先核」里查过了
+[ -z "$LAN1" ] || env_set EG_LAN1 "$LAN1"
 grep -q '^EG_LAN1=.' .env || echo '（提示：没给 --lan1：管理页在摄像机网口上也能打开，只能靠防火墙挡）'
 lan1_now="$(grep -E '^EG_LAN1=' .env | cut -d= -f2- || true)"
 if [ -n "$lan1_now" ] && ! grep -q '^EG_LAN1_FW=off' .env; then fw_apply "$lan1_now"; fi
