@@ -30,6 +30,7 @@
     "pd-absent:verify": "pnpm -F @lsa-eg/agent verify:pd-absent",
     "mqtt-keep:verify": "pnpm -F @lsa-eg/agent verify:mqtt-keep",
     "pulse:verify": "pnpm -F @lsa-eg/agent verify:pulse",
+    "arc:verify": "pnpm -F @lsa-eg/agent verify:arc",
     "warmup:verify": "pnpm -F @lsa-eg/agent verify:warmup",
     "g1:verify": "pnpm -F @lsa-eg/agent verify:g1",
     "g2:verify": "pnpm -F @lsa-eg/agent verify:g2",

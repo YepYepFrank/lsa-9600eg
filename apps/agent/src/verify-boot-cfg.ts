@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { EgConfig } from '@lsa-eg/config'
+import type { ArcService } from './derive/arc.service.js'
 import { ApplyService } from './apply/apply.service.js'
 import { AttrsService } from './attrs/attrs.service.js'
 import type { AuditService } from './audit/audit.service.js'
@@ -38,7 +39,7 @@ function boot(applied: string | null) {
   const tb = { available: false } as unknown as LocalTbService
   const caps = new CapsService()
   ;(caps as unknown as { log: { log: () => void } }).log = { log: () => undefined }
-  const apply = new ApplyService(cfg, tb, bus, { write: () => undefined } as unknown as AuditService, caps, { set: () => undefined } as unknown as MetersService)
+  const apply = new ApplyService(cfg, tb, bus, { write: () => undefined } as unknown as AuditService, caps, { set: () => undefined } as unknown as MetersService, { setThresholds: () => undefined } as unknown as ArcService)
   const attrs = new AttrsService(cfg, bus, apply, tb)
   attrs.onModuleInit()
   onConnect!()

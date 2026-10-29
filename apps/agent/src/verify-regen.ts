@@ -35,7 +35,8 @@ console.log('3. 0.7.0 及以前存的配置（没有 ignoredRules 字段，被�
 {
   const r = regenRules({ rules: base }, new Set(['局放异常', '设备失联']))
   check(smokeOf(r.rules)?.on === false && !kept(r.rules).includes('烟气'), '本地没有烟气（0.7.0 生成不出来）：EG-smoke 按停 —— 不会把子站可能关掉的烟雾告警打开')
-  check(r.unknown.length === 1 && r.unknown[0]!.id === 'EG-smoke', `开关不知道的只列 EG-smoke（${r.unknown.map(x => x.id).join('、')}）`)
+  // 0.8.3 起多一条 EG-arcuv（弧光传感器受光异常）：老配置里同样没有它的开关，本地也没有这个类型 → 一样按停，等子站下发
+  check(r.unknown.map(x => x.id).sort().join() === 'EG-arcuv,EG-smoke' && r.unknown.every(x => !x.on), `开关不知道的只列 EG-smoke、EG-arcuv，都按停（${r.unknown.map(x => x.id).join('、')}）`)
   const r2 = regenRules({ rules: base }, new Set(['烟气']))
   check(smokeOf(r2.rules)?.on === true, '本地已经有烟气：照旧开')
   const old = regenRules({ rules: base.filter(x => x.id !== 'EG-devlost') }, new Set(['设备失联']))

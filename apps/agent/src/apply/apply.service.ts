@@ -31,6 +31,7 @@ import { LocalTbService, TbHttpError } from '../tb/local-tb.service.js'
 import { offCabsKey, parseCaps, type CapsConfig } from '../caps/caps.js'
 import { CapsService, type DevCommParams } from '../caps/caps.service.js'
 import { MetersService, parseMeters, type Ratio } from '../meters/meters.service.js'
+import { ArcService } from '../derive/arc.service.js'
 import { parseGas, type GasParams } from '../warmup/warmup.js'
 
 export interface ApplyReceipt {
@@ -84,7 +85,9 @@ export const RULE_ALARM: Record<string, { type: string; severity?: string; alias
   'EG-rise2': { type: '过温', severity: 'CRITICAL' },
   'EG-tabs': { type: '绝对超温' },
   'EG-pd': { type: '局放异常' },
+  // 0.8.3（子站 0.19.3，用户 10-29 定）：「弧光异常」只看 agent 派生的事件量 uv.arc（ArcService）；长时间受光改报一般级提示
   'EG-arc': { type: '弧光异常' },
+  'EG-arcuv': { type: '弧光传感器受光异常' },
   // 用户 2026-10-08 拍板（§6 第 6 条）：改名「柜内湿度高」，子站缺省下 on:false
   'EG-rh': { type: '柜内湿度高', alias: ['环境'] },
   'EG-ol': { type: '过载' },
@@ -185,6 +188,7 @@ export class ApplyService {
     private readonly audit: AuditService,
     private readonly caps: CapsService,
     private readonly meters: MetersService,
+    private readonly arc: ArcService,
   ) {
     this.file = resolve(cfg.dir, 'applied-config.json')
     this.pendingFile = resolve(cfg.dir, 'pending-config.json')
@@ -195,6 +199,7 @@ export class ApplyService {
     }
     this.caps.set(this.applied?.caps ?? null, this.applied?.devComm ?? null, this.applied?.gas ?? null)
     this.meters.set(this.applied?.meters ?? null)
+    this.arc.setThresholds(this.applied?.thresholds)
     // 上次没应用成的（比如断电重启时本地 TB 还没起来）：接着重试
     try {
       if (existsSync(this.pendingFile)) {
@@ -332,6 +337,7 @@ export class ApplyService {
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
     this.caps.set(input.caps, input.devComm, input.gas)
     this.meters.set(input.meters)
+    this.arc.setThresholds(input.thresholds)
     // 规则停用 / 类型改名后，没有规则来清的活动告警：清掉
     const typesOf = (ps: TbProfile[]) => new Set(ps.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
     const before = typesOf(profiles)
