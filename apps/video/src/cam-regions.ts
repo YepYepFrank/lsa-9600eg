@@ -14,6 +14,9 @@
  *   - force 必须同时给 yes：覆盖前列出 R1–R3 三个位置现在是什么、哪些启用的区不动（现场的 Area6 是用户手画的）；
  *   - 写回（恢复 / 写到一半出错）只写跟备份不一样的区；出厂空区（0×0）摄像机可能不收原样，原来就没启用的改成「停用」（效果一样：不测温）。
  *
+ * 0.9.0（子站「测温区设置」）：applyRegions 按网页画的写任意 R1–R12 矩形区、停用指定的区（同一套备份 / 写法探测 / 写回 / 核对；只写跟摄像机上不一样的区），
+ *   readRegions 读当前整份给页面；eg-video 经 agent 的 /api/cam-regions 转过来（子站服务票据）。部位名不进摄像机（regionName 一律 R<n>）。
+ *
  * 缺省布局（用户定）：左、中、右三竖条，R1 = 左、R2 = 中、R3 = 右；四周各留 5% 的边（x 32–608、y 24–456），
  *   条与条之间留 16 px 缝：R1 x 32 宽 181、R2 x 229 宽 181、R3 x 426 宽 182，三条都是 y 24 高 432。
  *   辐射率 0.95；距离缺省 2 m（文档例子），--distance 可改（0–1000]。regionName 写 R1 / R2 / R3，按名对应。
@@ -333,6 +336,176 @@ export async function applyDefaultRegions(
   }
   res.ok = res.mismatch.length === 0
   return res
+}
+
+/** 网页上画的一个区（0.9.0，子站「测温区设置」）：n = 1–12（区号 n−1），矩形，640×480 热像像素 */
+export interface RegionSpec {
+  n: number
+  rect: Rect
+}
+
+/** 矩形最小边长（像素）：太小的框摄像机测不出有意义的温度，页面也点不中 */
+export const MIN_SIDE = 8
+
+/** 网页上画的框不对返回说法，对返回 null */
+export function specProblem(set: RegionSpec[], disable: number[], slots: number): string | null {
+  const seen = new Set<number>()
+  for (const s of set) {
+    if (!Number.isInteger(s.n) || s.n < 1 || s.n > Math.min(12, slots)) return `区号 R${s.n} 不对（摄像机有 ${slots} 个区，R1–R${Math.min(12, slots)}）`
+    if (seen.has(s.n)) return `R${s.n} 给了两次`
+    seen.add(s.n)
+    const r = s.rect ?? ({} as Rect)
+    if (![r.x, r.y, r.width, r.height].every(x => Number.isInteger(x))) return `R${s.n} 坐标要是整数像素：${JSON.stringify(s.rect)}`
+    if (r.width < MIN_SIDE || r.height < MIN_SIDE) return `R${s.n} 太小（${r.width}×${r.height}）：宽、高至少 ${MIN_SIDE} 像素`
+    if (r.x < 0 || r.y < 0 || r.x + r.width > RESTV1_FRAME.w || r.y + r.height > RESTV1_FRAME.h) return `R${s.n} 超出 ${RESTV1_FRAME.w}×${RESTV1_FRAME.h} 画面：${JSON.stringify(s.rect)}`
+  }
+  for (const n of disable) {
+    if (!Number.isInteger(n) || n < 1 || n > slots) return `要停用的区号 R${n} 不对（R1–R${slots}）`
+    if (seen.has(n)) return `R${n} 又要写又要停用`
+  }
+  return null
+}
+
+/** 一个区已经是要的样子（启用、名叫 R<n>、矩形、坐标一样）：不用写 */
+const isAlready = (row: Row | undefined, s: RegionSpec) => !!row && row['regionEnable'] === true && String(row['regionName'] ?? '') === `R${s.n}` && isRect(row['regionType']) && sameRect(row['region'], s.rect)
+
+/** 按网页上画的写测温区（0.9.0）：set 里的区写成启用的矩形、名字 R<n>（中文部位名不进摄像机，用户 10-29 定）；
+ *  disable 里的（R 号 1–12）停用（只改启用开关）。跟缺省三竖条同一套规矩：
+ *  先整份备份（取不到不写）→ 没给 yes 只预览 → 第一个要写的区试写法，后面照用 → 写一半出错按备份写回 → 读回逐项核对（别的区不该动）→ 等温度出数。
+ *  已经是要的样子的区不写；全局测温参数不动（只在说明里报现在的值） */
+export async function applyRegions(
+  d: Restv1Driver,
+  o: { set: RegionSpec[]; disable?: number[]; yes?: boolean; camera: string; now?: Date; waitTempMs?: number },
+): Promise<ApplyResult> {
+  const before = await d.regionsRaw()
+  const style0 = styleOf(before)
+  const glob = style0.local ? undefined : await d.globalParamRaw().catch(() => undefined)
+  const backup: Backup = { at: (o.now ?? new Date()).toISOString(), camera: o.camera, regions: before, ...(glob ? { glob } : {}) }
+  const res: ApplyResult = { ok: false, backup, written: [], mismatch: [], temps: [], notes: [] }
+  const set = [...(o.set ?? [])].sort((a, b) => a.n - b.n)
+  const disable = [...new Set(o.disable ?? [])]
+  const bad = !set.length ? '一个区都没给（至少画 1 个）' : specProblem(set, disable, before.length)
+  if (bad) {
+    res.error = bad
+    res.refused = true
+    return res
+  }
+  const todo = set.filter(s => !isAlready(before[s.n - 1], s))
+  const off = disable.filter(n => before[n - 1]?.['regionEnable'] === true)
+  const same = set.filter(s => !todo.includes(s)).map(s => `R${s.n}`)
+  /** 原来那一格有本地参数就照它的距离 / 辐射率（写法带本地参数时） */
+  const rowOf = (s: RegionSpec, style: CamStyle) => {
+    const row = regionRow(`R${s.n}`, s.rect, DEFAULT_DISTANCE_M, style)
+    const lp = before[s.n - 1]?.['localParam']
+    if (style.local && lp && typeof lp === 'object') row['localParam'] = { ...(row['localParam'] as Row), ...(lp as Row) }
+    return row
+  }
+  const planText = [
+    ...todo.map(s => `R${s.n}（区号 ${s.n - 1}）现在 ${rowText(before[s.n - 1], s.n - 1)} → x${s.rect.x} y${s.rect.y} ${s.rect.width}×${s.rect.height}`),
+    ...off.map(n => `停用 ${rowText(before[n - 1], n - 1)}（区号 ${n - 1}）`),
+  ]
+  if (!o.yes) {
+    res.preview = true
+    res.plan = `${planText.length ? `会写：${planText.join('；')}` : '摄像机上已经是这样，不用写'}${same.length ? `；不变：${same.join('、')}` : ''}。没写；确认后再提交（写之前整份备份）`
+    return res
+  }
+  if (!planText.length) res.notes.push('摄像机上已经是这样，没写')
+  else {
+    let style: CamStyle | null = null
+    const tried: string[] = []
+    /** 正在写的那一格；allRejected = 几种写法都回 10001（摄像机明确没收，那一格没动） */
+    let at = -1
+    let allRejected = false
+    try {
+      for (const s of todo) {
+        at = s.n - 1
+        if (!style) {
+          for (const st of stylesToTry(style0)) {
+            try {
+              await d.setRegion(at, rowOf(s, st))
+              style = st
+              break
+            } catch (e) {
+              if (!is10001(e)) throw e
+              tried.push(`${styleText(st)}：${(e as Error).message}`)
+            }
+          }
+          if (!style) {
+            allRejected = true
+            throw new Error(`几种写法摄像机都不收（${tried.join('；')}）`)
+          }
+          if (tried.length) res.notes.push(`照读回的写法（${styleText(style0)}）摄像机回 10001，改用 ${styleText(style)} 写进去了`)
+        } else await d.setRegion(at, rowOf(s, style))
+        res.written.push(at)
+      }
+      for (const n of off) {
+        at = n - 1
+        await d.setRegion(at, writableOf({ ...before[at]!, regionEnable: false }, (style ?? style0).local))
+        res.written.push(at)
+      }
+    } catch (e) {
+      res.error = `写 R${at + 1}（区号 ${at}）失败：${(e as Error).message}`
+      const back: string[] = []
+      // 写失败的那一格：摄像机明确回了错误码就没动；超时、连接断了可能已经写进去了，一样按备份写回
+      const ids = [...res.written, ...(at >= 0 && !res.written.includes(at) && !allRejected && !surelyNotWritten(e) ? [at] : [])]
+      const s1 = style ?? style0
+      for (const id of ids) {
+        const old = before[id]
+        if (!old) continue
+        const spec = set.find(s => s.n - 1 === id)
+        try {
+          back.push((await putBack(d, id, old, spec ? rowOf(spec, s1) : { ...old, regionEnable: false }, s1.local)).text)
+        } catch (e2) {
+          back.push(`R${id + 1} 写回失败（${(e2 as Error).message}）`)
+        }
+      }
+      res.rolledBack = back.length ? back.join('、') : '一个都还没写，不用写回'
+      return res
+    }
+    res.style = style ?? style0
+  }
+  // 读回核对。读回失败（19999、超时）不抛：区已经写了，结果和备份要交回去存盘、记审计
+  let after: Row[]
+  try {
+    after = await d.regionsRaw()
+  } catch (e) {
+    res.error = `已经写了，但写完读回失败：${(e as Error).message}（没核对；要撤销用备份恢复）`
+    return res
+  }
+  for (const s of set) {
+    const got = after[s.n - 1] ?? {}
+    if (got['regionEnable'] !== true) res.mismatch.push(`R${s.n} 没启用`)
+    if (!isRect(got['regionType'])) res.mismatch.push(`R${s.n} 类型是 ${String(got['regionType'])}`)
+    if (String(got['regionName'] ?? '') !== `R${s.n}`) res.mismatch.push(`R${s.n} 名字是「${String(got['regionName'] ?? '')}」`)
+    if (!sameRect(got['region'], s.rect)) res.mismatch.push(`R${s.n} 坐标是 ${JSON.stringify(got['region'])}`)
+  }
+  for (const n of disable) if (after[n - 1]?.['regionEnable'] === true) res.mismatch.push(`R${n}（区号 ${n - 1}）还是启用的`)
+  const touched = new Set([...set.map(s => s.n - 1), ...disable.map(n => n - 1)])
+  for (const [id, r] of before.entries()) if (!touched.has(id) && !sameRow(after[id], r)) res.mismatch.push(`区号 ${id} 不该动却变了：${rowText(after[id], id)}`)
+  const others = after.map((r, id) => ({ r, id })).filter(({ r, id }) => !touched.has(id) && r['regionEnable'] === true)
+  if (others.length) res.notes.push(`摄像机上还有别的启用的区（没动）：${others.map(({ r, id }) => `${rowText(r, id)}（区号 ${id}）`).join('、')}`)
+  if (!(res.style ?? style0).local && glob) res.notes.push(`测温区按全局测温参数算：辐射率 ${String(glob['radrate'])}、检测距离 ${String(glob['detectdist'])} m（没改）`)
+  // regionTemp：摄像机 1 s 刷新，刚写完可能还没有数，最多等 waitTempMs
+  const deadline = Date.now() + (o.waitTempMs ?? 5000)
+  for (;;) {
+    const t = await d.regionTempRaw().catch(() => [] as Row[])
+    res.temps = set.map(s => {
+      const r = (t[s.n - 1] ?? {}) as { max?: { value?: unknown }; avg?: { value?: unknown } }
+      const v = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 10) / 10 : null)
+      return { name: `R${s.n}`, max: v(r.max?.value), avg: v(r.avg?.value) }
+    })
+    if (res.temps.every(x => x.max !== null) || Date.now() >= deadline) break
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  res.ok = res.mismatch.length === 0
+  return res
+}
+
+/** 摄像机上现在的区（0.9.0，网页「测温区设置」打开时读）：整份原样 + 写法 + 全局测温参数（读不到没有） */
+export async function readRegions(d: Restv1Driver): Promise<{ regions: Row[]; style: CamStyle; glob?: Row; frame: { w: number; h: number } }> {
+  const regions = await d.regionsRaw()
+  const glob = await d.globalParamRaw().catch(() => undefined)
+  return { regions, style: styleOf(regions), ...(glob ? { glob } : {}), frame: { w: RESTV1_FRAME.w, h: RESTV1_FRAME.h } }
 }
 
 export interface ProbeResult {

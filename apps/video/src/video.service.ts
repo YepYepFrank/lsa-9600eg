@@ -9,10 +9,12 @@
  *   4. 每 60 s 对各路做 RTSP DESCRIBE，发 cam.online / cam.fps / cam.bitrate；
  *   5. 抓帧：驱动自己能抓（restv1 的 channel/snap）就用，其次驱动给的抓图地址，否则经本机 mediamtx 拉主码流用 ffmpeg 解一帧（G5 告警抓拍用）。 */
 import { spawn } from 'node:child_process'
+import { statSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { Logger } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
-import { BUS_TOPIC, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { BUS_TOPIC, CAM_REGIONS_FILE, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { MqttKeeper, mqttKeepOptions, refusedOf } from '@lsa-eg/config/mqtt-keep'
 import { fetchAuth } from './digest.js'
 import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
@@ -207,6 +209,7 @@ export class VideoService {
       if (!partialText && this.measure.partial.length) this.log.log('测温接口恢复正常')
       if (this.measure.error) this.log.log('测温恢复')
       this.measure = { ok: true, error: null, code: null, partial, at: Date.now(), count: this.measure.count + 1 }
+      this.refreshCamRegions()
       this.takeRegions(m)
       // 驱动轮询得比上报快（restv1 每秒）：温度量仍按 2 s 发（点目录 fast 档），取最新一次
       if (m.temps && Date.now() - this.tempsPubAt >= MEASURE_MS - 100) {
@@ -231,6 +234,32 @@ export class VideoService {
       const rest = this.restState()
       if (rest && rest !== restBefore) this.pub({ 'cam.rest': rest }, Date.now())
       this.publishSourceQ()
+    }
+  }
+
+  /** cam-regions.json 上次看到的修改时间（0 = 没有这个文件；-1 = 还没看过） */
+  private camRegMtime = -1
+
+  /** 子站网页改过测温区（0.9.0）：agent 收到配置下发后改写配置目录的 cam-regions.json —— 每轮看一眼修改时间，变了（含删掉）就重读配置，
+   *  把摄像机属性 regions（个数、部位名）换成新的（loadConfig 已经叠好），不用重启 eg-video */
+  private refreshCamRegions(): void {
+    let m = 0
+    try {
+      m = statSync(resolve(this.cfg.dir, CAM_REGIONS_FILE)).mtimeMs
+    } catch {
+      m = 0
+    }
+    if (m === this.camRegMtime) return
+    const first = this.camRegMtime === -1
+    this.camRegMtime = m
+    if (first) return // 启动时 loadConfig 已经叠过
+    try {
+      const fresh = loadConfig(this.cfg.dir).devices.find(d => d.kind === 'camera')
+      const mine = this.cfg.devices.find(d => d.kind === 'camera')
+      if (fresh && mine) mine.attrs = { ...mine.attrs, regions: fresh.attrs['regions'] }
+      this.log.log(`测温区配置变了（${m ? '子站网页改过的' : '回到 eg.yaml 的'}）：${camRegionLimit(mine?.attrs)} 个区`)
+    } catch (e) {
+      this.log.warn(`重读测温区配置失败（照旧用原来的）：${(e as Error).message}`)
     }
   }
 

@@ -270,7 +270,38 @@ export function loadConfig(dir = configDir()): EgConfig {
     mtxWebrtc: (env['EG_MTX_WEBRTC'] || local.video.webrtc).replace(/\/$/, ''),
     mtxHls: (env['EG_MTX_HLS'] || local.video.hls).replace(/\/$/, ''),
   }
-  return { ...eg, unit: unitOf(eg), local, conn, dir }
+  const unit = unitOf(eg)
+  overlayCamRegions(eg, readCamRegions(dir, unit.code))
+  return { ...eg, unit, local, conn, dir }
+}
+
+/** 子站网页改过的测温区（0.9.0）：配置下发带来的本单元 { R<n>: { label, env } }，agent 存成配置目录的 cam-regions.json。
+ *  有它就整份顶替 eg.yaml 里摄像机属性 regions（个数、部位名、温升对哪台 SAM 都按它）；没有 / 单元号不对 / 格式坏了 = 照 eg.yaml */
+export const CAM_REGIONS_FILE = 'cam-regions.json'
+export type CamRegionsOverride = Record<string, { label: string; env?: string | null }>
+
+export function readCamRegions(dir: string, unit: string): CamRegionsOverride | null {
+  const p = resolve(dir, CAM_REGIONS_FILE)
+  if (!existsSync(p)) return null
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8')) as { unit?: unknown; regions?: unknown }
+    if (j.unit !== unit || !isObj(j.regions)) return null
+    const out: CamRegionsOverride = {}
+    for (const [k, v] of Object.entries(j.regions)) {
+      const m = /^R(\d{1,2})$/.exec(k)
+      if (!m || Number(m[1]) < 1 || Number(m[1]) > CAM_MAX_REGIONS || !isObj(v) || typeof v['label'] !== 'string') continue
+      out[k] = { label: v['label'], ...('env' in v ? { env: v['env'] === null ? null : String(v['env']) } : {}) }
+    }
+    return Object.keys(out).length ? out : null
+  } catch {
+    return null
+  }
+}
+
+/** 把网页改过的测温区叠到摄像机设备的属性上（就地改） */
+export function overlayCamRegions(eg: Pick<EgFile, 'devices'>, o: CamRegionsOverride | null): void {
+  if (!o) return
+  for (const d of eg.devices ?? []) if (d.kind === 'camera') d.attrs = { ...(d.attrs ?? {}), regions: structuredClone(o) }
 }
 
 export function saveLocal(local: LocalFile, dir = configDir()): void {
