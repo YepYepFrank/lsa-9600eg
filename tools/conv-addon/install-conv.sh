@@ -3,8 +3,9 @@
 # 不联网，只用包里的东西。要 root：sudo bash install-conv.sh …
 #
 #   sudo bash install-conv.sh                    启用：导入镜像 → 生成 config/conv（已有就不动）→ 选串口 → 起 conv
-#   sudo bash install-conv.sh --serial <设备>     指定串口。不给时：/dev/serial/by-id/ 下只有一个（USB 转 485）就用它；
-#                                                有多个就列出来让选；一个都没有就用 /dev/ttyS1（X26A 的 COM2）
+#   sudo bash install-conv.sh --serial <设备>     指定串口。不给时：以前记过串口就沿用，没记过一律 /dev/ttyS1（X26A 的 COM2，
+#                                                BIOS 里设成 RS-485；正式部署传感器 485 接 COM2、后面串隔离中继器，用户 2026-10-28 定）。
+#                                                插着 USB 转 485 只提示一句，不自动用（USB 只给样机 / 调试，要用加 --serial）
 #   --sensors pd,gas,temperature,arc            打开哪几路，其余关（可用：pd gas temperature arc infrared meter；缺省开局放、气体、温湿度、弧光四路，红外关（0.8.1：本项目 SAM 没有自带红外，测温只靠双目摄像机；0.7.1–0.8.0 缺省是开的）；
 #                                                电表 meter 按 eg.yaml 自动：有这面柜电表（kind: meter，PM-<柜号>）的那台 EG 才打开、设备名和
 #                                                从站号（attrs.slave 或 proto 里的「从站 N」，缺省 6）照 eg.yaml 填；寄存器表在 config/conv/sensors/meter.yaml）
@@ -132,28 +133,23 @@ serial_byid() {  # ttyUSB / ttyACM 换成 /dev/serial/by-id 的稳定名字（�
   echo "$1"
 }
 pick_serial() {
-  local ids=() l i n
+  local ids=() l
   if [ -z "$SERIAL" ]; then
-    for l in /dev/serial/by-id/*; do
-      [ -e "$l" ] || continue
-      case "$l" in *:* | *'#'* | *' '*) continue ;; esac
-      ids+=("$l")
-    done
-    if [ ${#ids[@]} -eq 1 ]; then
-      SERIAL="${ids[0]}"; echo "串口：只插了一个 USB 转 485，用它 —— $SERIAL → $(readlink -f "$SERIAL")"
-    elif [ ${#ids[@]} -gt 1 ]; then
-      echo "插了 ${#ids[@]} 个 USB 串口设备："
-      for i in "${!ids[@]}"; do echo "  $((i + 1))) ${ids[$i]} → $(readlink -f "${ids[$i]}")"; done
-      if [ -t 0 ]; then
-        read -r -p "用哪个（输编号）：" n || n=''
-        [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le ${#ids[@]} ] || { echo '编号不对' >&2; exit 1; }
-        SERIAL="${ids[$((n - 1))]}"
-      else
-        echo '用 --serial <上面的路径> 指定' >&2; exit 1
-      fi
+    # 2026-10-28 起缺省一律 COM2（正式部署传感器 485 接 COM2、后面串隔离中继器）；以前记过的串口沿用（样机 / 调试机上记的 USB 不会被换掉）
+    SERIAL="$(env_get EG_CONV_SERIAL)"; [ "$SERIAL" = /dev/null ] && SERIAL=''
+    if [ -n "$SERIAL" ] && [ "$SERIAL" != /dev/ttyS1 ]; then
+      echo "串口：沿用上次记的 $SERIAL（改回 COM2 加 --serial /dev/ttyS1）"
     else
-      SERIAL="$(env_get EG_CONV_SERIAL)"; [ "$SERIAL" = /dev/null ] && SERIAL=''; SERIAL="${SERIAL:-/dev/ttyS1}"
-      echo "串口：没插 USB 转 485，用 $SERIAL$([ "$SERIAL" = /dev/ttyS1 ] && echo '（X26A 的 COM2，BIOS 里要设成 RS-485）')"
+      SERIAL=/dev/ttyS1; echo "串口：$SERIAL（X26A 的 COM2，BIOS 里要设成 RS-485）"
+      for l in /dev/serial/by-id/*; do
+        [ -e "$l" ] || continue
+        case "$l" in *:* | *'#'* | *' '*) continue ;; esac
+        ids+=("$l")
+      done
+      if [ ${#ids[@]} -gt 0 ]; then
+        echo "  插着 USB 串口设备（只给样机 / 调试用，没有自动用）：要用它加 --serial <路径>"
+        for l in "${ids[@]}"; do echo "    $l → $(readlink -f "$l")"; done
+      fi
     fi
   fi
   SERIAL="$(serial_byid "$SERIAL")"
