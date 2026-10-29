@@ -1,9 +1,11 @@
 #!/bin/bash
 # 假 ssh：仿 EG 的升级入口（lsa-upg），EG 状态在 /fake/eg/<host>/（ver 当前版本、slow 装多少秒、job / started / target；
-#   nokeys 没有发布公钥；entry6 = 0.18.2 的入口（要求签名，sig_required=1））
+#   nokeys 没有发布公钥；entry6 = 0.18.2 的入口（要求签名，sig_required=1）；
+#   start_drop：start 照做、但 SSH 断掉不回「OK start」（现场 10-27，0.8.3）；start_refuse：start 断掉、也没开始；
+#   start_gone：start 照做、断掉，之后一直连不上（gone））
 for a in "$@"; do case "$a" in *@*) uh="$a" ;; esac; done
 cmd="${!#}"; host="${uh#*@}"; D="/fake/eg/$host"
-[ -d "$D" ] || { echo "ssh: connect to host $host port 22: No route to host" >&2; exit 255; }
+{ [ -d "$D" ] && [ ! -f "$D/gone" ]; } || { echo "ssh: connect to host $host port 22: No route to host" >&2; exit 255; }
 echo "$(date +%s) $host $cmd" >> /fake/calls
 read -r verb a1 _ <<< "$cmd"
 case "$verb" in
@@ -19,11 +21,17 @@ case "$verb" in
     [ "$got" = "$a1" ] || { echo "ERR 收到的 sha256 $got 不是 $a1"; exit 2; }
     echo "$got" > "$D/put_sha"; echo "OK put $a1" ;;
   put-sig) cat > /dev/null; echo "OK put-sig $a1" ;;
-  start) rm -f "$D/donet"; echo "job-$host-$(date +%s)" > "$D/job"; date +%s > "$D/started"; cp /fake/to "$D/target"; echo "OK start $(cat "$D/job")" ;;
+  start)
+    [ -f "$D/start_refuse" ] && { printf 'client_loop: send disconnect: Broken pipe\r\n' >&2; exit 255; }
+    rm -f "$D/donet"; echo "job-$host-$(date +%s%N)" > "$D/job"; date +%s > "$D/started"; cp /fake/to "$D/target"; echo "$a1" > "$D/sha"
+    [ -f "$D/start_gone" ] && touch "$D/gone"
+    { [ -f "$D/start_drop" ] || [ -f "$D/start_gone" ]; } && { printf 'client_loop: send disconnect: Broken pipe\r\n' >&2; exit 255; }
+    echo "OK start $(cat "$D/job")" ;;
   status)
+    [ -f "$D/job" ] || { echo 'phase=idle'; exit 0; }
     el=$(( $(date +%s) - $(cat "$D/started") )); slow="$(cat "$D/slow" 2>/dev/null || echo 0)"
     if [ "$el" -lt $(( slow / 2 )) ]; then ph=install; elif [ "$el" -lt "$slow" ]; then ph=check; else ph=done; [ -f "$D/donet" ] || { cp "$D/ver" "$D/prev"; date +%s > "$D/donet"; }; cp "$D/target" "$D/ver"; fi
-    printf 'job=%s\nphase=%s\nstarted=%s\nreason=\nsig=ok\n' "$(cat "$D/job")" "$ph" "$(cat "$D/started")" ;;
+    printf 'job=%s\nsha=%s\nphase=%s\nstarted=%s\nreason=\nsig=ok\n' "$(cat "$D/job")" "$(cat "$D/sha" 2>/dev/null)" "$ph" "$(cat "$D/started")" ;;
   log) echo '（假）任务日志' ;;
   drop) echo "OK drop $a1" ;;
   *) echo "ERR 不认识的命令「$verb」"; exit 2 ;;
