@@ -102,6 +102,26 @@ async function main() {
     arc.tick(T + 200_000 + 61_000)
     check(out.at(-1)?.v === 0 && out.at(-1)?.ts === T + 261_000, `61 s 时补 0，ts = 当时（${since(n)}）`)
 
+    console.log('4b. 回 0 以后每次 tick 再写 0、写 70 s（推本地 TB 判恢复）；新事件打断（这一段用当前时刻，tick 与回 0 同一时间轴）')
+    n = out.length
+    const t4 = Date.now()
+    feed(t4, { 'uv.pulse': JSON.stringify({ peak: 66, ms: 20 }) })
+    feed(t4 + 2000, { 'uv.int': 1 })
+    // 70 s 从真正写 0 的那一刻算（≈ t4，这里是直接喂的）
+    for (const d of [5000, 30_000, 65_000]) arc.tick(t4 + d)
+    const holds = out.slice(n).filter(x => x.v === 0).length
+    arc.tick(t4 + 71_000)
+    arc.tick(t4 + 80_000)
+    check(holds === 4 && out.slice(n).filter(x => x.v === 0).length === 4, `回 0 一次 + 70 s 内每次 tick 再写 0（3 次），过了 70 s 不再写（${out.slice(n).map(x => `${x.v}@+${x.ts - t4}`).join(' ')}）`)
+    n = out.length
+    const t5 = Date.now()
+    feed(t5, { 'uv.pulse': JSON.stringify({ peak: 67, ms: 20 }) })
+    arc.tick(t5 + 5000)
+    arc.tick(t5 + 30_000)
+    check(out.slice(n).length === 1 && out.slice(n)[0]!.v === 67, `新事件出 uv.arc 后、还没回 0 前不写 0（${out.slice(n).map(x => `${x.v}@+${x.ts - t5}`).join(' ')}）`)
+    feed(t5 + 32_000, { 'uv.int': 1 })
+    for (let i = 1; i <= 16; i++) arc.tick(t5 + 32_000 + i * 5000)
+
     console.log('5. 兜底：arcEvents 待定 → uv.int 上升沿出一次；一直亮着不再出；回到阈值下再上去再出一次；启动后第一个样本不算')
     const arc2 = new ArcService(cfg, bus, cs)
     cs.set(caps('pending'), null)
