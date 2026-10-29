@@ -8,6 +8,7 @@
  *
  * 子站主题（§8.1）：子设备 v1/gateway/telemetry | attributes，EG 自身 v1/devices/me/telemetry | attributes；一次发布 ≤ 500 个样本且 ≤ 48 KB（chunk.ts）。
  * 上报给子站的上送状态（随 EG 自身指标每 5 s）：eg.buf_depth、eg.oldest_unsent、eg.backfill_pct、eg.uplink、eg.outbox_full、eg.lost。 */
+import { ARC_KEY } from '@lsa/model'
 import { randomBytes } from 'node:crypto'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -159,6 +160,12 @@ export class UplinkService implements OnModuleInit, OnModuleDestroy {
             v = d.values
             if (!Object.keys(v).length) continue
           }
+        }
+        // 0.8.3：uv.arc 是本地「弧光异常」规则用的派生量，不上送（子站看 uv.pulse）
+        if (own && ARC_KEY in v) {
+          const { [ARC_KEY]: _arc, ...rest } = v
+          v = rest
+          if (!Object.keys(v).length) continue
         }
         // 0.8.1：按量挡 —— 对应能力不是 confirmed 的量不送（测温区待定时 ir.* 不送，cam.* / dev.* 照常）
         v = this.caps.uplinkValues(dev, v)

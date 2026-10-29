@@ -16,6 +16,7 @@ import { ComponentsService } from './components/components.service.js'
 import { CatalogController } from './catalog/catalog.controller.js'
 import { ConfigController } from './config/config.controller.js'
 import { DeriveService } from './derive/derive.service.js'
+import { ArcService } from './derive/arc.service.js'
 import { QualityService } from './quality/quality.service.js'
 import { WarmupService } from './warmup/warmup.service.js'
 import { ConvGuardService } from './conv/conv-guard.service.js'
@@ -51,6 +52,7 @@ import { GatewayConfigService } from './gateway/gateway-config.service.js'
     ConvExpectService,
     QualityService,
     DeriveService,
+    ArcService,
     SouthService,
     SelfService,
     ComponentsService,

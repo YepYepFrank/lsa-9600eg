@@ -166,6 +166,7 @@
         }
       ],
       "forbid": [
+        "uv.arc",
         "dev.link"
       ]
     },

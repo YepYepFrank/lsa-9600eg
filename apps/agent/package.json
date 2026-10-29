@@ -15,6 +15,7 @@
     "verify:unit": "node --import @swc-node/register/esm-register src/verify-unit.ts",
     "verify:mqtt-keep": "node --import @swc-node/register/esm-register src/verify-mqtt-keep.ts",
     "verify:pulse": "node --import @swc-node/register/esm-register src/verify-pulse-dedup.ts",
+    "verify:arc": "node --import @swc-node/register/esm-register src/verify-arc.ts",
     "verify:warmup": "node --import @swc-node/register/esm-register src/verify-warmup.ts",
     "verify:regen": "node --import @swc-node/register/esm-register src/verify-regen.ts",
     "verify:pd-absent": "node --import @swc-node/register/esm-register src/verify-pd-absent.ts",
