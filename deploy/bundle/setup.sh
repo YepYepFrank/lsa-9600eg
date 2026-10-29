@@ -129,6 +129,20 @@ if [ "$KIOSK" = 1 ]; then
   echo "机柜双屏：子站装好后接着装（sp/kiosk/，$(du -sh sp/kiosk 2>/dev/null | cut -f1 || echo '?')）"
 fi
 
+# 装之前先核本机与参数（0.19.3 / EG 0.8.3，现场 10-29：--role eg 误在子站主机上跑，网口不对退出前已经拷了 /opt/lsa-eg、导了镜像、改了 journald）。
+# 改系统的步骤之前核完，不对就什么都不动地退出；确实要这样装加 --force
+if [ "$ROLE" = eg ] && [ -d /opt/lsa9600sp ] && [ "$FORCE" != 1 ]; then
+  die "这台是子站主机（有 /opt/lsa9600sp）：EG 要装在 EG（X26A）上，不要用 --role eg 装在子站主机上。
+  子站主机升级用 --role sp。确实要在这台装 EG 加 --force"
+fi
+if [ "$ROLE" = sp ] && [ -d /opt/lsa-eg ] && [ "$FORCE" != 1 ]; then
+  die "这台是 EG（有 /opt/lsa-eg）：子站要装在子站主机上，不要用 --role sp 装在 EG 上。
+  EG 升级用 --role eg。确实要在这台装子站加 --force"
+fi
+if [ "$ROLE" = eg ] && [ -n "$LAN1" ] && [ ! -e "/sys/class/net/$LAN1" ]; then
+  die "没有网口 $LAN1（本机：$(ls /sys/class/net | tr '\n' ' ')）：--lan1 给摄像机那个网口的名字（ip -br link 看）"
+fi
+
 # ---------- Docker（没有就装离线包；Ubuntu 24.04） ----------
 install_debs() {
   . /etc/os-release
