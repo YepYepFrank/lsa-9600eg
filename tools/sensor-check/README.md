@@ -37,7 +37,7 @@ sudo python3 sam_check.py --sn <传感器单元编号>
 sudo python3 sam_check.py --loop            # 想快一点：加 --no-func 不做功能试验
 ```
 
-- 开始时停一次转换程序、问一次摄像机口令，**退出（输入 q 或 Ctrl+C）时才把转换程序起回来**。
+- 开始时停一次转换程序，**退出（输入 q 或 Ctrl+C）时才把转换程序起回来**。
 - 每一套：换好传感器单元 → 输入编号（扫码枪直接扫；直接回车自动编 `unit-001`…）回车 →
   脚本先清掉 EG 上摄像机地址的 ARP（新摄像机同一个 IP、MAC 不同），**最多等 120 s**（`--wait` 改）直到四路传感器都应答、弧光过了上电启动抑制、摄像机 HTTP / RTSP 端口开了 → 照常全测 → 打一块大字结论：
   ```
@@ -52,7 +52,8 @@ sudo python3 sam_check.py --loop            # 想快一点：加 --no-func 不�
 
 ### 摄像机口令
 
-缺省从 `/opt/lsa-eg/config/local.yaml` 的 camera 段取（地址、账号、口令）。没有这个文件（EG 没装 / 没配）就问：RTSP 口令（只认 admin）、restv1 接口账号和口令（真机是两套账号）。也可以用环境变量免问：
+**缺省用摄像机出厂账号**（写在脚本 `FACTORY_CAM` 里：RTSP 取流用 admin，restv1 接口用另一套普通账号；admin 登不了接口），到货检验不用输口令。
+摄像机改过口令的，用环境变量传，或 `--local-yaml /opt/lsa-eg/config/local.yaml` 读那台 EG 配好的：
 
 ```bash
 sudo LSA_CAM_PASS='…' LSA_CAM_REST_PASS='…' python3 sam_check.py --rest-user <接口账号> --cam 192.168.1.19

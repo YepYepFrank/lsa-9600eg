@@ -22,8 +22,9 @@ EG 上的转换程序（容器 lsa-eg-conv）占着串口：脚本会先停掉�
   sudo python3 sam_check.py --cam-only              # 只查摄像机
   sudo python3 sam_check.py --scan                  # 扫 1–32 号地址，看总线上到底有谁
   sudo python3 sam_check.py --port /dev/ttyUSB0     # 用 USB 转 485
-  sudo python3 sam_check.py --cam 192.168.1.19    # 摄像机地址（缺省取 /opt/lsa-eg/config/local.yaml）
-摄像机口令：缺省取 local.yaml；没有就问（不回显）。也可设环境变量 LSA_CAM_PASS（RTSP，admin）/ LSA_CAM_REST_PASS（restv1 接口）。
+  sudo python3 sam_check.py --cam 192.168.1.19    # 摄像机地址（缺省出厂 192.168.1.19）
+摄像机账号：缺省用出厂账号（RTSP admin、restv1 接口普通账号，见 FACTORY_CAM）。改过口令的：环境变量 LSA_CAM_PASS（RTSP）/ LSA_CAM_REST_PASS（restv1），
+或 --local-yaml /opt/lsa-eg/config/local.yaml 读那台 EG 配好的。
 报告和抓拍存在 ./sam-check-<编号>-<时间>/。退出码：全部通过 0，有不通过 1，参数 / 环境错 2。
 """
 import argparse
@@ -1066,6 +1067,10 @@ def read_local_camera(path):
     return cam
 
 
+# 摄像机出厂账号（用户 2026-10-30 实测）：RTSP 取流 admin；restv1 接口普通账号。投运前要改，改过以后用环境变量 / 参数传
+FACTORY_CAM = {'rtsp': ('admin', '123456'), 'rest': ('888888', '888888')}
+
+
 def camera_conf(args):
     lc = read_local_camera(args.local_yaml) if args.local_yaml else {}
     if lc:
@@ -1080,7 +1085,7 @@ def camera_conf(args):
                 break
     if not host:
         host = '192.168.1.19'
-        out('  没指定摄像机地址、local.yaml 里也没有：用出厂地址 %s（--cam 改）' % host)
+        out('  摄像机地址：出厂 %s（--cam 改）' % host)
     if args.cam or not rest:
         rest = 'http://%s%s' % (host, '' if args.cam_http_port == 80 else ':%d' % args.cam_http_port)
     tty_in = sys.stdin.isatty()
@@ -1088,24 +1093,22 @@ def camera_conf(args):
     def secret(prompt):
         return getpass.getpass(prompt) if tty_in else ''
 
-    # RTSP（取流）账号：真机只认 admin
-    rtsp_user = args.rtsp_user or lc.get('user') or 'admin'
-    rtsp_pass = os.environ.get('LSA_CAM_PASS') or (lc.get('password') if rtsp_user == lc.get('user') else '')
+    # 到货检验测的是出厂状态的摄像机：缺省用出厂账号（FACTORY_CAM）。改过口令的：环境变量 / --rtsp-user / --rest-user / --local-yaml
+    # RTSP（取流）只认 admin；restv1 接口用另一套普通账号（admin 登不了接口，回 10001）
+    rtsp_user = args.rtsp_user or lc.get('user') or FACTORY_CAM['rtsp'][0]
+    rtsp_pass = os.environ.get('LSA_CAM_PASS') or (lc.get('password') if lc and rtsp_user == lc.get('user') else '')
+    if not rtsp_pass and rtsp_user == FACTORY_CAM['rtsp'][0]:
+        rtsp_pass = FACTORY_CAM['rtsp'][1]
     if not rtsp_pass:
         rtsp_pass = secret('  RTSP 口令（账号 %s，不回显）：' % rtsp_user)
-    # restv1 接口账号：真机和 RTSP 是两套；local.yaml 的 restUser 留空 = 同取流账号
-    rest_user = args.rest_user or lc.get('restUser') or ''
-    if not rest_user:
-        if not lc and tty_in:
-            rest_user = input('  restv1 接口账号（真机接口和 RTSP 是两套账号；回车 = 同 %s）：' % rtsp_user).strip()
-        rest_user = rest_user or rtsp_user
-    rest_pass = os.environ.get('LSA_CAM_REST_PASS') or ''
-    if not rest_pass and lc.get('restUser') and rest_user == lc.get('restUser'):
-        rest_pass = lc.get('restPassword', '')
-    if not rest_pass and rest_user == rtsp_user:
-        rest_pass = rtsp_pass
+    rest_user = args.rest_user or lc.get('restUser') or FACTORY_CAM['rest'][0]
+    rest_pass = os.environ.get('LSA_CAM_REST_PASS') or (lc.get('restPassword') if lc.get('restUser') and rest_user == lc.get('restUser') else '')
+    if not rest_pass and rest_user == FACTORY_CAM['rest'][0]:
+        rest_pass = FACTORY_CAM['rest'][1]
     if not rest_pass:
         rest_pass = secret('  restv1 口令（账号 %s，不回显）：' % rest_user)
+    out('  摄像机账号：RTSP %s，restv1 %s%s' % (rtsp_user, rest_user,
+        '（出厂账号）' if (rtsp_user, rest_user) == (FACTORY_CAM['rtsp'][0], FACTORY_CAM['rest'][0]) else ''))
     return {'host': host, 'rest': rest, 'rest_user': rest_user, 'rest_pass': rest_pass,
             'rtsp_user': rtsp_user, 'rtsp_pass': rtsp_pass, 'rtsp': lc.get('rtsp', {})}
 
@@ -1234,13 +1237,13 @@ def parse_args():
     ap.add_argument('--arc-rise', type=float, default=1.0, help='弧光功能试验判据：强度至少涨几个百分点（缺省 1.0）')
     ap.add_argument('--no-cam', action='store_true', help='不查摄像机')
     ap.add_argument('--cam-only', action='store_true', help='只查摄像机')
-    ap.add_argument('--cam', default='', help='摄像机地址（缺省取 local.yaml，再没有用 192.168.1.19）')
+    ap.add_argument('--cam', default='', help='摄像机地址（缺省出厂 192.168.1.19）')
     ap.add_argument('--cam-http-port', type=int, default=80, help=argparse.SUPPRESS)
     ap.add_argument('--cam-rtsp-port', type=int, default=554, help=argparse.SUPPRESS)
-    ap.add_argument('--rtsp-user', default='', help='RTSP 账号（缺省 local.yaml 的 user，一般 admin）')
-    ap.add_argument('--rest-user', default='', help='restv1 接口账号（缺省 local.yaml 的 restUser）')
+    ap.add_argument('--rtsp-user', default='', help='RTSP 账号（缺省出厂 admin）')
+    ap.add_argument('--rest-user', default='', help='restv1 接口账号（缺省出厂普通账号）')
     ap.add_argument('--rtsp-secs', type=int, default=4, help='每路拉流秒数（缺省 4）')
-    ap.add_argument('--local-yaml', default='/opt/lsa-eg/config/local.yaml', help='EG 的 local.yaml（读摄像机配置；给空串不读）')
+    ap.add_argument('--local-yaml', default='', help='从 EG 的 local.yaml 读摄像机地址和账号（如 /opt/lsa-eg/config/local.yaml；缺省不读，用出厂账号）')
     ap.add_argument('--loop', action='store_true', help='连续换测：每换一套回车（或扫码输入编号）测一套，q 退出；汇总 summary.csv')
     ap.add_argument('--wait', type=int, default=None, help='开测前最多等设备上线几秒（--loop 缺省 120，单次缺省 0）')
     ap.add_argument('--keep-conv', action='store_true', help='不停转换程序（串口另有他用时自己负责）')
