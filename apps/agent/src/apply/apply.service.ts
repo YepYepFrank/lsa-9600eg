@@ -17,7 +17,8 @@
  * 规则停用或告警类型改名（如 EG-rh「环境」→「柜内湿度高」）后，本地 TB 上该类型挂着的活动告警没有规则来清了 ——
  *   写完设备配置后把「之前有、现在没有」的告警类型的活动告警清掉（经钩子 / 对账照常给子站送 CLEARED）。
  *   另在开机后（本地 TB 就绪时）扫一遍：EG 规则的告警类型（含改名前的 alias）在当前设备配置里已经没有、却还挂着的，清掉 ——
- *   子站先升、老 EG 先应用了新配置（老代码不清），再升 EG 时配置没变、不会再走应用（0.10 在 AH12 上验出来的）。 */
+ *   子站先升、老 EG 先应用了新配置（老代码不清），再升 EG 时配置没变、不会再走应用（0.10 在 AH12 上验出来的）。
+ * 0.8.4：体里另带 camRegions（子站网页改过的测温区部位名 / 个数 / 温升来源，cam-regions-cfg.ts），带了才算进哈希；区的个数变了 agent 应用完自己重启。 */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -33,6 +34,8 @@ import { CapsService, type DevCommParams } from '../caps/caps.service.js'
 import { MetersService, parseMeters, type Ratio } from '../meters/meters.service.js'
 import { ArcService } from '../derive/arc.service.js'
 import { parseGas, type GasParams } from '../warmup/warmup.js'
+import type { CamRegionsOverride } from '@lsa-eg/config'
+import { applyCamRegions, ensureCamRegionsFile, parseCamRegions } from './cam-regions-cfg.js'
 
 export interface ApplyReceipt {
   version: string
@@ -77,6 +80,8 @@ export interface Applied {
   /** 0.7.1：这台 EG 不认识、跳过了的规则的开关（本柜生效后的 { id, on }）。EG 升级后开机重算时按它，不违背子站的开关；
    *  0.7.0 及以前没有这个字段（被跳过的规则开关没记，见 regenRules） */
   ignoredRules?: { id: string; on: boolean }[]
+  /** 0.8.4：子站网页改过的测温区（本单元那份；没改过 / 老子站为 null / 缺省） */
+  camRegions?: CamRegionsOverride | null
 }
 
 /** 规则 id（子站 /ext/rules 的 EG-*）→ 本地 TB 的告警类型与级别；alias = 改名前的类型（@lsa/model 的模板还没跟上时照样认） */
@@ -200,6 +205,11 @@ export class ApplyService {
     this.caps.set(this.applied?.caps ?? null, this.applied?.devComm ?? null, this.applied?.gas ?? null)
     this.meters.set(this.applied?.meters ?? null)
     this.arc.setThresholds(this.applied?.thresholds)
+    try {
+      if (ensureCamRegionsFile(cfg, this.applied?.camRegions)) this.log.warn('cam-regions.json 跟已生效的配置对不上，已按已生效的补写')
+    } catch (e) {
+      this.log.warn(`cam-regions.json 补写失败：${(e as Error).message}`)
+    }
     // 上次没应用成的（比如断电重启时本地 TB 还没起来）：接着重试
     try {
       if (existsSync(this.pendingFile)) {
@@ -289,7 +299,7 @@ export class ApplyService {
       return { version, status: 'FAILED', error, errorCode, ...rid }
     }
     const later = (error: string): ApplyReceipt => ({ version, status: 'PENDING', retryable: true, error: `本地 TB 暂未就绪，已排队自动重试：${error}`, errorCode: 'LOCAL_NOT_READY', ...rid })
-    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; ignoredRules: { id: string; on: boolean }[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null }
+    let input: { version: string; thresholds: ThresholdRow[]; rules: { id: string; on: boolean }[]; extras: ThresholdExtras; ignored: string[]; ignoredRules: { id: string; on: boolean }[]; caps: CapsConfig | null; devComm: DevCommParams | null; meters: Record<string, Partial<Ratio>> | null; gas: GasParams | null; camRegions: CamRegionsOverride | null }
     try {
       input = this.parse(body)
     } catch (e) {
@@ -333,11 +343,19 @@ export class ApplyService {
       return fail(`写本地 TB 的设备配置失败（已改回）：${(e as Error).message}`, 'INTERNAL')
     }
 
-    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas, ignoredRules: input.ignoredRules }
+    this.applied = { version: input.version, appliedAt: Date.now(), by: who.name || who.user, hash, thresholds: input.thresholds, rules: input.rules, extras: input.extras, caps: input.caps, devComm: input.devComm, meters: input.meters, gas: input.gas, ignoredRules: input.ignoredRules, camRegions: input.camRegions }
     writeFileSync(this.file, JSON.stringify(this.applied, null, 2), 'utf8')
     this.caps.set(input.caps, input.devComm, input.gas)
     this.meters.set(input.meters)
     this.arc.setThresholds(input.thresholds)
+    let cam: { restart: boolean; text: string | null } = { restart: false, text: null }
+    try {
+      cam = applyCamRegions(this.cfg, input.camRegions)
+      if (cam.text) this.log.log(cam.text)
+    } catch (e) {
+      cam = { restart: false, text: `测温区配置写不进（${(e as Error).message}），照旧` }
+      this.log.warn(cam.text!)
+    }
     // 规则停用 / 类型改名后，没有规则来清的活动告警：清掉
     const typesOf = (ps: TbProfile[]) => new Set(ps.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
     const before = typesOf(profiles)
@@ -347,10 +365,18 @@ export class ApplyService {
     await this.seedWarmup(profiles.map(x => plan.find(y => y.before === x)?.after ?? x))
     this.bus.publishAttributes(this.cfg.eg.name, { cfg: input.version })
     const off = input.rules.filter(r => !r.on).map(r => r.id)
-    const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}`
+    const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}${cam.text ? `；${cam.text}` : ''}`
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: retry ? '应用子站配置（排队后自动）' : '应用子站配置', target: input.version, ok: true, detail })
+    if (cam.restart) this.restartSoon()
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid, meters: this.meters.effective() }
+  }
+
+  /** 测温区个数 / 温升来源变了（0.8.4）：回执发出去、cfg 属性报上去之后退出进程，容器（unless-stopped）拉起来按新的展开 */
+  private restartSoon(): void {
+    if (process.env['EG_NO_SELF_RESTART'] === '1') return
+    this.log.warn('测温区个数或温升来源变了：5 s 后重启 agent 生效')
+    setTimeout(() => process.exit(0), 5000).unref?.()
   }
 
   /** 依次写设备配置；中途失败把已写的改回去、再抛出 */
@@ -599,7 +625,13 @@ export class ApplyService {
     } catch (e) {
       throw new Invalid((e as Error).message)
     }
-    return { version, thresholds, rules, extras, ignored, ignoredRules, caps, devComm, meters, gas }
+    let camRegions: CamRegionsOverride | null
+    try {
+      camRegions = parseCamRegions(b, [this.cfg.unit.code, this.cfg.cabinet.code])
+    } catch (e) {
+      throw new Invalid((e as Error).message)
+    }
+    return { version, thresholds, rules, extras, ignored, ignoredRules, caps, devComm, meters, gas, camRegions }
   }
 }
 
@@ -614,13 +646,15 @@ export function foreignUnitDevice(dev: string, unit: string): boolean {
 
 /** 配置内容哈希（判重复下发）。老版本（没有能力字段）的哈希只算前三样：caps / devComm 都没带时与老哈希一致，
  *  升级后同一份配置不会被当成新内容；meters（I3）、gas（0.17 预热参数）也是带了才计进去 */
-export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown; ignoredRules?: { id: string; on: boolean }[] }): string {
+export function configHash(i: { thresholds: unknown; rules: unknown; extras: unknown; caps: unknown; devComm: unknown; meters: unknown; gas: unknown; ignoredRules?: { id: string; on: boolean }[]; camRegions?: unknown }): string {
   const parts: unknown[] = [i.thresholds, i.rules, i.extras]
   if (i.caps || i.devComm) parts.push(i.caps, i.devComm)
   if (i.meters) parts.push({ meters: i.meters })
   if (i.gas) parts.push({ gas: i.gas })
   // 0.7.1：被跳过的规则的开关也算内容（子站只改了它也要重新记下）；没有被跳过的与老哈希一致
   if (i.ignoredRules?.length) parts.push({ ignoredRules: i.ignoredRules })
+  // 0.8.4：子站网页改过的测温区，带了才算
+  if (i.camRegions) parts.push({ camRegions: i.camRegions })
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
 }
 

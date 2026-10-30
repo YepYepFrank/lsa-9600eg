@@ -20,7 +20,7 @@
  *     ir.hot = 温升最高的区域号 1–3（没有温升时取最高温最高的区域），告警明细带它，子站据此显示是哪个区域。
  *   都与 ir.R<n>.max 同一时间戳。 */
 import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common'
-import { camRegionLimit, type EgConfig } from '@lsa-eg/config'
+import { camRegionIds, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { QualityService } from '../quality/quality.service.js'
@@ -52,7 +52,8 @@ export class DeriveService implements OnModuleInit {
       const regions = (d.attrs['regions'] ?? {}) as Record<string, { env?: string | null } | undefined>
       const m = new Map<number, string | null>()
       // 本柜配了几个测温区（eg.yaml CAM 属性 regions.R<n> 的个数，1–12，缺省 3；I18）
-      for (let n = 1; n <= camRegionLimit(d.attrs); n++) {
+      // 0.8.4：按实际配的区号（可以有空缺，如 R1、R3），不按个数编
+      for (const n of camRegionIds(d.attrs).map(id => Number(id.slice(1)))) {
         const r = regions[`R${n}`]
         if (r && 'env' in r && (r.env === '' || r.env === null)) {
           m.set(n, null)

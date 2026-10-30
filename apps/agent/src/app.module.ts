@@ -27,6 +27,7 @@ import { StatusController } from './status/status.controller.js'
 import { LocalTbService } from './tb/local-tb.service.js'
 import { UplinkService } from './uplink/uplink.service.js'
 import { VideoClient, VideoController } from './video/video.controller.js'
+import { CamRegionsController } from './video/cam-regions.controller.js'
 import { EvidenceController } from './evidence/evidence.controller.js'
 import { EvidenceService } from './evidence/evidence.service.js'
 import { HistoryController } from './history/history.controller.js'
@@ -37,7 +38,7 @@ import { CapsController } from './caps/caps.controller.js'
 import { GatewayConfigService } from './gateway/gateway-config.service.js'
 
 @Module({
-  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, EvidenceController, HistoryController, CapsController],
+  controllers: [AuthController, StatusController, ComponentsController, ConfigController, CatalogController, AlarmsController, ApplyController, VideoController, CamRegionsController, EvidenceController, HistoryController, CapsController],
   providers: [
     configProvider,
     AuditService,

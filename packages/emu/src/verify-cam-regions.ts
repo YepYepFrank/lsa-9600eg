@@ -2,13 +2,16 @@
  *   空区写入（读回核对、regionTemp 有数、别的区不动）、已有启用的区拒绝、--force 覆盖、备份 / 恢复、
  *   接口报错 10001 / 10008 / 10009（一直 10009 → TOKEN；中途令牌失效重登一次照常）、写到一半出错按备份写回、距离范围、读回不一致。
  * 0.8.1：照现场真机（mock style b37：rectangle、没有本地参数、出厂 0×0）写、换写法、全局测温参数、--force 要 --yes、试写 probe、恢复只写变了的 / 0×0 退路。
+ * 0.8.4：子站网页画的区（applyRegions）：写 R1–R4、不变的不写、停用、拒绝不对的框、写一半出错写回、别的区（Area6）不动、读当前（readRegions）。
  * 测试账号口令每次随机生成（不用厂家默认口令）。
  *
  *   pnpm -F @lsa-eg/emu verify:cam-regions */
 import { randomBytes } from 'node:crypto'
 import { Restv1Driver } from '../../../apps/video/src/restv1.js'
-import { applyDefaultRegions, defaultRegionRows, DEFAULT_STRIPS, disableRegions, probeRegions, restoreRegions, styleOf, writableOf } from '../../../apps/video/src/cam-regions.js'
+import { applyDefaultRegions, applyRegions, readRegions, defaultRegionRows, DEFAULT_STRIPS, disableRegions, probeRegions, restoreRegions, styleOf, writableOf } from '../../../apps/video/src/cam-regions.js'
 import { B37_FACTORY, startRestv1Mock, type MockRegion } from './restv1-mock.js'
+import { numberRegions } from '../../../apps/video/src/driver-base.js'
+import { camRegionIds, camRegionLimit } from '@lsa-eg/config'
 
 let fails = 0
 let n = 0
@@ -344,6 +347,114 @@ async function main() {
     const after = await applyDefaultRegions(d, { camera: m.url, waitTempMs: 0 })
     check(!!after.refused && !!after.error?.includes('--cam-region-disable'), `有启用的区、不加 --force：拒，并提示可以先 --cam-region-disable（${after.error}）`)
     await m.close()
+  }
+
+  console.log('16. 0.8.4：子站网页画的区（applyRegions）')
+  {
+    const field = B37_FACTORY.map((x, i) => (i === 5 ? { ...x, regionEnable: true, region: { x: 320, y: 132, width: 206, height: 169 } } : x))
+    const { m, d, posts } = await rig(field, { style: 'b37' })
+    const cur = await readRegions(d)
+    check(cur.regions.length === 12 && cur.style.rectType === 'rectangle' && !cur.style.local && !!cur.glob && cur.frame.w === 640 && cur.frame.h === 480, '读当前：12 个区、写法 rectangle 不带本地参数、带全局参数、画面 640×480')
+    const set = [
+      { n: 1, rect: { x: 10, y: 20, width: 100, height: 200 } },
+      { n: 2, rect: { x: 120, y: 20, width: 100, height: 200 } },
+      { n: 4, rect: { x: 400, y: 300, width: 60, height: 40 } },
+    ]
+    const p0 = posts()
+    const pv = await applyRegions(d, { set, camera: m.url, waitTempMs: 0 })
+    check(!!pv.preview && !pv.ok && posts() === p0 + 1 && m.state.regions[0]!.regionEnable === false && !!pv.plan?.includes('R4（区号 3）'), `不给 yes：只预览、没写（${pv.plan}）`)
+    const r = await applyRegions(d, { set, yes: true, camera: m.url, waitTempMs: 0 })
+    check(r.ok && r.written.join(',') === '0,1,3' && !r.error, `写了 R1、R2、R4（${r.mismatch.join('；') || '读回一致'}）`)
+    check(['R1', 'R2', '', 'R4'].every((nm, i) => !nm || (m.state.regions[i]!.regionName === nm && m.state.regions[i]!.regionEnable === true)) && m.state.regions[3]!.region['x'] === 400 && m.state.regions[2]!.regionEnable === false, '摄像机上：R1 / R2 / R4 启用、名字 R<n>，R3 没动（类型读回是 rectangle 已在核对里比过）')
+    check(m.state.regions[5]!.regionEnable === true && m.state.regions[5]!.regionName === 'Area6' && r.notes.some(x => x.includes('Area6')), `别的启用的区（Area6）不动，说明里列出来（${r.notes.join('；')}）`)
+    check(r.backup.regions[0]!['regionEnable'] === false && r.temps.map(t => t.name).join(',') === 'R1,R2,R4', '写之前整份备份；温度按 R1 / R2 / R4 报')
+    const p1 = posts()
+    const again = await applyRegions(d, { set: [set[0]!, { n: 2, rect: { x: 130, y: 20, width: 100, height: 200 } }, set[2]!], yes: true, camera: m.url, waitTempMs: 0 })
+    check(again.ok && again.written.join(',') === '1' && posts() === p1 + 3, `只改了 R2：只写 R2（读一次、写一次、读回一次；R1、R4 已经是那样不写；${again.mismatch.join('；') || '读回一致'}）`)
+    const off = await applyRegions(d, { set: [set[0]!], disable: [2, 4, 6], yes: true, camera: m.url, waitTempMs: 0 })
+    check(off.ok && off.written.join(',') === '1,3,5' && m.state.regions[1]!.regionEnable === false && m.state.regions[3]!.regionEnable === false && m.state.regions[5]!.regionEnable === false && m.state.regions[1]!.regionName === 'R2', `停用 R2、R4、Area6（名字 / 坐标照旧；${off.mismatch.join('；') || '读回一致'}）`)
+    const same = await applyRegions(d, { set: [set[0]!], yes: true, camera: m.url, waitTempMs: 0 })
+    check(same.ok && same.written.length === 0 && same.notes.some(x => x.includes('已经是这样')), '跟摄像机上一样：不写')
+    const bads: [{ set: typeof set; disable?: number[] }, string][] = [
+      [{ set: [] }, '至少画 1 个'],
+      [{ set: [{ n: 13, rect: set[0]!.rect }] }, 'R13 不对'],
+      [{ set: [set[0]!, set[0]!] }, '给了两次'],
+      [{ set: [{ n: 1, rect: { x: 600, y: 0, width: 50, height: 50 } }] }, '超出 640×480'],
+      [{ set: [{ n: 1, rect: { x: 0, y: 0, width: 4, height: 50 } }] }, '太小'],
+      [{ set: [{ n: 1, rect: { x: 0.5, y: 0, width: 40, height: 50 } }] }, '整数'],
+      [{ set: [set[0]!], disable: [1] }, '又要写又要停用'],
+    ]
+    for (const [bad, want] of bads) {
+      const pb = posts()
+      const x = await applyRegions(d, { ...bad, yes: true, camera: m.url, waitTempMs: 0 })
+      check(!x.ok && !!x.refused && !!x.error?.includes(want) && posts() === pb + 1, `拒：${x.error}`)
+    }
+    // 写第二个区（R7）时超时（可能已经写进去）：R3 和 R7 都按备份写回
+    const before = JSON.stringify(m.state.regions.map(x => [x.regionEnable, x.regionName]))
+    const orig = d.setRegion.bind(d)
+    d.setRegion = async (id: number, row: Record<string, unknown>) => {
+      if (id === 6 && row['regionEnable'] === true) {
+        await orig(id, row)
+        throw new Error('/restv1/measurement/region/6：超时（6000 ms）')
+      }
+      return orig(id, row)
+    }
+    const half = await applyRegions(d, { set: [{ n: 3, rect: { x: 20, y: 20, width: 40, height: 40 } }, { n: 7, rect: { x: 200, y: 20, width: 40, height: 40 } }], yes: true, camera: m.url, waitTempMs: 0 })
+    d.setRegion = orig
+    check(!half.ok && !!half.error?.includes('R7') && !!half.rolledBack && JSON.stringify(m.state.regions.map(x => [x.regionEnable, x.regionName])) === before, `写 R7 超时：R3、R7 都按备份写回（${half.error}；${half.rolledBack}）`)
+    const rr = await restoreRegions(d, r.backup, { camera: m.url })
+    check(rr.ok && m.state.regions[0]!.regionEnable === false && m.state.regions[5]!.regionEnable === true, '用第一次的备份恢复：回到出厂 + Area6')
+    await m.close()
+  }
+
+  console.log('17. 0.8.4 审查修复：写前备份先交出去、读回不一致自动写回、撤销只写指定槽不动全局参数、区号有空缺')
+  {
+    const { m, d, posts } = await rig(B37_FACTORY, { style: 'b37' })
+    const saved: string[] = []
+    const one = [{ n: 1, rect: { x: 10, y: 20, width: 100, height: 200 } }]
+    // 写之前先交出备份（eg-video 落盘），交出去的时候摄像机还没动
+    const r = await applyRegions(d, { set: one, yes: true, camera: m.url, waitTempMs: 0, onBackup: b => (saved.push(String(b.regions[0]!['regionEnable'])), 'b1.json') })
+    check(r.ok && r.backupFile === 'b1.json' && saved.join() === 'false', `写之前先把备份交给 onBackup（那时 R1 还没启用），回执带 backupFile`)
+    const p0 = posts()
+    const nob = await applyRegions(d, { set: [{ n: 2, rect: { x: 120, y: 20, width: 100, height: 200 } }], yes: true, camera: m.url, waitTempMs: 0, onBackup: () => { throw new Error('磁盘满') } })
+    check(!nob.ok && !!nob.refused && !!nob.error?.includes('磁盘满') && posts() === p0 + 1 && m.state.regions[1]!.regionEnable === false, `备份存不下：不写（${nob.error}）`)
+    const none = await applyRegions(d, { set: one, yes: true, camera: m.url, waitTempMs: 0, onBackup: () => { throw new Error('不该调') } })
+    check(none.ok && !none.backupFile, '跟摄像机上一样（不用写）：不存备份')
+    // 读回跟要写的对不上（摄像机收了却没照写）：按备份把这次写过的槽写回
+    const raw = d.regionsRaw.bind(d)
+    let k = 0
+    d.regionsRaw = async () => {
+      const rows = await raw()
+      if (++k === 2) rows[2] = { ...rows[2]!, region: { x: 1, y: 1, width: 9, height: 9 } }
+      return rows
+    }
+    const mm = await applyRegions(d, { set: [...one, { n: 3, rect: { x: 300, y: 20, width: 100, height: 200 } }], yes: true, camera: m.url, waitTempMs: 0 })
+    d.regionsRaw = raw
+    check(!mm.ok && mm.mismatch.some(x => x.includes('R3 坐标')) && !!mm.rolledBack?.includes('已按备份写回') && m.state.regions[2]!.regionEnable === false && m.state.regions[0]!.regionEnable === true, `读回不一致：自动按备份写回这次写过的 R3，R1（这次没动）照旧（${mm.rolledBack}）`)
+    // 读回失败：也按备份写回
+    let k2 = 0
+    d.regionsRaw = async () => {
+      if (++k2 === 2) throw new Error('/restv1/measurement/region：19999 接口调用异常')
+      return raw()
+    }
+    const rf = await applyRegions(d, { set: [...one, { n: 4, rect: { x: 300, y: 250, width: 100, height: 100 } }], yes: true, camera: m.url, waitTempMs: 0 })
+    d.regionsRaw = raw
+    check(!rf.ok && !!rf.error?.includes('读回失败') && !!rf.rolledBack?.includes('已按备份写回') && m.state.regions[3]!.regionEnable === false, `读回失败：按备份写回 R4（${rf.rolledBack}）`)
+    // 撤销：只写指定槽、不动全局参数，后来手画的 Area6 不动
+    const before = await applyRegions(d, { set: [...one, { n: 2, rect: { x: 120, y: 20, width: 100, height: 200 } }], yes: true, camera: m.url, waitTempMs: 0 })
+    m.state.regions[5] = { ...m.state.regions[5]!, regionEnable: true, regionName: 'Area6', region: { x: 320, y: 132, width: 206, height: 169 } }
+    m.state.glob = { ...m.state.glob, radrate: 0.9 }
+    const u = await restoreRegions(d, before.backup, { camera: m.url, ids: before.written, skipGlob: true })
+    check(u.ok && u.written.join() === '1' && m.state.regions[1]!.regionEnable === false && m.state.regions[5]!.regionEnable === true && m.state.glob.radrate === 0.9, `撤销只写那次写过的槽（区号 1），Area6 与全局参数不动（写了 ${u.written.join('、')}）`)
+    await m.close()
+  }
+  {
+    // 区号有空缺（网页上删掉 R2 留下 R1、R3）：按清单里的号对应，不按个数截掉 R3（审查必须修 1）
+    const cam = (names: string[]) => names.map((name, i) => ({ name, type: 'region' as const, coords: { x: i, y: 0, width: 10, height: 10 }, enabled: true }))
+    check(numberRegions(cam(['R1', 'R3', 'R5']), ['R1', 'R3']).map(x => x.id).join() === 'R1,R3', '摄像机上 R1 / R3 / R5，配了 R1、R3：认 R1、R3（R5 不在清单）')
+    check(numberRegions(cam(['区域0', '区域1']), ['R1', 'R3']).map(x => `${x.id}=${x.def.name}`).join() === 'R1=区域0,R3=区域1', '没按 R<n> 起名：依次编成清单里的号')
+    check(numberRegions(cam(['R1', 'R2', 'R3']), 2).map(x => x.id).join() === 'R1,R2', '老的给个数照旧')
+    check(camRegionIds({ regions: { R1: {}, R3: {} } }).join() === 'R1,R3' && camRegionLimit({ regions: { R1: {}, R3: {} } }) === 3 && camRegionIds({}).join() === 'R1,R2,R3' && camRegionIds({ regions: { R12: {}, R2: {} } }).join() === 'R2,R12', 'camRegionIds：按实际的键、按号排，没有按 R1–R3；上限 = 最大号')
   }
 
   console.log(`\n${n - fails} 项通过，${fails} 项失败`)

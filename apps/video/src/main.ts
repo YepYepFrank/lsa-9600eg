@@ -10,18 +10,25 @@
  *   POST /api/video/cam-regions/probe        在一个没启用的区上试写、读回、马上写回（0.8.1，先验写法）
  *   POST /api/video/cam-regions/disable?ids=5,6&yes=1  停用指定的区（0.8.2；没给 yes 只预览）
  *   POST /api/video/cam-regions/restore      按备份（JSON 体）原样写回
- *   这几个只给 install.sh --cam-regions-default / --cam-regions-restore 用（经 docker exec 调本机），本地页不转
+ *   GET  /api/video/cam-regions              摄像机上现在的区（整份原样 + 写法 + 全局测温参数；0.8.4）
+ *   POST /api/video/cam-regions/apply        按子站网页画的写（0.8.4）：体 { set: [{ n, rect }], disable?: [n], yes? }；回备份与核对结果
+ *   apply / restore 写摄像机之前把整份备份存到配置目录 cam-regions-backup/<时间>.json（留最近 50 份），回执带 backupFile ——
+ *   子站或 agent 等不及超时了，备份也已经在 EG 上（审查 3）。restore 体 { backup, ids?, skipGlob? }（直接给备份也认）。
+ *   install.sh --cam-regions-* 经 docker exec 调本机；apply / restore / GET 另经 eg-agent 的 /api/cam-regions（子站服务票据）转过来，本地页不转。
+ *   写摄像机的几个同一时间只做一个（另一个回 409 busy）：摄像机最多 2 个会话，两个写交错着来备份 / 写回会乱
  * 只听本机（127.0.0.1）：本地管理页经 eg-agent 转过来。
  *
  *   pnpm video                        开发：读仓库下 run/
  *   pnpm -F @lsa-eg/video video:render  只生成 mediamtx 配置（mediamtx 先于 eg-video 起时用） */
 import 'reflect-metadata'
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { BadRequestException, Body, ConflictException, Controller, Get, HttpCode, Inject, Logger, Module, NotFoundException, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { Response } from 'express'
 import { VideoService } from './video.service.js'
 import { MissingError } from './recording.js'
-import { applyDefaultRegions, disableRegions, probeRegions, restoreRegions, type Backup } from './cam-regions.js'
+import { applyDefaultRegions, applyRegions, disableRegions, probeRegions, readRegions, restoreRegions, type Backup, type RegionSpec } from './cam-regions.js'
 
 const SVC = Symbol('VideoService')
 
@@ -96,17 +103,60 @@ class CamRegionsController {
     return d
   }
 
+  /** 备份存配置目录 cam-regions-backup/<时间>.json（600），超过 50 份删最老的；返回文件名 */
+  private saveBackup(b: Backup, tag = ''): string {
+    const dir = resolve(this.svc.cfg.dir, 'cam-regions-backup')
+    mkdirSync(dir, { recursive: true })
+    const name = `${b.at.replace(/[:.]/g, '-')}${tag}.json`
+    writeFileSync(resolve(dir, name), JSON.stringify(b, null, 2) + '\n', { mode: 0o600 })
+    const all = readdirSync(dir).filter(f => f.endsWith('.json')).sort()
+    for (const f of all.slice(0, Math.max(0, all.length - 50))) unlinkSync(resolve(dir, f))
+    return name
+  }
+
+  /** 正在写摄像机的操作（null = 没有） */
+  private busy: string | null = null
+
+  /** 写摄像机的操作排它：已经有一个在写回 409 */
+  private async exclusive<T>(what: string, fn: () => Promise<T>): Promise<T> {
+    if (this.busy) throw new ConflictException({ code: 'busy', message: `摄像机正在${this.busy}，稍后再试` })
+    this.busy = what
+    try {
+      return await fn()
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof ConflictException) throw e
+      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
+    } finally {
+      this.busy = null
+    }
+  }
+
+  @Get()
+  async current() {
+    const d = this.driver()
+    try {
+      return { ...(await readRegions(d)), camera: this.svc.cfg.local.camera.restv1, busy: this.busy }
+    } catch (e) {
+      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
+    }
+  }
+
+  @Post('apply')
+  @HttpCode(200)
+  async apply(@Body() b: { set?: RegionSpec[]; disable?: number[]; yes?: boolean }) {
+    const d = this.driver()
+    if (!b || !Array.isArray(b.set) || (b.disable !== undefined && !Array.isArray(b.disable))) throw new BadRequestException('体要是 { set: [{ n, rect: { x, y, width, height } }], disable?: [n], yes? }')
+    const set = b.set.map(s => ({ n: Number(s?.n), rect: { x: Number(s?.rect?.x), y: Number(s?.rect?.y), width: Number(s?.rect?.width), height: Number(s?.rect?.height) } }))
+    return this.exclusive('写测温区', () => applyRegions(d, { set, disable: (b.disable ?? []).map(Number), yes: b.yes === true, camera: this.svc.cfg.local.camera.restv1, onBackup: x => this.saveBackup(x) }))
+  }
+
   @Post('default')
   @HttpCode(200)
   async applyDefault(@Query('force') force?: string, @Query('yes') yes?: string, @Query('setGlobal') setGlobal?: string, @Query('distance') distance?: string) {
     const d = this.driver()
     const dist = distance === undefined || distance === '' ? undefined : Number(distance)
     if (dist !== undefined && !(dist > 0 && dist <= 1000)) throw new BadRequestException(`距离 ${distance} 不对：要在 (0, 1000] 米之间`)
-    try {
-      return await applyDefaultRegions(d, { force: force === '1', yes: yes === '1', setGlobal: setGlobal === '1', distance: dist, camera: this.svc.cfg.local.camera.restv1 })
-    } catch (e) {
-      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
-    }
+    return this.exclusive('写缺省测温区', () => applyDefaultRegions(d, { force: force === '1', yes: yes === '1', setGlobal: setGlobal === '1', distance: dist, camera: this.svc.cfg.local.camera.restv1 }))
   }
 
   @Post('disable')
@@ -114,33 +164,32 @@ class CamRegionsController {
   async disable(@Query('ids') ids?: string, @Query('yes') yes?: string) {
     const d = this.driver()
     const list = String(ids ?? '').split(',').filter(Boolean).map(Number)
-    try {
-      return await disableRegions(d, { ids: list, yes: yes === '1', camera: this.svc.cfg.local.camera.restv1 })
-    } catch (e) {
-      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
-    }
+    return this.exclusive('停用测温区', () => disableRegions(d, { ids: list, yes: yes === '1', camera: this.svc.cfg.local.camera.restv1 }))
   }
 
   @Post('probe')
   @HttpCode(200)
   async probe() {
     const d = this.driver()
-    try {
-      return await probeRegions(d, { camera: this.svc.cfg.local.camera.restv1 })
-    } catch (e) {
-      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
-    }
+    return this.exclusive('试写测温区', () => probeRegions(d, { camera: this.svc.cfg.local.camera.restv1 }))
   }
 
   @Post('restore')
   @HttpCode(200)
-  async restore(@Body() b: Backup) {
+  async restore(@Body() body: Backup | { backup: Backup; ids?: number[]; skipGlob?: boolean }) {
     const d = this.driver()
-    try {
-      return await restoreRegions(d, b, { camera: this.svc.cfg.local.camera.restv1 })
-    } catch (e) {
-      throw new ServiceUnavailableException({ code: 'camera', message: (e as Error).message })
-    }
+    const camera = this.svc.cfg.local.camera.restv1
+    const w = body && 'backup' in body ? body : { backup: body as Backup, ids: undefined, skipGlob: undefined }
+    if (!w.backup || !Array.isArray(w.backup.regions)) throw new BadRequestException('体要是备份 { at, camera, regions }，或 { backup, ids?, skipGlob? }')
+    if (w.ids !== undefined && (!Array.isArray(w.ids) || !w.ids.every(n => Number.isInteger(n) && n >= 0 && n <= 11))) throw new BadRequestException('ids 要是区号 0–11 的数组')
+    return this.exclusive('恢复测温区', async () => {
+      // 审查 7：写回之前先把现在的样子存一份（网页撤销也能再撤回来）
+      const now = await readRegions(d)
+      const pre: Backup = { at: new Date().toISOString(), camera, regions: now.regions, ...(now.glob ? { glob: now.glob } : {}) }
+      const backupFile = this.saveBackup(pre, '-pre-restore')
+      const r = await restoreRegions(d, w.backup, { camera, ids: w.ids, skipGlob: w.skipGlob === true })
+      return { ...r, backup: pre, backupFile }
+    })
   }
 }
 

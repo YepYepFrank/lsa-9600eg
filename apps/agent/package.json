@@ -13,6 +13,7 @@
     "verify:conv-expect": "node --import @swc-node/register/esm-register src/verify-conv-expect.ts",
     "verify:conv-bus": "node --import @swc-node/register/esm-register src/verify-conv-bus.ts",
     "verify:unit": "node --import @swc-node/register/esm-register src/verify-unit.ts",
+    "verify:cam-regions-cfg": "node --import @swc-node/register/esm-register src/verify-cam-regions-cfg.ts",
     "verify:mqtt-keep": "node --import @swc-node/register/esm-register src/verify-mqtt-keep.ts",
     "verify:pulse": "node --import @swc-node/register/esm-register src/verify-pulse-dedup.ts",
     "verify:arc": "node --import @swc-node/register/esm-register src/verify-arc.ts",

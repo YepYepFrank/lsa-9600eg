@@ -42,7 +42,7 @@
  *   与检查工具 lsa_check 1.2 --applied 同一口径（子站 0.18.3 起地电波、SAM 红外的全局缺省改回 pending，S19 由本站模型声明 confirmed） */
 import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { expectedPeriodMs, pointsOf } from '@lsa/points'
-import { CAM_MAX_REGIONS, camRegionLimit, type EgConfig } from '@lsa-eg/config'
+import { CAM_MAX_REGIONS, camRegionIds, type EgConfig } from '@lsa-eg/config'
 import { EG_CONFIG } from '../config.js'
 import { BusService, type Entry } from '../bus/bus.service.js'
 import { CapsService } from '../caps/caps.service.js'
@@ -108,7 +108,7 @@ const DERIVED: Record<string, string[]> = {
   'ir.hot': REGION_MAXES,
 }
 /** 点目录展开用的测温区：本柜配了几个就展开几个（都按矩形区；point 区的 .pt 来过才看护，同 R1–R3 时的做法） */
-const camRegions = (attrs: Record<string, unknown>) => Object.fromEntries(Array.from({ length: camRegionLimit(attrs) }, (_, i) => [`R${i + 1}`, 'region' as const]))
+const camRegions = (attrs: Record<string, unknown>) => Object.fromEntries(camRegionIds(attrs).map(id => [id, 'region' as const]))
 const EVAL_MS = 2_000
 const REPUBLISH_MS = 60_000
 /** 预热中 dev.warmup_s 的重发间隔 */
