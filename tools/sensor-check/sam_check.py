@@ -22,7 +22,7 @@ EG 上的转换程序（容器 lsa-eg-conv）占着串口：脚本会先停掉�
   sudo python3 sam_check.py --cam-only              # 只查摄像机
   sudo python3 sam_check.py --scan                  # 扫 1–32 号地址，看总线上到底有谁
   sudo python3 sam_check.py --port /dev/ttyUSB0     # 用 USB 转 485
-  sudo python3 sam_check.py --cam 192.168.100.64    # 摄像机地址（缺省取 /opt/lsa-eg/config/local.yaml）
+  sudo python3 sam_check.py --cam 192.168.1.19    # 摄像机地址（缺省取 /opt/lsa-eg/config/local.yaml）
 摄像机口令：缺省取 local.yaml；没有就问（不回显）。也可设环境变量 LSA_CAM_PASS（RTSP，admin）/ LSA_CAM_REST_PASS（restv1 接口）。
 报告和抓拍存在 ./sam-check-<编号>-<时间>/。退出码：全部通过 0，有不通过 1，参数 / 环境错 2。
 """
@@ -1060,8 +1060,8 @@ def camera_conf(args):
                 host = m.group(1)
                 break
     if not host:
-        host = '192.168.100.64'
-        out('  没指定摄像机地址、local.yaml 里也没有：用 S19 约定的 %s（--cam 改）' % host)
+        host = '192.168.1.19'
+        out('  没指定摄像机地址、local.yaml 里也没有：用出厂地址 %s（--cam 改）' % host)
     if args.cam or not rest:
         rest = 'http://%s%s' % (host, '' if args.cam_http_port == 80 else ':%d' % args.cam_http_port)
     tty_in = sys.stdin.isatty()
@@ -1109,7 +1109,7 @@ def check_camera(args, outdir, cam, prev=None):
     hp, rp = args.cam_http_port, args.cam_rtsp_port
     p80, p554 = tcp_ok(host, hp), tcp_ok(host, rp)
     if p80 is not True and p554 is not True:
-        result('摄像机网络', 'FAIL', '%s 的 %d / %d 都连不上（%s）：网线 / PoE 供电 / LAN1 地址（EG 应是 192.168.100.1/24）' % (host, hp, rp, p80))
+        result('摄像机网络', 'FAIL', '%s 的 %d / %d 都连不上（%s）：网线 / PoE 供电 / LAN1 地址（EG 应是 192.168.1.1/24）' % (host, hp, rp, p80))
         return ident
     result('摄像机网络', 'PASS' if p80 is True and p554 is True else 'WARN',
            '%s  HTTP %d %s，RTSP %d %s' % (host, hp, '通' if p80 is True else '不通', rp, '通' if p554 is True else '不通'))
@@ -1191,7 +1191,7 @@ def parse_args():
     ap.add_argument('--arc-rise', type=float, default=1.0, help='弧光功能试验判据：强度至少涨几个百分点（缺省 1.0）')
     ap.add_argument('--no-cam', action='store_true', help='不查摄像机')
     ap.add_argument('--cam-only', action='store_true', help='只查摄像机')
-    ap.add_argument('--cam', default='', help='摄像机地址（缺省取 local.yaml，再没有用 192.168.100.64）')
+    ap.add_argument('--cam', default='', help='摄像机地址（缺省取 local.yaml，再没有用 192.168.1.19）')
     ap.add_argument('--cam-http-port', type=int, default=80, help=argparse.SUPPRESS)
     ap.add_argument('--cam-rtsp-port', type=int, default=554, help=argparse.SUPPRESS)
     ap.add_argument('--rtsp-user', default='', help='RTSP 账号（缺省 local.yaml 的 user，一般 admin）')

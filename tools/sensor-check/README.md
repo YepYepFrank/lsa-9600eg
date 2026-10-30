@@ -8,7 +8,7 @@
 | 设备 | 接到 EG | 约定 |
 |---|---|---|
 | 局放（超声）、气体、温湿度、弧光 ALS10 | COM2（RS-485，`/dev/ttyS1`，BIOS 里设成 485） | 9600 8N1；从站 局放 2、气体 3、温湿度 4、弧光 5（厂家出厂设好） |
-| 双目摄像机 | LAN1 | 摄像机 192.168.100.64，EG LAN1 192.168.100.1/24（S19 约定） |
+| 双目摄像机 | LAN1 | 摄像机 192.168.1.19，EG LAN1 192.168.1.1/24（摄像机出厂地址，不改） |
 
 USB 转 485 也行：`--port /dev/ttyUSB0`（或 `/dev/serial/by-id/…`）。
 
@@ -55,7 +55,7 @@ sudo python3 sam_check.py --loop            # 想快一点：加 --no-func 不�
 缺省从 `/opt/lsa-eg/config/local.yaml` 的 camera 段取（地址、账号、口令）。没有这个文件（EG 没装 / 没配）就问：RTSP 口令（只认 admin）、restv1 接口账号和口令（真机是两套账号）。也可以用环境变量免问：
 
 ```bash
-sudo LSA_CAM_PASS='…' LSA_CAM_REST_PASS='…' python3 sam_check.py --rest-user <接口账号> --cam 192.168.100.64
+sudo LSA_CAM_PASS='…' LSA_CAM_REST_PASS='…' python3 sam_check.py --rest-user <接口账号> --cam 192.168.1.19
 ```
 
 输出和报告里不带口令。
