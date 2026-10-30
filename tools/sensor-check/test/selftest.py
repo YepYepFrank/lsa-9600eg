@@ -42,6 +42,7 @@ class Bus:
     echo = False     # 模拟 485 模块回显
     dead = False     # 总线上谁都不应答
     off = set()      # 这几个从站没接
+    noise = b''      # 应答前面夹的杂字节（485 转 232 转换头收发切换的毛刺）
 
 
 def serve_bus(conn):
@@ -77,6 +78,7 @@ def serve_bus(conn):
                 out = body + sim.crc16(body).to_bytes(2, 'little')
                 if Bus.echo:
                     out = frame + out
+                out = Bus.noise + out
                 # 分两段发，验「分段到达」
                 conn.sendall(out[:3])
                 time.sleep(0.01)
@@ -401,6 +403,18 @@ def main():
     code, t = run(tmp, '4', ['--no-cam', '--scan', '1-6'])
     Bus.dead = False
     expect('退出码 1，扫描说一个应答都没有', code == 1 and '一个应答都没有' in t, t)
+
+    print('场景 6：应答前面夹杂字节（485 转 232 转换头）+ 回显被截掉一半')
+    Bus.noise = b'\x00\xff\x02\x03'
+    code, t = run(tmp, '6', ['--no-cam'])
+    Bus.noise = b''
+    expect('退出码 0（四路照常读出）', code == 0, t)
+    expect('提示跳过了杂字节', '杂字节' in t, t)
+    expect('没有 CRC 错', 'CRC' not in t, t)
+
+    print('场景 7：--raw 打印收发字节')
+    code, t = run(tmp, '7', ['--no-cam', '--only', 'th', '--rounds', '1', '--raw'])
+    expect('打印了发 / 收', '发 04 03 00 00 00 02' in t and '收 04 03 04' in t, t)
 
     print('场景 5：--loop 连续换三套（第 2 套温湿度没接、换了摄像机；第 3 套摄像机没换）')
     code, t, rows = run_loop(tmp, cam)

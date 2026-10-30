@@ -165,8 +165,21 @@ class SerialPort:
 
 
 class Modbus:
-    def __init__(self, port, timeout):
-        self.port, self.timeout = port, timeout
+    def __init__(self, port, timeout, raw=False):
+        self.port, self.timeout, self.raw = port, timeout, raw
+        self.skipped = 0        # 应答前面夹着杂字节、被跳过的次数（转换头收发切换的毛刺 / 不完整回显）
+
+    @staticmethod
+    def _find(buf, slave, fc):
+        """在收到的字节里找一帧 CRC 对的应答（从站号 + 功能码 / 异常码开头）；返回 (帧, 前面跳过的字节数) 或 (None, 0)"""
+        for i in range(len(buf) - 4):
+            if buf[i] != slave or buf[i + 1] not in (fc, fc | 0x80):
+                continue
+            need = 5 if buf[i + 1] & 0x80 else 5 + buf[i + 2]
+            f = buf[i:i + need]
+            if len(f) == need and crc16(f[:-2]) == struct.unpack('<H', f[-2:])[0]:
+                return f, i
+        return None, 0
 
     def read(self, slave, fc, addr, count, timeout=None):
         """读保持（03）/ 输入（04）寄存器。返回 (寄存器列表 或 None, 错误说明, 毫秒)"""
@@ -178,6 +191,7 @@ class Modbus:
         self.port.write(req)
         deadline = t0 + (timeout or self.timeout)
         buf = b''
+        frame, skip = None, 0
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -185,23 +199,25 @@ class Modbus:
             chunk = self.port.read(min(left, 0.05))
             if chunk:
                 buf += chunk
-                if buf.startswith(req):      # 有的 485 模块会把自己发的回显回来
+                if buf.startswith(req):      # 有的 485 模块 / 转换头会把自己发的回显回来
                     buf = buf[len(req):]
-                if len(buf) >= 3:
-                    need = 5 if buf[1] & 0x80 else 5 + buf[2]
-                    if len(buf) >= need:
-                        buf = buf[:need]
-                        break
+                frame, skip = self._find(buf, slave, fc)
+                if frame:
+                    break
         ms = (time.monotonic() - t0) * 1000
+        if self.raw:
+            print('     发 %s ／ 收 %s' % (req.hex(' '), buf.hex(' ') or '（无）'))
         time.sleep(0.02)
-        if not buf:
+        if frame:
+            if skip:
+                self.skipped += 1
+            buf = frame
+        elif not buf:
             return None, '没有应答', ms
-        if len(buf) < 5:
+        elif len(buf) < 5:
             return None, '应答不完整（%s）' % buf.hex(' '), ms
-        if crc16(buf[:-2]) != struct.unpack('<H', buf[-2:])[0]:
-            return None, 'CRC 错（%s）—— 波特率 / 接线干扰 / 两台同地址？' % buf.hex(' '), ms
-        if buf[0] != slave:
-            return None, '应答的从站是 %d 不是 %d' % (buf[0], slave), ms
+        else:
+            return None, 'CRC 错（收到 %s）—— 波特率 / 接线干扰 / 两台同地址 / 转换头收发切换？' % buf[:40].hex(' '), ms
         if buf[1] & 0x80:
             return None, '异常应答 %d（%s）' % (buf[2], {1: '不支持此功能码', 2: '寄存器地址不对', 3: '数据不对', 4: '从站故障'}.get(buf[2], '?')), ms
         if buf[1] != fc:
@@ -366,6 +382,9 @@ def check_sensors(mb, args, slaves):
             if ev:
                 out('       最近一次事件：序号 %d，%s，峰值 %.2f %%，持续 %d ms' % (
                     ev[0], ARC_EVENT.get(ev[1], '类型 %d' % ev[1]), ev[4] * 0.01, (ev[5] << 16) | ev[6]))
+    if mb.skipped:
+        item('INFO', '有 %d 次应答前面夹着杂字节（转换头收发切换的毛刺 / 回显不完整），已自动跳过、照常读出' % mb.skipped)
+        mb.skipped = 0
     if silent or args.scan:
         scan(mb, args, slaves, found)
     return found
@@ -1181,6 +1200,7 @@ def parse_args():
     ap.add_argument('--port', default='/dev/ttyS1', help='串口（缺省 X26A COM2 /dev/ttyS1；也可 /dev/ttyUSB0、tcp://主机:端口）')
     ap.add_argument('--baud', type=int, default=9600)
     ap.add_argument('--timeout', type=float, default=0.6, help='每次问的应答超时秒（缺省 0.6）')
+    ap.add_argument('--raw', action='store_true', help='逐条打印串口收发的原始字节（查 CRC 错、转换头问题用）')
     ap.add_argument('--rounds', type=int, default=5, help='每台问几轮（缺省 5）')
     ap.add_argument('--interval', type=float, default=0.5, help='两轮间隔秒')
     ap.add_argument('--slave', default='', help='改从站地址，如 pd=7,th=8（键：pd gas th arc ir）')
@@ -1366,7 +1386,7 @@ def main():
             except (OSError, ValueError) as e:
                 print('打不开串口 %s：%s%s' % (args.port, e, '（要 sudo，或把用户加进 dialout 组）' if isinstance(e, PermissionError) else ''))
                 return 2
-            mb = Modbus(port, args.timeout)
+            mb = Modbus(port, args.timeout, args.raw)
         cam = None if args.no_cam else camera_conf(args)
 
         if not args.loop:
