@@ -58,7 +58,7 @@ out="$(ie --force)"; rc=$?
 rm -rf /opt/lsa9600sp /etc/systemd/journald.conf.d/lsa-eg.conf /w/e/.env
 out="$(ie --lan1 nosuch0)"; rc=$?
 [ $rc != 0 ] && grep -q '没有网口 nosuch0' <<<"$out" && untouched && ok "--lan1 没有的网口：拒（rc $rc），journald / .env 没动（以前在导镜像、写 journald 之后才查）" || bad "--lan1 没有的网口：rc $rc：$(tail -2 <<<"$out")"
-nic="$(ls /sys/class/net | grep -v '^lo$' | head -1)"
+nic="$(ls /sys/class/net | grep -v '^lo$' | head -1 || true)"
 out="$(ie --lan1 "$nic")"; rc=$?
 [ $rc != 0 ] && grep -q "会把唯一的网口也挡掉" <<<"$out" && untouched && ok "--lan1 $nic（容器里没有第二个物理网口）：拒（rc $rc），什么都没动" || bad "--lan1 唯一网口：rc $rc：$(tail -2 <<<"$out")"
 echo; echo "== 结果：✓ $n_ok，✗ $fail"
