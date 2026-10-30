@@ -69,7 +69,7 @@ kv() { sed -n "s/^$1=//p" <<< "$2" | tail -1; }
 [[ "$PAR" =~ ^[1-9]$ ]] || die "--parallel 要 1–9：$PAR"
 [[ "$COUNT" =~ ^[0-9]+$ ]] || die "--count 要是数字：$COUNT"
 [ -z "$ONE_SN" ] || [ "$ONCE" = 1 ] || die '--sn 只能和 --once 一起用（主机名不是 lsaeg-<SN> 的那一台单独做）'
-[ "$LAN1_ADDR" = none ] || [[ "$LAN1_ADDR" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]{1,2}$ ]] || die "--lan1-addr 不对：$LAN1_ADDR"
+[ "$LAN1_ADDR" = none ] || { [[ "$LAN1_ADDR" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]{1,2}$ ]] && [ "${LAN1_ADDR#*/}" -le 32 ]; } || die "--lan1-addr 不对：$LAN1_ADDR"
 if [ -z "$SD" ]; then if [ "$(id -u)" = 0 ]; then SD=/var/log/lsa9600sp/eg-field; else SD="$HOME/.lsa9600/eg-field"; fi; fi
 mkdir -p "$SD" && chmod 700 "$SD" || die "建不了状态目录 $SD"
 ON_SP=0; [ -d "$SP" ] && [ "$(id -u)" = 0 ] && ON_SP=1
