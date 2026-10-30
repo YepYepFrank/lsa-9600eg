@@ -1,4 +1,4 @@
-/* 配置下发里的测温区（0.9.0，子站「测温区设置」）：体里 camRegions: { <单元号 | 柜号>: { R<n>: { label, env } } }，只取本单元那份。
+/* 配置下发里的测温区（0.8.4，子站「测温区设置」）：体里 camRegions: { <单元号 | 柜号>: { R<n>: { label, env } } }，只取本单元那份。
  *   有 → 写配置目录的 cam-regions.json（@lsa-eg/config 的 loadConfig 叠到摄像机属性 regions 上；eg-video 每轮看修改时间、马上换部位名和个数）；
  *   没有（子站没在网页改过这台，或老子站）→ 删掉 cam-regions.json，回到 eg.yaml 的。
  * 区的个数或温升对哪台 SAM 变了：agent 里派生 / 到数看护是开机时按区展开的，要重启 agent 才按新的来 —— 应用完几秒后自己退出，容器 unless-stopped 拉起来。
@@ -25,6 +25,8 @@ export function parseCamRegions(b: Record<string, unknown>, keys: string[]): Cam
     const m = /^R(\d{1,2})$/.exec(k)
     if (!m || Number(m[1]) < 1 || Number(m[1]) > CAM_MAX_REGIONS) throw new Error(`camRegions 的区号 ${k} 不对（R1–R${CAM_MAX_REGIONS}）`)
     if (!isObj(v) || typeof v['label'] !== 'string' || !v['label'].trim() || v['label'].length > LABEL_MAX) throw new Error(`camRegions.${k}.label 要是 1–${LABEL_MAX} 个字`)
+    // 审查 8：换行 / 控制字符会进告警文字、本地页
+    if (/[\u0000-\u001f\u007f]/.test(v['label'])) throw new Error(`camRegions.${k}.label 不能有换行或控制字符`)
     const env = v['env']
     if (env !== undefined && env !== null && typeof env !== 'string') throw new Error(`camRegions.${k}.env 要是设备名或空串`)
     out[k] = { label: v['label'].trim(), ...(env !== undefined ? { env } : {}) }

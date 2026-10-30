@@ -14,7 +14,7 @@
  *   - force 必须同时给 yes：覆盖前列出 R1–R3 三个位置现在是什么、哪些启用的区不动（现场的 Area6 是用户手画的）；
  *   - 写回（恢复 / 写到一半出错）只写跟备份不一样的区；出厂空区（0×0）摄像机可能不收原样，原来就没启用的改成「停用」（效果一样：不测温）。
  *
- * 0.9.0（子站「测温区设置」）：applyRegions 按网页画的写任意 R1–R12 矩形区、停用指定的区（同一套备份 / 写法探测 / 写回 / 核对；只写跟摄像机上不一样的区），
+ * 0.8.4（子站「测温区设置」）：applyRegions 按网页画的写任意 R1–R12 矩形区、停用指定的区（同一套备份 / 写法探测 / 写回 / 核对；只写跟摄像机上不一样的区），
  *   readRegions 读当前整份给页面；eg-video 经 agent 的 /api/cam-regions 转过来（子站服务票据）。部位名不进摄像机（regionName 一律 R<n>）。
  *
  * 缺省布局（用户定）：左、中、右三竖条，R1 = 左、R2 = 中、R3 = 右；四周各留 5% 的边（x 32–608、y 24–456），
@@ -188,6 +188,8 @@ export interface ApplyResult {
   error?: string
   /** 写到一半出错时按备份写回的情况 */
   rolledBack?: string
+  /** 0.8.4：写之前的备份在 EG 上存成的文件名（eg-video 落盘；没写摄像机为空） */
+  backupFile?: string | null
   /** 拒绝了（区不够 / 有启用的区没给 force）：摄像机没动 */
   refused?: boolean
   /** 只是预览（没给 yes）：摄像机没动，plan 是会做什么 */
@@ -338,7 +340,7 @@ export async function applyDefaultRegions(
   return res
 }
 
-/** 网页上画的一个区（0.9.0，子站「测温区设置」）：n = 1–12（区号 n−1），矩形，640×480 热像像素 */
+/** 网页上画的一个区（0.8.4，子站「测温区设置」）：n = 1–12（区号 n−1），矩形，640×480 热像像素 */
 export interface RegionSpec {
   n: number
   rect: Rect
@@ -369,13 +371,13 @@ export function specProblem(set: RegionSpec[], disable: number[], slots: number)
 /** 一个区已经是要的样子（启用、名叫 R<n>、矩形、坐标一样）：不用写 */
 const isAlready = (row: Row | undefined, s: RegionSpec) => !!row && row['regionEnable'] === true && String(row['regionName'] ?? '') === `R${s.n}` && isRect(row['regionType']) && sameRect(row['region'], s.rect)
 
-/** 按网页上画的写测温区（0.9.0）：set 里的区写成启用的矩形、名字 R<n>（中文部位名不进摄像机，用户 10-29 定）；
+/** 按网页上画的写测温区（0.8.4）：set 里的区写成启用的矩形、名字 R<n>（中文部位名不进摄像机，用户 10-29 定）；
  *  disable 里的（R 号 1–12）停用（只改启用开关）。跟缺省三竖条同一套规矩：
  *  先整份备份（取不到不写）→ 没给 yes 只预览 → 第一个要写的区试写法，后面照用 → 写一半出错按备份写回 → 读回逐项核对（别的区不该动）→ 等温度出数。
  *  已经是要的样子的区不写；全局测温参数不动（只在说明里报现在的值） */
 export async function applyRegions(
   d: Restv1Driver,
-  o: { set: RegionSpec[]; disable?: number[]; yes?: boolean; camera: string; now?: Date; waitTempMs?: number },
+  o: { set: RegionSpec[]; disable?: number[]; yes?: boolean; camera: string; now?: Date; waitTempMs?: number; onBackup?: (b: Backup) => string | null },
 ): Promise<ApplyResult> {
   const before = await d.regionsRaw()
   const style0 = styleOf(before)
@@ -411,6 +413,16 @@ export async function applyRegions(
   }
   if (!planText.length) res.notes.push('摄像机上已经是这样，没写')
   else {
+    // 审查 3：写之前先把备份交出去落盘（eg-video 存配置目录）—— 子站 / agent 等不及超时了，备份也已经在 EG 上
+    if (o.onBackup) {
+      try {
+        res.backupFile = o.onBackup(backup)
+      } catch (e) {
+        res.error = `写之前的备份存不下（${(e as Error).message}），不写`
+        res.refused = true
+        return res
+      }
+    }
     let style: CamStyle | null = null
     const tried: string[] = []
     /** 正在写的那一格；allRejected = 几种写法都回 10001（摄像机明确没收，那一格没动） */
@@ -464,12 +476,18 @@ export async function applyRegions(
     }
     res.style = style ?? style0
   }
-  // 读回核对。读回失败（19999、超时）不抛：区已经写了，结果和备份要交回去存盘、记审计
+  // 读回核对。读回失败（19999、超时）不抛：区已经写了 —— 审查 2：按备份写回（只写这次动过的槽，全局参数本来没动），结果和备份交回去存盘、记审计
+  const undoWritten = async (why: string) => {
+    if (!res.written.length) return
+    const r = await restoreRegions(d, backup, { camera: o.camera, ids: res.written, skipGlob: true }).catch(e => ({ ok: false, error: (e as Error).message, written: [] as number[], mismatch: [] as string[] }))
+    res.rolledBack = r.ok ? `${why}，已按备份写回 ${r.written.length} 个区` : `${why}，按备份写回也没成（${r.error ?? r.mismatch.join('；')}）：用备份恢复（install.sh --cam-regions-restore）`
+  }
   let after: Row[]
   try {
     after = await d.regionsRaw()
   } catch (e) {
-    res.error = `已经写了，但写完读回失败：${(e as Error).message}（没核对；要撤销用备份恢复）`
+    res.error = `已经写了，但写完读回失败：${(e as Error).message}（没核对）`
+    await undoWritten('读回失败')
     return res
   }
   for (const s of set) {
@@ -498,10 +516,11 @@ export async function applyRegions(
     await new Promise(r => setTimeout(r, 1000))
   }
   res.ok = res.mismatch.length === 0
+  if (!res.ok) await undoWritten('读回跟要写的不一致')
   return res
 }
 
-/** 摄像机上现在的区（0.9.0，网页「测温区设置」打开时读）：整份原样 + 写法 + 全局测温参数（读不到没有） */
+/** 摄像机上现在的区（0.8.4，网页「测温区设置」打开时读）：整份原样 + 写法 + 全局测温参数（读不到没有） */
 export async function readRegions(d: Restv1Driver): Promise<{ regions: Row[]; style: CamStyle; glob?: Row; frame: { w: number; h: number } }> {
   const regions = await d.regionsRaw()
   const glob = await d.globalParamRaw().catch(() => undefined)
@@ -662,8 +681,9 @@ export interface RestoreResult {
   error?: string
 }
 
-/** 按备份写回（区号 = 下标）：只写跟现在不一样的区；全局测温参数（备份里有）不一样也写回；再读回核对 */
-export async function restoreRegions(d: Restv1Driver, b: Backup, o: { camera?: string } = {}): Promise<RestoreResult> {
+/** 按备份写回（区号 = 下标）：只写跟现在不一样的区；全局测温参数（备份里有）不一样也写回；再读回核对。
+ *  0.8.4（审查 7）：ids 给了就只写这几个槽（网页撤销只撤那次写过的区，后来手画的 Area6 不动）；skipGlob 不碰全局测温参数 */
+export async function restoreRegions(d: Restv1Driver, b: Backup, o: { camera?: string; ids?: number[]; skipGlob?: boolean } = {}): Promise<RestoreResult> {
   const res: RestoreResult = { ok: false, written: [], skipped: 0, mismatch: [], notes: [] }
   if (!Array.isArray(b.regions) || !b.regions.length) return { ...res, error: '备份文件里没有区域配置（regions）' }
   if (o.camera && b.camera && o.camera !== b.camera) return { ...res, error: `备份是摄像机 ${b.camera} 的，现在接的是 ${o.camera}：不写` }
@@ -671,8 +691,10 @@ export async function restoreRegions(d: Restv1Driver, b: Backup, o: { camera?: s
   const local = styleOf(cur).local
   const disabled = new Set<number>()
   const failed: string[] = []
+  const only = o.ids ? new Set(o.ids) : null
   for (const [id, row] of b.regions.entries()) {
     if (id > 11) break
+    if (only && !only.has(id)) continue
     if (sameRow(cur[id], row)) {
       res.skipped++
       continue
@@ -689,8 +711,10 @@ export async function restoreRegions(d: Restv1Driver, b: Backup, o: { camera?: s
       failed.push(`R${id + 1}（${(e as Error).message}）`)
     }
   }
-  const gp = b.glob ? globalProblem(b.glob) : null
-  if (b.glob && gp) res.mismatch.push(`备份里的全局测温参数${gp}，没写回`)
+  const gp = b.glob && !o.skipGlob ? globalProblem(b.glob) : null
+  if (o.skipGlob) {
+    /* 网页撤销：写测温区从来不改全局参数，不写回 */
+  } else if (b.glob && gp) res.mismatch.push(`备份里的全局测温参数${gp}，没写回`)
   else if (b.glob) {
     try {
       const g = await d.globalParamRaw()
@@ -714,6 +738,7 @@ export async function restoreRegions(d: Restv1Driver, b: Backup, o: { camera?: s
   }
   for (const [id, row] of b.regions.entries()) {
     if (id > 11) break
+    if (only && !only.has(id)) continue
     const got = after[id] ?? {}
     if (Boolean(got['regionEnable']) !== Boolean(row['regionEnable'])) res.mismatch.push(`R${id + 1} 启用 ${String(got['regionEnable'])}（备份 ${String(row['regionEnable'])}）`)
     if (disabled.has(id)) continue

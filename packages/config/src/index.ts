@@ -275,7 +275,7 @@ export function loadConfig(dir = configDir()): EgConfig {
   return { ...eg, unit, local, conn, dir }
 }
 
-/** 子站网页改过的测温区（0.9.0）：配置下发带来的本单元 { R<n>: { label, env } }，agent 存成配置目录的 cam-regions.json。
+/** 子站网页改过的测温区（0.8.4）：配置下发带来的本单元 { R<n>: { label, env } }，agent 存成配置目录的 cam-regions.json。
  *  有它就整份顶替 eg.yaml 里摄像机属性 regions（个数、部位名、温升对哪台 SAM 都按它）；没有 / 单元号不对 / 格式坏了 = 照 eg.yaml */
 export const CAM_REGIONS_FILE = 'cam-regions.json'
 export type CamRegionsOverride = Record<string, { label: string; env?: string | null }>
@@ -333,12 +333,18 @@ export function stationToken(cfg: Pick<EgFile, 'station' | 'eg'>): string {
 /** 摄像机测温区上限（I18，与后端 @lsa/points 的 MAX_REGIONS / DEFAULT_REGION_COUNT 一致） */
 export const CAM_MAX_REGIONS = 12
 export const CAM_DEFAULT_REGIONS = 3
-/** 这面柜配了几个测温区：eg.yaml 里 CAM 设备属性 regions 下有几个 R<n> 就是几（子站 model.yaml 给），没有按 3，夹到 1–12
- *  （2026-10-10 与后端商定，eg.yaml 不加字段） */
-export function camRegionLimit(attrs: Record<string, unknown> | undefined): number {
+/** 这面柜配了哪几个测温区：eg.yaml 里 CAM 设备属性 regions 下的 R<n> 键（子站 model.yaml / 网页「测温区设置」给），按号排；
+ *  一个都没有按 R1–R3（2026-10-10 与后端商定，eg.yaml 不加字段）。
+ *  0.8.4：区号可以有空缺（网页上删掉 R2 留下 R1、R3）—— 一律按实际的键，不按个数编 R1…R<个数>（审查必须修 1：按个数会丢掉 R3） */
+export function camRegionIds(attrs: Record<string, unknown> | undefined): string[] {
   const regions = attrs?.['regions']
-  const n = regions && typeof regions === 'object' ? Object.keys(regions).filter(k => /^R\d{1,2}$/.test(k)).length : 0
-  return Math.min(CAM_MAX_REGIONS, Math.max(1, n || CAM_DEFAULT_REGIONS))
+  const ns = regions && typeof regions === 'object' ? Object.keys(regions).map(k => /^R(\d{1,2})$/.exec(k)?.[1]).filter((x): x is string => !!x).map(Number).filter(n => n >= 1 && n <= CAM_MAX_REGIONS) : []
+  const list = [...new Set(ns)].sort((a, b) => a - b)
+  return (list.length ? list : Array.from({ length: CAM_DEFAULT_REGIONS }, (_, i) => i + 1)).map(n => `R${n}`)
+}
+/** 配的最大区号（1–12）：按名对应时 R1…R<它> 以内的才认 */
+export function camRegionLimit(attrs: Record<string, unknown> | undefined): number {
+  return Math.max(...camRegionIds(attrs).map(id => Number(id.slice(1))))
 }
 
 function merge<T>(base: T, over: unknown): T {

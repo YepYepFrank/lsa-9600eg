@@ -1,4 +1,4 @@
-/* 0.9.0 自检：配置下发带的测温区（子站「测温区设置」改过的部位名 / 个数 / 温升来源，apply/cam-regions-cfg.ts）。
+/* 0.8.4 自检：配置下发带的测温区（子站「测温区设置」改过的部位名 / 个数 / 温升来源，apply/cam-regions-cfg.ts）。
  *   parseCamRegions：只取本单元那份、校验区号 / 部位名 / env；
  *   applyCamRegions：写 / 删 cam-regions.json、摄像机属性就地换、只改名不重启、个数或 env 变了要重启；
  *   loadConfig：cam-regions.json 叠到 eg.yaml 摄像机属性上（单元号不对、格式坏了不叠）；camRegionLimit 跟着变；
@@ -8,7 +8,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CAM_REGIONS_FILE, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { CAM_REGIONS_FILE, camRegionIds, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { applyCamRegions, ensureCamRegionsFile, parseCamRegions } from './apply/cam-regions-cfg.js'
 import { configHash } from './apply/apply.service.js'
 
@@ -52,7 +52,7 @@ function fresh(): EgConfig {
 const camOf = (c: EgConfig) => c.devices.find(d => d.kind === 'camera')!
 const regionsOf = (c: EgConfig) => camOf(c).attrs['regions'] as Record<string, { label: string; env?: string | null }>
 
-console.log('配置下发带的测温区（0.9.0）\n')
+console.log('配置下发带的测温区（0.8.4）\n')
 
 console.log('1. parseCamRegions')
 const keys = ['DP4-B', 'DP4']
@@ -68,6 +68,8 @@ for (const [body, re] of [
   [{ camRegions: { 'DP4-B': { R1: { label: 'x'.repeat(33) } } } }, /label 要是 1–32/],
   [{ camRegions: { 'DP4-B': { R1: { label: 'x', env: 3 } } } }, /env 要是/],
   [{ camRegions: { 'DP4-B': {} } }, /一个区都没有/],
+  [{ camRegions: { 'DP4-B': { R1: { label: '触头\n第二行' } } } }, /换行或控制字符/],
+  [{ camRegions: { 'DP4-B': { R1: { label: '触头\u0007' } } } }, /换行或控制字符/],
 ] as const) {
   const m = throws(() => parseCamRegions(body as Record<string, unknown>, keys), re)
   check(!!m, `拒：${m ?? JSON.stringify(body)}`)
@@ -87,6 +89,9 @@ console.log('2. applyCamRegions 与 loadConfig 叠加')
   check(add.restart && camRegionLimit(camOf(c).attrs) === 4 && camRegionLimit(camOf(loadConfig(c.dir)).attrs) === 4, `加了 R4：要重启，个数 4（${add.text}）`)
   const env = applyCamRegions(c, { ...rename, R4: { label: '避雷器', env: '' } })
   check(env.restart, 'R4 的温升来源改了：要重启')
+  // 审查必须修 1：网页上删掉 R2 留下 R1、R3 —— 清单是 R1、R3，不是按个数的 R1、R2
+  const gap = applyCamRegions(c, { R1: rename.R1, R3: rename.R3 })
+  check(gap.restart && camRegionIds(camOf(c).attrs).join() === 'R1,R3' && camRegionLimit(camOf(c).attrs) === 3 && camRegionIds(camOf(loadConfig(c.dir)).attrs).join() === 'R1,R3', `删掉 R2：区号清单 R1、R3（上限 3），R3 照出温度（${gap.text}）`)
   const back = applyCamRegions(c, null)
   check(back.restart && !existsSync(join(c.dir, CAM_REGIONS_FILE)) && regionsOf(c)['R2']!.label === '电缆室接头' && camRegionLimit(camOf(c).attrs) === 3, `子站不再带（恢复模型缺省）：删文件、回到 eg.yaml 的三个区，要重启（${back.text}）`)
   check(applyCamRegions(c, null).text === null, '本来就没有：什么都不做')

@@ -18,7 +18,7 @@
  *   写完设备配置后把「之前有、现在没有」的告警类型的活动告警清掉（经钩子 / 对账照常给子站送 CLEARED）。
  *   另在开机后（本地 TB 就绪时）扫一遍：EG 规则的告警类型（含改名前的 alias）在当前设备配置里已经没有、却还挂着的，清掉 ——
  *   子站先升、老 EG 先应用了新配置（老代码不清），再升 EG 时配置没变、不会再走应用（0.10 在 AH12 上验出来的）。
- * 0.9.0：体里另带 camRegions（子站网页改过的测温区部位名 / 个数 / 温升来源，cam-regions-cfg.ts），带了才算进哈希；区的个数变了 agent 应用完自己重启。 */
+ * 0.8.4：体里另带 camRegions（子站网页改过的测温区部位名 / 个数 / 温升来源，cam-regions-cfg.ts），带了才算进哈希；区的个数变了 agent 应用完自己重启。 */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -80,7 +80,7 @@ export interface Applied {
   /** 0.7.1：这台 EG 不认识、跳过了的规则的开关（本柜生效后的 { id, on }）。EG 升级后开机重算时按它，不违背子站的开关；
    *  0.7.0 及以前没有这个字段（被跳过的规则开关没记，见 regenRules） */
   ignoredRules?: { id: string; on: boolean }[]
-  /** 0.9.0：子站网页改过的测温区（本单元那份；没改过 / 老子站为 null / 缺省） */
+  /** 0.8.4：子站网页改过的测温区（本单元那份；没改过 / 老子站为 null / 缺省） */
   camRegions?: CamRegionsOverride | null
 }
 
@@ -372,7 +372,7 @@ export class ApplyService {
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid, meters: this.meters.effective() }
   }
 
-  /** 测温区个数 / 温升来源变了（0.9.0）：回执发出去、cfg 属性报上去之后退出进程，容器（unless-stopped）拉起来按新的展开 */
+  /** 测温区个数 / 温升来源变了（0.8.4）：回执发出去、cfg 属性报上去之后退出进程，容器（unless-stopped）拉起来按新的展开 */
   private restartSoon(): void {
     if (process.env['EG_NO_SELF_RESTART'] === '1') return
     this.log.warn('测温区个数或温升来源变了：5 s 后重启 agent 生效')
@@ -653,7 +653,7 @@ export function configHash(i: { thresholds: unknown; rules: unknown; extras: unk
   if (i.gas) parts.push({ gas: i.gas })
   // 0.7.1：被跳过的规则的开关也算内容（子站只改了它也要重新记下）；没有被跳过的与老哈希一致
   if (i.ignoredRules?.length) parts.push({ ignoredRules: i.ignoredRules })
-  // 0.9.0：子站网页改过的测温区，带了才算
+  // 0.8.4：子站网页改过的测温区，带了才算
   if (i.camRegions) parts.push({ camRegions: i.camRegions })
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
 }

@@ -14,7 +14,7 @@ import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { Logger } from '@nestjs/common'
 import mqtt, { type MqttClient } from 'mqtt'
-import { BUS_TOPIC, CAM_REGIONS_FILE, camRegionLimit, loadConfig, type EgConfig } from '@lsa-eg/config'
+import { BUS_TOPIC, CAM_REGIONS_FILE, camRegionIds, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { MqttKeeper, mqttKeepOptions, refusedOf } from '@lsa-eg/config/mqtt-keep'
 import { fetchAuth } from './digest.js'
 import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
@@ -240,7 +240,7 @@ export class VideoService {
   /** cam-regions.json 上次看到的修改时间（0 = 没有这个文件；-1 = 还没看过） */
   private camRegMtime = -1
 
-  /** 子站网页改过测温区（0.9.0）：agent 收到配置下发后改写配置目录的 cam-regions.json —— 每轮看一眼修改时间，变了（含删掉）就重读配置，
+  /** 子站网页改过测温区（0.8.4）：agent 收到配置下发后改写配置目录的 cam-regions.json —— 每轮看一眼修改时间，变了（含删掉）就重读配置，
    *  把摄像机属性 regions（个数、部位名）换成新的（loadConfig 已经叠好），不用重启 eg-video */
   private refreshCamRegions(): void {
     let m = 0
@@ -257,7 +257,7 @@ export class VideoService {
       const fresh = loadConfig(this.cfg.dir).devices.find(d => d.kind === 'camera')
       const mine = this.cfg.devices.find(d => d.kind === 'camera')
       if (fresh && mine) mine.attrs = { ...mine.attrs, regions: fresh.attrs['regions'] }
-      this.log.log(`测温区配置变了（${m ? '子站网页改过的' : '回到 eg.yaml 的'}）：${camRegionLimit(mine?.attrs)} 个区`)
+      this.log.log(`测温区配置变了（${m ? '子站网页改过的' : '回到 eg.yaml 的'}）：${camRegionIds(mine?.attrs).join('、')}`)
     } catch (e) {
       this.log.warn(`重读测温区配置失败（照旧用原来的）：${(e as Error).message}`)
     }
@@ -265,7 +265,7 @@ export class VideoService {
 
   /** 摄像机上的区域 → R1–R<n>（约定 §2，driver-base.ts 的 numberRegions） */
   private numbered(m: Measurement): { id: string; def: Measurement['regions'][number] }[] {
-    return numberRegions(m.regions, camRegionLimit(this.cfg.devices.find(d => d.kind === 'camera')?.attrs))
+    return numberRegions(m.regions, camRegionIds(this.cfg.devices.find(d => d.kind === 'camera')?.attrs))
   }
 
   private takeRegions(m: Measurement): void {

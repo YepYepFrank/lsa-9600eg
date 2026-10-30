@@ -10,8 +10,10 @@
  *   POST /api/video/cam-regions/probe        在一个没启用的区上试写、读回、马上写回（0.8.1，先验写法）
  *   POST /api/video/cam-regions/disable?ids=5,6&yes=1  停用指定的区（0.8.2；没给 yes 只预览）
  *   POST /api/video/cam-regions/restore      按备份（JSON 体）原样写回
- *   GET  /api/video/cam-regions              摄像机上现在的区（整份原样 + 写法 + 全局测温参数；0.9.0）
- *   POST /api/video/cam-regions/apply        按子站网页画的写（0.9.0）：体 { set: [{ n, rect }], disable?: [n], yes? }；回备份与核对结果
+ *   GET  /api/video/cam-regions              摄像机上现在的区（整份原样 + 写法 + 全局测温参数；0.8.4）
+ *   POST /api/video/cam-regions/apply        按子站网页画的写（0.8.4）：体 { set: [{ n, rect }], disable?: [n], yes? }；回备份与核对结果
+ *   apply / restore 写摄像机之前把整份备份存到配置目录 cam-regions-backup/<时间>.json（留最近 50 份），回执带 backupFile ——
+ *   子站或 agent 等不及超时了，备份也已经在 EG 上（审查 3）。restore 体 { backup, ids?, skipGlob? }（直接给备份也认）。
  *   install.sh --cam-regions-* 经 docker exec 调本机；apply / restore / GET 另经 eg-agent 的 /api/cam-regions（子站服务票据）转过来，本地页不转。
  *   写摄像机的几个同一时间只做一个（另一个回 409 busy）：摄像机最多 2 个会话，两个写交错着来备份 / 写回会乱
  * 只听本机（127.0.0.1）：本地管理页经 eg-agent 转过来。
@@ -19,6 +21,8 @@
  *   pnpm video                        开发：读仓库下 run/
  *   pnpm -F @lsa-eg/video video:render  只生成 mediamtx 配置（mediamtx 先于 eg-video 起时用） */
 import 'reflect-metadata'
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { BadRequestException, Body, ConflictException, Controller, Get, HttpCode, Inject, Logger, Module, NotFoundException, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { Response } from 'express'
@@ -99,6 +103,17 @@ class CamRegionsController {
     return d
   }
 
+  /** 备份存配置目录 cam-regions-backup/<时间>.json（600），超过 50 份删最老的；返回文件名 */
+  private saveBackup(b: Backup, tag = ''): string {
+    const dir = resolve(this.svc.cfg.dir, 'cam-regions-backup')
+    mkdirSync(dir, { recursive: true })
+    const name = `${b.at.replace(/[:.]/g, '-')}${tag}.json`
+    writeFileSync(resolve(dir, name), JSON.stringify(b, null, 2) + '\n', { mode: 0o600 })
+    const all = readdirSync(dir).filter(f => f.endsWith('.json')).sort()
+    for (const f of all.slice(0, Math.max(0, all.length - 50))) unlinkSync(resolve(dir, f))
+    return name
+  }
+
   /** 正在写摄像机的操作（null = 没有） */
   private busy: string | null = null
 
@@ -132,7 +147,7 @@ class CamRegionsController {
     const d = this.driver()
     if (!b || !Array.isArray(b.set) || (b.disable !== undefined && !Array.isArray(b.disable))) throw new BadRequestException('体要是 { set: [{ n, rect: { x, y, width, height } }], disable?: [n], yes? }')
     const set = b.set.map(s => ({ n: Number(s?.n), rect: { x: Number(s?.rect?.x), y: Number(s?.rect?.y), width: Number(s?.rect?.width), height: Number(s?.rect?.height) } }))
-    return this.exclusive('写测温区', () => applyRegions(d, { set, disable: (b.disable ?? []).map(Number), yes: b.yes === true, camera: this.svc.cfg.local.camera.restv1 }))
+    return this.exclusive('写测温区', () => applyRegions(d, { set, disable: (b.disable ?? []).map(Number), yes: b.yes === true, camera: this.svc.cfg.local.camera.restv1, onBackup: x => this.saveBackup(x) }))
   }
 
   @Post('default')
@@ -161,9 +176,20 @@ class CamRegionsController {
 
   @Post('restore')
   @HttpCode(200)
-  async restore(@Body() b: Backup) {
+  async restore(@Body() body: Backup | { backup: Backup; ids?: number[]; skipGlob?: boolean }) {
     const d = this.driver()
-    return this.exclusive('恢复测温区', () => restoreRegions(d, b, { camera: this.svc.cfg.local.camera.restv1 }))
+    const camera = this.svc.cfg.local.camera.restv1
+    const w = body && 'backup' in body ? body : { backup: body as Backup, ids: undefined, skipGlob: undefined }
+    if (!w.backup || !Array.isArray(w.backup.regions)) throw new BadRequestException('体要是备份 { at, camera, regions }，或 { backup, ids?, skipGlob? }')
+    if (w.ids !== undefined && (!Array.isArray(w.ids) || !w.ids.every(n => Number.isInteger(n) && n >= 0 && n <= 11))) throw new BadRequestException('ids 要是区号 0–11 的数组')
+    return this.exclusive('恢复测温区', async () => {
+      // 审查 7：写回之前先把现在的样子存一份（网页撤销也能再撤回来）
+      const now = await readRegions(d)
+      const pre: Backup = { at: new Date().toISOString(), camera, regions: now.regions, ...(now.glob ? { glob: now.glob } : {}) }
+      const backupFile = this.saveBackup(pre, '-pre-restore')
+      const r = await restoreRegions(d, w.backup, { camera, ids: w.ids, skipGlob: w.skipGlob === true })
+      return { ...r, backup: pre, backupFile }
+    })
   }
 }
 
