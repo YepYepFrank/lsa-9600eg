@@ -91,7 +91,7 @@ fis --plan /fake/plan.tsv --run $RUN --yes --count 3 --parallel 2 > /fake/t2.out
 echo "  （用时 $(( $(date +%s) - t0 )) s，退出码 $rc）"
 chk "退出码 0" '[ "$rc" = 0 ]'
 for s in SNA001 SNA002 SNA003; do chk "$s 待接入" '[ "$(phase $s)" = pending ]'; done
-chk "SNA001 地址：LAN2 .31、LAN1 192.168.100.1/24" 'grep -qx "enp2s0 192.168.10.31/24" /fake/eg/a1/addr && grep -qx "enp1s0 192.168.100.1/24" /fake/eg/a1/addr'
+chk "SNA001 地址：LAN2 .31、LAN1 192.168.1.1/24" 'grep -qx "enp2s0 192.168.10.31/24" /fake/eg/a1/addr && grep -qx "enp1s0 192.168.1.1/24" /fake/eg/a1/addr'
 chk "SNA001 netplan：缺省路由、LAN1 ignore-carrier、600" 'grep -q "routes: \[{to: default, via: 192.168.10.1}\]" /fake/eg/a1/root/etc/netplan/50-lsa-eg.yaml && grep -q "ignore-carrier: true" /fake/eg/a1/root/etc/netplan/50-lsa-eg.yaml && [ "$(stat -c %a /fake/eg/a1/root/etc/netplan/50-lsa-eg.yaml)" = 600 ]'
 chk "SNA002 网关 -：没有缺省路由" '! grep -q routes /fake/eg/a2/root/etc/netplan/50-lsa-eg.yaml'
 chk "出厂 netplan 留在 /var/lib/lsa-field/netplan.orig" 'grep -q 192.168.1.250 /fake/eg/a1/root/var/lib/lsa-field/netplan.orig/50-lsa-eg.yaml'
@@ -179,10 +179,12 @@ rm -f /fake/dup250
 out="$(fis --plan /fake/plan.tsv --run $RUN --yes --once 2>&1)"; rc=$?
 chk "另一台拿走后：待接入" '[ "$rc" = 0 ] && [ "$(phase SNC002)" = pending ]'
 
-echo; echo '== 11b. 站内网段就在 192.168.1.x：提醒'
+echo; echo '== 11b. 站内网段就在 192.168.1.x：和 LAN1 缺省同段就停；LAN1 换了段只提醒'
 printf 'X1 192.168.1.31/24 192.168.1.1\n' > /fake/p-same.tsv
-out="$(fis --plan /fake/p-same.tsv --status 2>&1)"
-chk "提醒同一段、建议单独交换机" '[[ "$out" == *"同一段"*"单独的交换机"* ]]'
+out="$(fis --plan /fake/p-same.tsv --status 2>&1)"; rc=$?
+chk "LAN1 缺省 192.168.1.1/24：停下、说和 LAN1 同一段" '[ "$rc" != 0 ] && [[ "$out" == *"和 LAN1 192.168.1.1/24 同一段"* ]]'
+out="$(fis --plan /fake/p-same.tsv --lan1-addr 192.168.100.1/24 --status 2>&1)"
+chk "--lan1-addr 换段后：提醒同一段、建议单独交换机" '[[ "$out" == *"同一段"*"单独的交换机"* ]] && [[ "$out" != *"和 LAN1"* ]]'
 
 echo; echo '== 11c. 网关写错但在同一网段（子站照样连得回来，不会换回）：提醒、照装'
 mk_eg c3 SNC003; plug c3; echo 'SNC003 192.168.10.53/24 192.168.10.254 C-C -' >> /fake/plan.tsv

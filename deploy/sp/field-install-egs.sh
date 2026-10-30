@@ -13,7 +13,7 @@
 #
 # 分配表：每台一行「SN  LAN2地址/前缀  网关  单元号  LAN1网口」，# 开头注释，空格 / 制表符 / 逗号分隔；网关、单元号、LAN1 网口可写 -
 #   （网关整表一样时用 --gw）。LAN1 网口：表里有就用（抄《出厂记录表》），没有就自动认 —— 持有 .250 的是 LAN2，另一个 en* 口就是 LAN1；
-#   两者对不上就停。LAN1 缺省配 192.168.100.1/24（每台都一样，接摄像机），--lan1-addr none 不配。
+#   两者对不上就停。LAN1 缺省配 192.168.1.1/24（每台都一样，接出厂地址 192.168.1.19 不改的摄像机，2026-10-29 用户定），--lan1-addr none 不配。
 # 口令：开头问一次 lsaadmin 的口令，只在内存里（SSH 用 SSH_ASKPASS 从环境变量取，sudo -S 从管道喂），不落盘、不往 EG 上放 key。
 # 主机密钥：第一次在 .250 上记下，按 HostKeyAlias=lsaeg-<SN> 钉住，正式地址上严格核对（同一把密钥 = 同一台）。
 # join-key：在子站主机上不给就自动取 join-egs.sh --keygen 那一行；笔记本上要给。
@@ -32,7 +32,7 @@ INSTALL_TIMEOUT_S="${LSA_FIELD_INSTALL_TIMEOUT_S:-2700}"
 ONCE_WAIT_S="${LSA_FIELD_ONCE_WAIT_S:-30}"       # --once：等 .250 上出现机器最多多久
 TCP_CMD="${LSA_FIELD_TCP:-}"                  # 测试替身：<命令> <地址> <端口>，0 = 通
 
-PLAN='' ONCE=0 RUN='' JOINKEY='' GW_ALL='' LAN1_ADDR='192.168.100.1/24' PAR=3 YES=0 MODE=loop ONE_SN='' COUNT=0
+PLAN='' ONCE=0 RUN='' JOINKEY='' GW_ALL='' LAN1_ADDR='192.168.1.1/24' PAR=3 YES=0 MODE=loop ONE_SN='' COUNT=0
 SD='' TEMP_ADD='' TEMP_DEV='' SETTIME='' KEEP_RUN=0 REDO=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
     --run) RUN="${2:?--run 后面给一键安装文件}"; shift ;;
     --join-key) JOINKEY="${2:?--join-key 后面给子站 join-egs.sh --keygen 打印的那一行}"; shift ;;
     --gw) GW_ALL="${2:?--gw 后面给网关}"; shift ;;
-    --lan1-addr) LAN1_ADDR="${2:?--lan1-addr 192.168.100.1/24 或 none}"; shift ;;
+    --lan1-addr) LAN1_ADDR="${2:?--lan1-addr 192.168.1.1/24 或 none}"; shift ;;
     --parallel) PAR="${2:?--parallel 3}"; shift ;;
     --yes | -y) YES=1 ;;
     --once) ONCE=1 ;;
@@ -69,7 +69,7 @@ kv() { sed -n "s/^$1=//p" <<< "$2" | tail -1; }
 [[ "$PAR" =~ ^[1-9]$ ]] || die "--parallel 要 1–9：$PAR"
 [[ "$COUNT" =~ ^[0-9]+$ ]] || die "--count 要是数字：$COUNT"
 [ -z "$ONE_SN" ] || [ "$ONCE" = 1 ] || die '--sn 只能和 --once 一起用（主机名不是 lsaeg-<SN> 的那一台单独做）'
-[ "$LAN1_ADDR" = none ] || [[ "$LAN1_ADDR" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]{1,2}$ ]] || die "--lan1-addr 不对：$LAN1_ADDR"
+[ "$LAN1_ADDR" = none ] || { [[ "$LAN1_ADDR" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]{1,2}$ ]] && [ "${LAN1_ADDR#*/}" -le 32 ]; } || die "--lan1-addr 不对：$LAN1_ADDR"
 if [ -z "$SD" ]; then if [ "$(id -u)" = 0 ]; then SD=/var/log/lsa9600sp/eg-field; else SD="$HOME/.lsa9600/eg-field"; fi; fi
 mkdir -p "$SD" && chmod 700 "$SD" || die "建不了状态目录 $SD"
 ON_SP=0; [ -d "$SP" ] && [ "$(id -u)" = 0 ] && ON_SP=1
@@ -102,9 +102,18 @@ dup="$(for s in "${P_ORDER[@]}"; do [ "${P_UNIT[$s]}" = - ] || echo "${P_UNIT[$s
 [ -z "$dup" ] || die "分配表里单元号 $dup 写了两次"
 # 站内网段还没定（2026-10-20）：要是最后就在出厂临时地址那一段，提醒一句（.250 本身分配表已经不许用；每台改地址前还会查 .250 有没有重复）
 TEMP_NET="${TEMP_IP%.*}."
+# LAN1 那一段站内网不能用（2026-10-29：LAN1 缺省 192.168.1.1/24，接出厂地址的摄像机）：两个网口同段回包会走错口
+ip_num() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a << 24) | (b << 16) | (c << 8) | d )); }
+if [ "$LAN1_ADDR" != none ]; then
+  l1p="${LAN1_ADDR#*/}"; l1m=$(( l1p == 0 ? 0 : (0xFFFFFFFF << (32 - l1p)) & 0xFFFFFFFF ))
+  for s in "${P_ORDER[@]}"; do
+    [ $(( $(ip_num "${P_ADDR[$s]%/*}") & l1m )) != $(( $(ip_num "${LAN1_ADDR%/*}") & l1m )) ] ||
+      die "分配表里 $s 的正式地址 ${P_ADDR[$s]} 和 LAN1 $LAN1_ADDR 同一段：站内网要换一段，或用 --lan1-addr 给 LAN1 换段"
+  done
+fi
 for s in "${P_ORDER[@]}"; do
   if [[ "${P_ADDR[$s]}" == "$TEMP_NET"* ]]; then
-    echo "！ 分配表的正式地址在 ${TEMP_NET}x，和出厂临时地址 $TEMP_IP 同一段：$TEMP_IP 不能留给任何设备（摄像机出厂也是 ${TEMP_NET}x，要先改到 LAN1 网段）；"
+    echo "！ 分配表的正式地址在 ${TEMP_NET}x，和出厂临时地址 $TEMP_IP 同一段：$TEMP_IP 不能留给任何设备；"
     echo "  建议上架装软件时新机接单独的交换机（或笔记本直连），不接已上线设备的站内网；脚本每台改地址前查 $TEMP_IP 有没有重复"
     break
   fi
