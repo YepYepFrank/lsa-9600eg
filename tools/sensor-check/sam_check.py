@@ -1170,8 +1170,31 @@ def conv_running():
     return r.returncode == 0 and r.stdout.strip() == 'true'
 
 
+def stop_hint(pid):
+    """这个进程归谁管、怎么停：容器 → docker stop，systemd 服务 → systemctl stop，都不是 → kill（手工起的）"""
+    try:
+        cg = open('/proc/%s/cgroup' % pid).read()
+    except OSError:
+        cg = ''
+    m = re.search(r'docker[-/]([0-9a-f]{12,64})', cg)
+    if m:
+        name = m.group(1)[:12]
+        try:
+            r = subprocess.run(['docker', 'inspect', '-f', '{{.Name}}', m.group(1)], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                name = r.stdout.strip().lstrip('/')
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return '容器 %s → sudo docker stop %s（测完 sudo docker start %s）' % (name, name, name)
+    m = re.search(r'/([\w@.-]+\.service)\s*$', cg, re.M)
+    if m and m.group(1) not in ('user@0.service',) and not m.group(1).startswith('user@') and not m.group(1).startswith('session-'):
+        u = m.group(1)
+        return '服务 %s → sudo systemctl stop %s（测完 sudo systemctl start %s）' % (u, u, u)
+    return '手工起的（某个终端 / nohup / run.sh）→ 在那个终端 Ctrl+C，或 sudo kill %s' % pid
+
+
 def holders(path):
-    """哪些进程开着这个串口（/proc 扫 fd）"""
+    """哪些进程开着这个串口（/proc 扫 fd），带上怎么停"""
     try:
         real = os.path.realpath(path)
     except OSError:
@@ -1184,7 +1207,7 @@ def holders(path):
             for fd in os.listdir('/proc/%s/fd' % pid):
                 if os.path.realpath('/proc/%s/fd/%s' % (pid, fd)) == real:
                     cmd = open('/proc/%s/cmdline' % pid, 'rb').read().replace(b'\0', b' ').decode('utf-8', 'replace').strip()
-                    res.append('%s %s' % (pid, cmd[:80]))
+                    res.append('%s %s\n    归属：%s' % (pid, cmd[:80], stop_hint(pid)))
                     break
         except OSError:
             continue
@@ -1379,7 +1402,7 @@ def main():
                     time.sleep(1)
                 h = holders(args.port)
                 if h and not args.keep_conv:
-                    print('串口 %s 还被别的进程开着，读数会乱：\n  %s\n先停掉它们（或加 --keep-conv 硬跑）' % (args.port, '\n  '.join(h)))
+                    print('串口 %s 还被别的进程开着，读数会乱：\n  %s\n按上面「归属」停掉再跑；或者换个串口（如 --port /dev/ttyS0）；实在要同时跑加 --keep-conv（读数会乱）' % (args.port, '\n  '.join(h)))
                     return 2
             try:
                 port = SerialPort(args.port, args.baud)
