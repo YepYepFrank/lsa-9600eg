@@ -79,6 +79,14 @@ printf 'X1 192.168.1.250/24\n' > /fake/p-dup.tsv
 out="$(fis --plan /fake/p-dup.tsv --status 2>&1)"; chk "用 .250 当正式地址拒绝" '[[ "$out" == *"出厂临时地址"* ]]'
 printf 'X1 192.168.10.5\n' > /fake/p-dup.tsv
 out="$(fis --plan /fake/p-dup.tsv --status 2>&1)"; chk "地址不带前缀拒绝" '[[ "$out" == *"地址/前缀"* ]]'
+printf 'X1 192.168.10.5/24\nX2 192.168.1.31/24\n' > /fake/p-dup.tsv
+out="$(fis --plan /fake/p-dup.tsv --status 2>&1)"; chk "正式地址跟 LAN1 缺省（192.168.1.1/24）同段：拒绝、说站内网不能用摄像机网段（0.8.4）" '[[ "$out" == *"X2 的正式地址 192.168.1.31/24 和 LAN1 192.168.1.1/24 同一段"* ]] && [[ "$out" == *"站内网不能用 192.168.1.x（摄像机网段）"* ]]'
+printf 'X1 192.168.0.31/24\n' > /fake/p-dup.tsv
+out="$(fis --plan /fake/p-dup.tsv --status 2>&1)"; rc=$?; chk "正式地址 192.168.0.x（S19 站内网）照常" '[ "$rc" = 0 ] && [[ "$out" != *"同一段"* ]]'
+printf 'X1 192.168.0.31/16\n' > /fake/p-dup.tsv
+out="$(fis --plan /fake/p-dup.tsv --status 2>&1)"; chk "正式地址写成 /16（罩住 LAN1 那一段）也拒绝" '[[ "$out" == *"和 LAN1 192.168.1.1/24 同一段"* ]]'
+printf 'X1 192.168.1.31/24\n' > /fake/p-dup.tsv
+out="$(fis --plan /fake/p-dup.tsv --lan1-addr none --status 2>&1)"; rc=$?; chk "--lan1-addr none：不查" '[ "$rc" = 0 ]'
 out="$(LSA_EG_PW="$PW" bash "$T" --state-dir /fake/sd --plan /fake/plan.tsv --run $RUN --join-key "${JK%?}0" < /dev/null 2>&1)"
 chk "join-key 校验位不对拒绝" '[[ "$out" == *"校验不对"* ]]'
 
@@ -260,6 +268,28 @@ mk_eg m2 SNM001 "$(cut -d' ' -f2 /fake/eg/m1/hostkey)"; plug m2
 out="$(fis --plan /fake/plan.tsv --yes --once --readdress-only 2>&1)"; rc=$?
 chk "第二台停下、说 machine-id、不改地址" '[ "$rc" != 0 ] && [[ "$out" == *"machine-id"* ]] && grep -q 192.168.1.250 /fake/eg/m2/addr'
 rm -f /fake/eg/m2/addr
+
+echo; echo '== 19. 紫蓬山做法（0.8.4）：主机名不带 SN → 按单元号 --readdress-only --once --sn <单元号>，再 --resume --parallel 4；LAN2 当前 .250、正式 192.168.0.x、LAN1 缺省 192.168.1.1/24'
+cat > /fake/zp.tsv <<'EOF'
+# 单元号当 SN（readdress-by-unit.sh 生成的分配表）
+DP4-A   192.168.0.11/24   192.168.0.1   DP4-A   -
+DP4-B   192.168.0.12/24   192.168.0.1   DP4-B   -
+EOF
+mk_eg z1 X26AFAC1; mk_eg z2 X26AFAC2
+plug z1
+out="$(fis --plan /fake/zp.tsv --yes --readdress-only --once --sn DP4-A 2>&1)"; rc=$?
+chk "DP4-A：LAN2 当前 .250（跟 LAN1 同段）、正式 192.168.0.11、LAN1 缺省 192.168.1.1/24 → 放行（不拿 .250 去比）、只改地址（rc $rc）" '[ "$rc" = 0 ] && [[ "$out" != *"同一段"* ]] && [ "$(phase DP4-A)" = readdressed ] && grep -qx "enp2s0 192.168.0.11/24" /fake/eg/z1/addr && grep -qx "enp1s0 192.168.1.1/24" /fake/eg/z1/addr && [ ! -f /fake/eg/z1/root/opt/lsa-eg/args ]'
+chk "DP4-A netplan：缺省路由 via 192.168.0.1、LAN1 192.168.1.1/24、.250 没了" 'grep -q "routes: \[{to: default, via: 192.168.0.1}\]" /fake/eg/z1/root/etc/netplan/50-lsa-eg.yaml && grep -q "192.168.1.1/24" /fake/eg/z1/root/etc/netplan/50-lsa-eg.yaml && ! grep -q "192.168.1.250" /fake/eg/z1/root/etc/netplan/50-lsa-eg.yaml'
+plug z2
+out="$(fis --plan /fake/zp.tsv --yes --readdress-only --once --sn DP4-B --lan1-addr 192.168.1.1/24 2>&1)"; rc=$?
+chk "DP4-B：readdress-by-unit.sh 现场说明里另给 --lan1-addr 192.168.1.1/24 → 一样放行（rc $rc）" '[ "$rc" = 0 ] && [ "$(phase DP4-B)" = readdressed ] && grep -qx "enp2s0 192.168.0.12/24" /fake/eg/z2/addr'
+out="$(fis --plan /fake/zp.tsv --run $RUN --resume --parallel 4 2>&1)"; rc=$?
+chk "--resume --parallel 4：两台都待接入、join 清单两行（rc $rc）" '[ "$rc" = 0 ] && [ "$(phase DP4-A)" = pending ] && [ "$(phase DP4-B)" = pending ] && grep -qx "DP4-A 192.168.0.11" /fake/sd/join-list.txt && grep -qx "DP4-B 192.168.0.12" /fake/sd/join-list.txt'
+chk "装的时候 .run 拿到的 --lan1 是 enp1s0（自动认）" 'grep -qx "lan1=enp1s0" /fake/eg/z1/root/opt/lsa-eg/args && grep -qx "lan1=enp1s0" /fake/eg/z2/root/opt/lsa-eg/args'
+printf 'DP5-A 192.168.1.13/24 192.168.1.254 DP5-A -\n' > /fake/zp-bad.tsv
+mk_eg z3 X26AFAC3; plug z3
+out="$(fis --plan /fake/zp-bad.tsv --yes --readdress-only --once --sn DP5-A 2>&1)"; rc=$?
+chk "正式 LAN2 也在 192.168.1.x → 拒绝、EG 上什么都没改（rc $rc）" '[ "$rc" != 0 ] && [[ "$out" == *"站内网不能用 192.168.1.x（摄像机网段）"* ]] && ! grep -q 192.168.1.13 /fake/eg/z3/addr 2>/dev/null'
 
 echo; echo '== 12. 口令没落盘'
 hits="$(grep -rlF -- "$PW" /fake /tmp /var /root /home /etc /rel 2>/dev/null | grep -vx /fake/pw || true)"

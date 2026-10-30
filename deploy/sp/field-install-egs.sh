@@ -105,10 +105,12 @@ TEMP_NET="${TEMP_IP%.*}."
 # LAN1 那一段站内网不能用（2026-10-29：LAN1 缺省 192.168.1.1/24，接出厂地址的摄像机）：两个网口同段回包会走错口
 ip_num() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a << 24) | (b << 16) | (c << 8) | d )); }
 if [ "$LAN1_ADDR" != none ]; then
-  l1p="${LAN1_ADDR#*/}"; l1m=$(( l1p == 0 ? 0 : (0xFFFFFFFF << (32 - l1p)) & 0xFFFFFFFF ))
+  l1p="${LAN1_ADDR#*/}"
   for s in "${P_ORDER[@]}"; do
-    [ $(( $(ip_num "${P_ADDR[$s]%/*}") & l1m )) != $(( $(ip_num "${LAN1_ADDR%/*}") & l1m )) ] ||
-      die "分配表里 $s 的正式地址 ${P_ADDR[$s]} 和 LAN1 $LAN1_ADDR 同一段：站内网要换一段，或用 --lan1-addr 给 LAN1 换段"
+    # 按两边较短的前缀比（有重叠就算同段）：正式地址写成 /16 时也罩住 LAN1 那一段；比的是分配表里的正式地址，不是 EG 当前的出厂临时 .250
+    p2="${P_ADDR[$s]#*/}"; p=$(( l1p < p2 ? l1p : p2 )); m=$(( p == 0 ? 0 : (0xFFFFFFFF << (32 - p)) & 0xFFFFFFFF ))
+    [ $(( $(ip_num "${P_ADDR[$s]%/*}") & m )) != $(( $(ip_num "${LAN1_ADDR%/*}") & m )) ] ||
+      die "分配表里 $s 的正式地址 ${P_ADDR[$s]} 和 LAN1 $LAN1_ADDR 同一段：站内网不能用 ${LAN1_ADDR%.*}.x（摄像机网段）。站内网换一段（S19 一律 192.168.0.x），或用 --lan1-addr 给 LAN1 换段"
   done
 fi
 for s in "${P_ORDER[@]}"; do
