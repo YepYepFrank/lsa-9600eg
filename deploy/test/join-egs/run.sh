@@ -45,6 +45,29 @@ reset; printf 'legacyEg: []\n' > $SPB/tb/model.site.yaml; hello 10.0.5.1 3 0 - '
 out="$($J --unit AH05-A --eg 10.0.5.1 --plan 2>&1)"; rc=$?
 check '[ $rc != 0 ] && grep -q "接舱室单元要 EG 0.7.0 起" <<< "$out"' "拒绝：接舱室单元要 EG 0.7.0 起（rc $rc）"
 
+echo '3b. 站点摄像机账号（0.19.5）'
+C=/opt/lsa9600sp/camera-site.yaml
+printf 'password: site-test-value\n' > $C; chown root: $C; chmod 600 $C
+reset; printf 'legacyEg: []
+' > $SPB/tb/model.site.yaml; hello 10.0.5.1 7 0 - '' tunnel
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc = 0 ] && tar -tzf /fake/eg/10.0.5.1/pkg.tgz | grep -qx camera-site.yaml && tar -tzf /fake/eg/10.0.5.1/pkg.tgz | grep -qx eg.yaml' "入口 7：配置包带 camera-site.yaml（rc $rc）"
+check '! grep -rq site-test-value /var/log/lsa9600sp && ! find /var/log/lsa9600sp -name "config-*.tgz" | grep -q .' '日志目录里没有口令，也不留带口令的包'
+reset; printf 'legacyEg: []
+' > $SPB/tb/model.site.yaml; hello 10.0.5.1 6 0 - '' tunnel
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc = 0 ] && ! tar -tzf /fake/eg/10.0.5.1/pkg.tgz | grep -q camera-site && grep -q "还不认 camera-site.yaml" <<< "$out"' "入口 6（老 EG）：不带、提示、照常接入（rc $rc）"
+chmod 644 $C
+reset; printf 'legacyEg: []
+' > $SPB/tb/model.site.yaml; hello 10.0.5.1 7 0 - '' tunnel
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc != 0 ] && grep -q "要 root 600" <<< "$out" && ! grep -q put-config /fake/calls' "站点文件不是 600：停，不推（rc $rc）"
+rm -f $C
+reset; printf 'legacyEg: []
+' > $SPB/tb/model.site.yaml; hello 10.0.5.1 7 0 - '' tunnel
+out="$($J --unit AH05-A --eg 10.0.5.1 2>&1)"; rc=$?
+check '[ $rc = 0 ] && grep -q "没有 $C" <<< "$out"' "没有站点文件：提示、照常接入（rc $rc）"
+
 echo '4. EG 已接在别的单元：拒绝；--force 改接（apply-config 带 force）'
 reset; printf 'legacyEg: []\n' > $SPB/tb/model.site.yaml; hello 10.0.5.1 4 1 AH05-A AH05 tunnel
 out="$($J --unit AH05-B --eg 10.0.5.1 2>&1)"; rc=$?

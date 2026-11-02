@@ -13,7 +13,7 @@
  *   local.yaml 的本地 TB 项叫 mqtt.tb / tb.http / docker.containers.tb。
  *
  * 目录由 EG_CONFIG_DIR 指定；开发时默认仓库下的 run/（不进仓库）。 */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse, stringify } from 'yaml'
@@ -220,7 +220,7 @@ export const LOCAL_DEFAULTS: LocalFile = {
     fullWater: 95,
     autoUpload: { severities: ['CRITICAL'], types: ['弧光异常', '过温'] },
   },
-  camera: { driver: 'rtsp', api: '', restv1: '', restUser: '', restPassword: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
+  camera: { driver: 'restv1', api: '', restv1: 'http://192.168.1.19', restUser: '', restPassword: '', riseToleranceS: 15, onvif: '', user: 'admin', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } },
 }
 
 /** 仓库根（有 pnpm-workspace.yaml 的那层）；装到 EG 上后没有就返回 null */
@@ -241,6 +241,29 @@ export function configDir(): string {
   return resolve(repoRoot() ?? process.cwd(), 'run')
 }
 
+/** 站点摄像机账号（0.19.5）：子站 /opt/lsa9600sp/camera-site.yaml（600）经 join-egs.sh 的配置包推到配置目录这个文件，账号不进仓库和通用包 */
+export const CAMERA_SITE_FILE = 'camera-site.yaml'
+
+/** 只补 local.yaml 里没填的：口令空着才取站点的那一对账号口令，现场在本地页填过的不动。文件没有或坏了就不补（不打内容） */
+export function fillCameraSite(local: LocalFile, dir: string): void {
+  let s: Partial<Record<'user' | 'password' | 'restUser' | 'restPassword', unknown>>
+  try {
+    s = (parse(readFileSync(resolve(dir, CAMERA_SITE_FILE), 'utf8')) ?? {}) as typeof s
+  } catch {
+    return
+  }
+  const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  const cam = local.camera
+  if (!cam.password && str(s.password)) {
+    cam.password = str(s.password)
+    if (str(s.user)) cam.user = str(s.user)
+  }
+  if (!cam.restPassword && str(s.restPassword)) {
+    cam.restPassword = str(s.restPassword)
+    if (str(s.restUser)) cam.restUser = str(s.restUser)
+  }
+}
+
 /** 读两份配置。local.yaml 没有就按默认值生成一份；环境变量 EG_BUS_MQTT / EG_TB_MQTT / EG_TB_HTTP / EG_HTTP_PORT / EG_STATION_HTTP / EG_MTX_API / EG_CAM_HOST 只改本进程自己的连接（开发用） */
 export function loadConfig(dir = configDir()): EgConfig {
   const egPath = resolve(dir, 'eg.yaml')
@@ -257,6 +280,7 @@ export function loadConfig(dir = configDir()): EgConfig {
     local = structuredClone(LOCAL_DEFAULTS)
     saveLocal(local, dir)
   }
+  fillCameraSite(local, dir)
   const env = process.env
   const conn = {
     bus: env['EG_BUS_MQTT'] || local.mqtt.bus,
@@ -307,7 +331,10 @@ export function overlayCamRegions(eg: Pick<EgFile, 'devices'>, o: CamRegionsOver
 export function saveLocal(local: LocalFile, dir = configDir()): void {
   mkdirSync(dir, { recursive: true })
   const head = '# EG 本地配置（本地管理页可改）。子站下发的部分在 eg.yaml，不要在这里重复\n'
-  writeFileSync(resolve(dir, 'local.yaml'), head + stringify(local), 'utf8')
+  // 里面有摄像机口令：0.19.5 起 600；writeFileSync 的 mode 只管新建，老文件要 chmod
+  const file = resolve(dir, 'local.yaml')
+  writeFileSync(file, head + stringify(local), { encoding: 'utf8', mode: 0o600 })
+  chmodSync(file, 0o600)
 }
 
 /** 本机总线主题（《EG 内部 MQTT 格式》）：lsa/<设备名>/telemetry | attributes */

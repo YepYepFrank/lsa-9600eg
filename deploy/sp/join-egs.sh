@@ -29,6 +29,8 @@ SP=/opt/lsa9600sp
 SP_B="$SP/lsa9600sp-backend"
 SP_ENV="$SP_B/docker/.env"
 SITE_MODEL="$SP_B/tb/model.site.yaml"
+# 站点摄像机账号（0.19.5）：现场填，root 600，随配置包推到 EG 的 config/，EG 只补 local.yaml 里没填的。不进仓库和通用包
+CAM_SITE="$SP/camera-site.yaml"
 KEYDIR="$SP/keys"
 UPKEY="$KEYDIR/eg-upgrade_ed25519"
 TUNKEY="$KEYDIR/eg-tunnel_ed25519"
@@ -340,13 +342,20 @@ join_one() {
   [ -f "$src/eg.yaml" ] || stop pack "$src/eg.yaml 没生成"
   PKG="$BD/config-$U.tgz"
   files=(eg.yaml); [ -f "$src/sp-ca.pem" ] && files+=(sp-ca.pem)
-  tar -czf "$PKG" -C "$src" "${files[@]}" && chmod 600 "$PKG"
+  site=()
+  if [ -f "$CAM_SITE" ]; then
+    [ "$(stat -c '%a %U' "$CAM_SITE")" = '600 root' ] || stop pack "$CAM_SITE 里有摄像机口令，要 root 600（现在 $(stat -c '%a %U' "$CAM_SITE")）" "sudo chown root: $CAM_SITE && sudo chmod 600 $CAM_SITE"
+    if [ "$(kv entry "$(sshx "$EGH" hello 2>&1 < /dev/null)")" -ge 7 ] 2>/dev/null; then site=(-C "$SP" camera-site.yaml)
+    else echo '  ！ 这台 EG 的升级入口还不认 camera-site.yaml（EG 0.19.5 之前）：没带摄像机账号，升级后重跑本命令，或到本地页填'; fi
+  else echo "  ！ 没有 $CAM_SITE：摄像机账号没推，这台 EG 接好后要到本地页「视频与测温」填，否则不测温"; fi
+  ( umask 077; tar -czf "$PKG" -C "$src" "${files[@]}" "${site[@]}" ) && chmod 600 "$PKG"
   PSHA="$(sha256sum "$PKG" | cut -d' ' -f1)"; PSIZE="$(stat -c %s "$PKG")"
-  RES[pack]="完成（${files[*]}，$PSIZE 字节）"
+  RES[pack]="完成（${files[*]}${site[0]:+ camera-site.yaml}，$PSIZE 字节）"
 
   # 3. 推送、生效（EG 后台做：失败自己换回旧配置）。改接别的单元（--force、拆柜改作单元）带 force
   echo "== $(ts) 3. 推送并生效配置${forceword:+（改接，带 force）}"
   out="$(sshx "$EGH" "put-config $PSHA $PSIZE" < "$PKG" 2>&1)"; echo "$out"
+  [ "${#site[@]}" = 0 ] || rm -f "$PKG"   # 带口令的包不留在日志目录
   grep -q "^OK put-config $PSHA" <<< "$out" || stop apply "推送没成功：$(tail -1 <<< "$out")"
   out="$(sshx "$EGH" "apply-config $PSHA$forceword" < /dev/null 2>&1)"; echo "$out"
   if grep -q '^OK apply-config same' <<< "$out"; then RES[apply]='跳过（EG 上已经是这份配置）'

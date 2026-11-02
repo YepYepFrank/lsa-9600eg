@@ -87,6 +87,8 @@ export function driverOf(cfg: EgConfig): CameraDriver {
       return new OnvifDriver(cfg)
     case 'restv1':
       if (!cam.restv1) throw new DriverError('restv1 驱动要配 local.yaml camera.restv1（摄像机地址，如 http://192.168.10.64）', 'CONNECT')
+      // 0.19.5：缺省就是 restv1，没配口令时不拿空口令每秒去登录（摄像机可能锁账号）
+      if (!restv1Opts(cam).password) throw new DriverError('restv1 驱动还没配口令（站点文件 camera-site.yaml，或本地页「视频与测温」）', 'AUTH')
       return new Restv1Driver(restv1Opts(cam))
     default:
       // 没选驱动但填了 ONVIF 地址：按 onvif

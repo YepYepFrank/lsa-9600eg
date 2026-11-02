@@ -144,7 +144,7 @@ out="$(UP --run "/w/runs/$R1" 2>&1)"; rc=$?; echo "$out" | tail -8 | tee -a "$LO
 [ "$rc" = 0 ] && ok "升级成功（$(egx cat /opt/lsa-eg/VERSION)）" || bad "升级 rc $rc"
 if [ "${ENT0:-0}" -ge 5 ]; then want='已验签（EG）'; else want='子站已验签，EG 没验'; fi
 grep -q "$want" <<< "$(summary_line)" && ok "汇总：$want" || bad "汇总签名说明不对：$(summary_line)"
-[ "$(entry_now)" = 6 ] && ok 'EG 入口已是 6' || bad "EG 入口没换成 6（$(entry_now)）"
+[ "$(entry_now)" = 7 ] && ok 'EG 入口已是 7' || bad "EG 入口没换成 7（$(entry_now)）"
 egx test -s /opt/lsa-eg/release-signers && ok 'EG 装上了发布公钥 /opt/lsa-eg/release-signers' || bad 'EG 没有 release-signers'
 egx bash -c 'cd /opt/lsa-eg && bash install.sh --status 2>&1' | grep -E '升级验签' | sed 's/^/    /' | tee -a "$LOG"
 

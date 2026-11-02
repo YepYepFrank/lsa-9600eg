@@ -37,7 +37,8 @@ umask 077
 # 4 = 0.18.0 舱室 EG（EG 0.7.0）：hello 报 unit=，apply-config 按单元、认 force
 # 5 = 0.18.1：put-sig、start 验签、hello 报 sig_keys / sig_required（子站 upgrade-egs.sh 看到 ≥ 5 才传 .sig）
 # 6 = 0.18.2：验签强制（没 .sig / 没公钥拒绝），.env EG_UPG_SIG_REQUIRED=0 应急关
-ENTRY_VERSION=6
+# 7 = 0.19.5：配置包认 camera-site.yaml（子站 join-egs.sh 看到 ≥ 7 才放进包）
+ENTRY_VERSION=7
 EG=/opt/lsa-eg
 ST=/var/lib/lsa-upg
 IN="$ST/incoming"
@@ -288,7 +289,7 @@ case "$VERB" in
     [ "$got" = "$A2" ] || { rm -f "$part"; deny "只收到 $got 字节（应为 $A2）"; }
     sum="$(sha256sum "$part" | cut -d' ' -f1)"
     [ "$sum" = "$A1" ] || { rm -f "$part"; deny "配置包 sha256 对不上：收到的是 $sum"; }
-    # 包里只许三个普通文件：eg.yaml（必须有）、sp-ca.pem、conv.args
+    # 包里只许四个普通文件：eg.yaml（必须有）、sp-ca.pem、conv.args、camera-site.yaml
     listing="$(tar -tzvf "$part" 2>/dev/null || true)"
     [ -n "$listing" ] || { rm -f "$part"; deny '不是 tar.gz 配置包'; }
     has_eg=0
@@ -297,8 +298,8 @@ case "$VERB" in
       [ "${mode:0:1}" = - ] && [ -z "${rest:-}" ] || { rm -f "$part"; deny "配置包里有不是普通文件的条目：$name"; }
       case "${name#./}" in
         eg.yaml) has_eg=1 ;;
-        sp-ca.pem | conv.args) ;;
-        *) rm -f "$part"; deny "配置包里有不认的文件：$name（只许 eg.yaml、sp-ca.pem、conv.args）" ;;
+        sp-ca.pem | conv.args | camera-site.yaml) ;;
+        *) rm -f "$part"; deny "配置包里有不认的文件：$name（只许 eg.yaml、sp-ca.pem、conv.args、camera-site.yaml）" ;;
       esac
     done <<< "$listing"
     [ "$has_eg" = 1 ] || { rm -f "$part"; deny '配置包里没有 eg.yaml'; }
@@ -345,6 +346,7 @@ case "$VERB" in
       a="$(cfg_sum "$d/$x")"; b="$(cfg_sum "$EG/config/$x")"
       [ "$a" = "$b" ] || same=0
     done
+    [ ! -f "$d/camera-site.yaml" ] || [ "$(cfg_sum "$d/camera-site.yaml")" = "$(cfg_sum "$EG/config/camera-site.yaml")" ] || same=0
     if [ "$same" = 1 ]; then
       rm -rf "$d"
       audit "配置包 $A1 和现在的一样（单元 $new_unit）：不用换"
