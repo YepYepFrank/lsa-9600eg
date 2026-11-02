@@ -185,6 +185,13 @@ async function main() {
   check(grid.length === 12 && grid[11]!.name === 'R12' && inFrame && defaultRegions(3).length === 3 && defaultRegions(2).length === 2, `仿真器缺省区域：12 个按 4 × 3 网格铺在 640×480 里，≤ 3 个用共用的那几个`)
   const unnamed: RegionDef[] = Array.from({ length: 6 }, (_, i) => ({ name: `区域${i}`, type: 'region', coords: {}, enabled: i !== 1 }))
   check(numberRegions(unnamed, 3).map(x => `${x.id}=${x.def.name}`).join(' ') === 'R1=区域0 R2=区域2 R3=区域3', `没按 R<n> 起名：取前 limit 个启用的按顺序编（停用的跳过）`)
+  const area6: RegionDef[] = Array.from({ length: 12 }, (_, i) => ({ name: `Area${i + 1}`, type: 'region', coords: {}, enabled: i === 5, slot: i }))
+  check(numberRegions(area6, 3).length === 0, `槽 5 的手画 Area6、配了 R1–R3：不再顶替 R1（0.19.5，温度不记到 R1 上）`)
+  check(numberRegions(area6, 6).map(x => `${x.id}=${x.def.name}`).join() === 'R6=Area6', `配到 R6 时按槽位对上 R6`)
+  const slotted: RegionDef[] = Array.from({ length: 6 }, (_, i) => ({ name: `区域${i}`, type: 'region', coords: {}, enabled: i !== 1, slot: i }))
+  check(numberRegions(slotted, 3).map(x => `${x.id}=${x.def.name}`).join(' ') === 'R1=区域0 R3=区域2', `有槽位的不按名区：按槽位编，空的槽不往前补`)
+  const mixed = slotted.map((r, i) => (i === 0 ? { ...r, name: 'R1' } : r))
+  check(numberRegions(mixed, 3).map(x => x.id).join() === 'R1', `有按 R<n> 起名的就只认按名的（规则不变）`)
   const named12 = defaultRegions(12) as RegionDef[]
   check(numberRegions(named12, 3).map(x => x.id).join(',') === 'R1,R2,R3' && numberRegions(named12, 12).length === 12, `按名对应：摄像机上有 R1–R12，limit 3 只取 R1–R3，limit 12 全取`)
   const m12 = await startRestv1Mock({ user: USER, password: PASS, regions: defaultRegions(12).map(r => ({ regionEnable: true, regionName: '', regionType: 'region' as const, region: r.coords })) })

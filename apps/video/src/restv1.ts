@@ -348,7 +348,7 @@ export class Restv1Driver implements CameraDriver {
     this.lastError = partial.length ? partial.map(p => p.error).join('；') : null
     return {
       frame: { ...RESTV1_FRAME },
-      regions: defs.map(({ id: _id, ...d }) => d),
+      regions: defs.map(({ id, ...d }) => ({ ...d, slot: id })),
       temps: {
         ts,
         glob: { max: gmax, min: gmin, maxX: pt(glob.max?.x) ?? 0, maxY: pt(glob.max?.y) ?? 0, avg: temp1(glob.avg?.value), center: temp1(glob.center?.value) },

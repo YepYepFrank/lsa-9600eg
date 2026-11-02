@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "verify:driver-reuse": "node --import @swc-node/register/esm-register src/verify-driver-reuse.ts",
     "start": "node --import @swc-node/register/esm-register src/main.ts",
     "typecheck": "tsc --noEmit",
     "video:render": "node --import @swc-node/register/esm-register src/render.ts",

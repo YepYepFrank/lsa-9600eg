@@ -12,6 +12,8 @@ export interface RegionDef {
   type: 'point' | 'line' | 'region' | 'polygon'
   coords: Record<string, unknown>
   enabled: boolean
+  /** 摄像机上的槽位（restv1 区号 0–11）；sim 不给 */
+  slot?: number
 }
 
 export interface Measurement {
@@ -45,12 +47,15 @@ export interface CameraDriver {
 
 /** 摄像机上的区域 → R1–R<limit>（约定 §2；与后端 @lsa/points 的 numbered 同一规则）：区域名就是 R1–R<limit> 的按名对应，
  *  否则取前 limit 个启用区域按顺序编。limit = 这面柜配了几个测温区（eg.yaml CAM 属性 regions.R<n> 的个数，1–12，缺省 3；I18）。
- *  0.8.4：limit 也可以给配的区号清单（@lsa-eg/config camRegionIds，区号可以有空缺，如 R1、R3）—— 按名只认清单里的，不按名时依次编成清单里的号 */
+ *  0.8.4：limit 也可以给配的区号清单（@lsa-eg/config camRegionIds，区号可以有空缺，如 R1、R3）—— 按名只认清单里的，不按名时依次编成清单里的号。
+ *  0.19.5：驱动给了槽位（restv1）时不按名的一律按槽位编（区号 = 槽位 + 1，写摄像机也是这个对应），不在清单里的不要 ——
+ *  以前按顺序编，手画在槽 5 的 Area6 会显示成 R1、温度记到 R1 上，而写 R1 写的是槽 0 */
 export function numberRegions(regions: RegionDef[], limit: number | string[]): { id: string; def: RegionDef }[] {
   const ids = Array.isArray(limit) ? limit : Array.from({ length: limit }, (_, i) => `R${i + 1}`)
   const enabled = regions.filter(r => r.enabled)
   const byName = enabled.filter(r => ids.includes(r.name))
   if (byName.length) return byName.map(r => ({ id: r.name, def: r }))
+  if (enabled.length && enabled.every(r => r.slot !== undefined)) return enabled.map(r => ({ id: `R${r.slot! + 1}`, def: r })).filter(x => ids.includes(x.id))
   return enabled.slice(0, ids.length).map((r, i) => ({ id: ids[i]!, def: r }))
 }
 
