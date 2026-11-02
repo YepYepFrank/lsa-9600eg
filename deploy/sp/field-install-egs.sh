@@ -199,6 +199,8 @@ if [ "$MODE" != readdress ]; then
   JOINKEY_B64="$(printf '%s' "$JOINKEY" | base64 -w0)"
 fi
 
+[ -f "$SP/camera-site.yaml" ] || [ "$ON_SP" != 1 ] || echo "！ 没有 $SP/camera-site.yaml（站点摄像机账号）：后面 join-egs.sh 接入时推不了账号，要逐台到本地页填"
+
 # ---------- 单实例（协调审 #73-4）：同一个状态目录同时只跑一个；Ctrl-C 后旧的后台没停干净时再 --resume 会两个一起往同一个远端文件 cat >> ----------
 exec 9> "$SD/.lock"
 if command -v flock >/dev/null; then

@@ -103,7 +103,7 @@ async function grab(ch: 'visible' | 'ir') {
 }
 
 // 接入配置
-const form = reactive({ driver: 'rtsp', restv1: '', restUser: '', restPassword: '', onvif: '', user: '', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } })
+const form = reactive({ driver: 'restv1', restv1: '', restUser: '', restPassword: '', onvif: '', user: '', password: '', rtsp: { visible: '', thermal: '', visibleSub: '', thermalSub: '' } })
 const DRIVERS = [
   ['restv1', 'restv1（真机：测温、报警、抓拍、流地址）'],
   ['onvif', 'onvif（只有视频，ONVIF 查流地址）'],

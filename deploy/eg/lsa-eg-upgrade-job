@@ -45,6 +45,7 @@ if [ "$(sget kind)" = config ]; then
   restore() {  # 换回旧配置再跑一次 install.sh
     sset reason "$1"
     phase rollback "$1"
+    if [ -f "$B/camera-site.yaml" ]; then cp -p "$B/camera-site.yaml" "$EG/config/camera-site.yaml"; elif [ -f "$D/camera-site.yaml" ]; then rm -f "$EG/config/camera-site.yaml"; fi
     if [ "$had" = 1 ]; then cp -p "$B/eg.yaml" "$EG/config/eg.yaml"; [ -f "$B/sp-ca.pem" ] && cp -p "$B/sp-ca.pem" "$EG/config/sp-ca.pem"
     else rm -f "$EG/config/eg.yaml" "$EG/config/sp-ca.pem"; [ -f "$B/sp-ca.pem" ] && cp -p "$B/sp-ca.pem" "$EG/config/sp-ca.pem"; fi
     if (cd "$EG" && timeout "$INSTALL_TIMEOUT" bash install.sh < /dev/null); then
@@ -61,12 +62,14 @@ if [ "$(sget kind)" = config ]; then
   mkdir -p "$B" && chmod 700 "$B"
   [ -f "$EG/config/eg.yaml" ] && { cp -p "$EG/config/eg.yaml" "$B/"; had=1; }
   [ -f "$EG/config/sp-ca.pem" ] && cp -p "$EG/config/sp-ca.pem" "$B/"
+  [ -f "$EG/config/camera-site.yaml" ] && cp -p "$EG/config/camera-site.yaml" "$B/"
   echo "旧配置备份在 $B（$([ "$had" = 1 ] && echo "单元 $FROM" || echo '原来待接入')）"
   # 备份里有令牌：只留最近 3 份
   ls -1dt "$EG"/config/.join-backup-* 2>/dev/null | tail -n +4 | xargs -r rm -rf
   phase apply
   install -m 600 "$D/eg.yaml" "$EG/config/eg.yaml"
   [ -f "$D/sp-ca.pem" ] && install -m 600 "$D/sp-ca.pem" "$EG/config/sp-ca.pem"
+  [ -f "$D/camera-site.yaml" ] && install -m 600 "$D/camera-site.yaml" "$EG/config/camera-site.yaml"
   t0=$(date +%s)
   (cd "$EG" && timeout "$INSTALL_TIMEOUT" bash install.sh < /dev/null)
   rc=$?

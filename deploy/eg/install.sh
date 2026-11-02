@@ -1064,6 +1064,9 @@ if [ ! -f /etc/systemd/journald.conf.d/lsa-eg.conf ]; then
   systemctl restart systemd-journald || true
 fi
 
+# 摄像机口令在这两个文件里：老版本写的 local.yaml 是 644，升级时收紧（0.19.5）
+chmod 600 config/local.yaml config/camera-site.yaml 2>/dev/null || true
+
 # ---------- 2. 版本切换：上一次装好的留作回退 ----------
 VERSION="$(cat VERSION 2>/dev/null || echo latest)"
 if [ -f .installed/VERSION ] && [ "$(cat .installed/VERSION)" != "$VERSION" ]; then
