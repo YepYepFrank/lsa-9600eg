@@ -17,7 +17,7 @@ import mqtt, { type MqttClient } from 'mqtt'
 import { BUS_TOPIC, CAM_REGIONS_FILE, camRegionIds, loadConfig, type EgConfig } from '@lsa-eg/config'
 import { MqttKeeper, mqttKeepOptions, refusedOf } from '@lsa-eg/config/mqtt-keep'
 import { fetchAuth } from './digest.js'
-import { driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
+import { driverKey, driverOf, type CameraDriver, type Measurement, type StreamInfo } from './drivers.js'
 import { numberRegions, type DriverError } from './driver-base.js'
 import { Restv1Driver } from './restv1.js'
 import { CHANNELS, maskUri, mtxPaths, pathOf, renderMtxConfig, withCreds, type MtxPath } from './mtx.js'
@@ -72,6 +72,8 @@ export class VideoService {
   /** 上一次发出去的来源质量码与错误类别（JSON），失败期间定时重发 */
   private srcQ: { q: string; err: string; at: number } = { q: '{}', err: '', at: 0 }
   private lastTemps: Record<string, number> = {}
+  /** 当前驱动实例对应的摄像机配置（driverKey），变了才换实例 */
+  private driverCfg = ''
   private regions: RegionMeta[] = []
   private regionsVer = ''
   private publishedVer = ''
@@ -108,9 +110,12 @@ export class VideoService {
       log: (level, msg) => this.log[level](`本机总线 ${msg}`),
     })
     this.keeper.start()
+    this.refreshCamRegions()
     await this.refresh()
     this.timers.push(setInterval(() => void this.refresh(), STREAMS_MS))
     this.timers.push(setInterval(() => void this.probe(), PROBE_MS))
+    // 0.19.5：测温区配置单独看，不跟测温绑 —— 摄像机测温失败、或驱动不测温时子站网页改的部位名和个数照样生效
+    this.timers.push(setInterval(() => this.refreshCamRegions(), 1000))
     // 每秒看一次，到了驱动的轮询间隔才真测（sim 2 s、restv1 1 s；本地页换了驱动也跟着变）
     this.timers.push(setInterval(() => void this.measureOnce(), 1000))
     this.timers.push(setInterval(() => void this.recording.trimForDisk().catch(e => this.log.warn(`按水位清录像失败：${(e as Error).message}`)), 5 * 60_000))
@@ -138,7 +143,12 @@ export class VideoService {
     for (const c of CHANNELS) if (manual[c.key]) next[c.key] = { uri: withCreds(manual[c.key]!, cam.user, cam.password), snapshot: null, from: 'manual' }
 
     try {
-      this.driver = driverOf(this.cfg)
+      // 0.19.5：摄像机配置没变就留着原来的驱动实例和令牌（restv1 没有退出登录，每 10 分钟 new 一个会多占一个令牌）
+      const key = driverKey(this.cfg)
+      if (!this.driver || key !== this.driverCfg) {
+        this.driver = driverOf(this.cfg)
+        this.driverCfg = key
+      }
       if (CHANNELS.some(c => !next[c.key])) {
         const r = await this.driver.streams()
         for (const c of CHANNELS) {
@@ -209,7 +219,6 @@ export class VideoService {
       if (!partialText && this.measure.partial.length) this.log.log('测温接口恢复正常')
       if (this.measure.error) this.log.log('测温恢复')
       this.measure = { ok: true, error: null, code: null, partial, at: Date.now(), count: this.measure.count + 1 }
-      this.refreshCamRegions()
       this.takeRegions(m)
       // 驱动轮询得比上报快（restv1 每秒）：温度量仍按 2 s 发（点目录 fast 档），取最新一次
       if (m.temps && Date.now() - this.tempsPubAt >= MEASURE_MS - 100) {

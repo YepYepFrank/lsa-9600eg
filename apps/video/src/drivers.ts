@@ -66,6 +66,12 @@ class RtspDriver implements CameraDriver {
   }
 }
 
+/** 决定驱动实例的那些摄像机配置：一样就不用换实例。手填的 RTSP 地址不进驱动，不算 */
+export function driverKey(cfg: EgConfig): string {
+  const { rtsp: _rtsp, ...cam } = cfg.local.camera
+  return JSON.stringify(cam)
+}
+
 /** restv1 接口用的账号：restUser 填了用它（真机接口与 RTSP 两套账号），没填与取流账号相同 */
 export function restv1Opts(cam: EgConfig['local']['camera']) {
   return cam.restUser ? { base: cam.restv1, user: cam.restUser, password: cam.restPassword } : { base: cam.restv1, user: cam.user, password: cam.password }

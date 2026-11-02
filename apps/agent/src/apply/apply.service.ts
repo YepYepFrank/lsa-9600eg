@@ -183,6 +183,8 @@ export class ApplyService {
   private swept = false
   private sweptResolve: () => void = () => undefined
   private readonly sweptP = new Promise<void>(r => (this.sweptResolve = r))
+  /** 这次下发的测温区要重启 agent 才生效：回执之后重启（不管本地 TB 就没就绪） */
+  private camRestart = false
   /** 调试（EG_DEBUG）：假装本地 TB 没就绪，测 PENDING → 自动应用 */
   debugTbDown = false
 
@@ -206,7 +208,8 @@ export class ApplyService {
     this.meters.set(this.applied?.meters ?? null)
     this.arc.setThresholds(this.applied?.thresholds)
     try {
-      if (ensureCamRegionsFile(cfg, this.applied?.camRegions)) this.log.warn('cam-regions.json 跟已生效的配置对不上，已按已生效的补写')
+      // 有排着的配置时不按已生效的改回去：排队那份的测温区已经写了（doApply），重启后改回去再应用又要重启
+      if (!existsSync(this.pendingFile) && ensureCamRegionsFile(cfg, this.applied?.camRegions)) this.log.warn('cam-regions.json 跟已生效的配置对不上，已按已生效的补写')
     } catch (e) {
       this.log.warn(`cam-regions.json 补写失败：${(e as Error).message}`)
     }
@@ -273,7 +276,10 @@ export class ApplyService {
   private async settle(body: unknown, who: { user: string; name: string; ip: string }, retry: boolean): Promise<ApplyReceipt> {
     // 重试期间来了新的下发：旧的作废
     if (retry && this.pending?.body !== body) return { version: '', status: 'FAILED', error: '已被新的下发顶替', errorCode: 'INTERNAL' }
-    const r = await this.doApply(body, who, retry)
+    const r = await this.doApply(body, who, retry).finally(() => {
+      if (this.camRestart) this.restartSoon()
+      this.camRestart = false
+    })
     if (r.status !== 'PENDING') {
       if (this.pending) this.setPending(null)
       return r
@@ -316,6 +322,17 @@ export class ApplyService {
     }
     if (!this.tb.available) return fail('eg.yaml 里没有本地 TB 账号，写不了设备配置', 'LOCAL_NOT_CONFIGURED')
 
+    // 测温区跟本地 TB 无关，摄像机这时已经写好了：0.19.5 起放在读写 TB 之前，本地 TB 没就绪（PENDING）时部位名和个数也马上生效
+    let cam: { restart: boolean; text: string | null } = { restart: false, text: null }
+    try {
+      cam = applyCamRegions(this.cfg, input.camRegions)
+      if (cam.text) this.log.log(cam.text)
+      this.camRestart = cam.restart
+    } catch (e) {
+      cam = { restart: false, text: `测温区配置写不进（${(e as Error).message}），照旧` }
+      this.log.warn(cam.text!)
+    }
+
     // 生成新规则（先全部算好再写，阈值缺项等在这一步就报出来）
     let profiles: TbProfile[]
     const plan: { before: TbProfile; after: TbProfile }[] = []
@@ -348,14 +365,6 @@ export class ApplyService {
     this.caps.set(input.caps, input.devComm, input.gas)
     this.meters.set(input.meters)
     this.arc.setThresholds(input.thresholds)
-    let cam: { restart: boolean; text: string | null } = { restart: false, text: null }
-    try {
-      cam = applyCamRegions(this.cfg, input.camRegions)
-      if (cam.text) this.log.log(cam.text)
-    } catch (e) {
-      cam = { restart: false, text: `测温区配置写不进（${(e as Error).message}），照旧` }
-      this.log.warn(cam.text!)
-    }
     // 规则停用 / 类型改名后，没有规则来清的活动告警：清掉
     const typesOf = (ps: TbProfile[]) => new Set(ps.flatMap(x => (x.profileData.alarms ?? []).map(a => a.alarmType)))
     const before = typesOf(profiles)
@@ -368,7 +377,6 @@ export class ApplyService {
     const detail = `改了 ${plan.length} 个设备配置${plan.length ? `（${plan.map(x => x.before.name).join('、')}）` : ''}${off.length ? `；停用 ${off.join('、')}` : ''}${input.ignored.length ? `；不认识、跳过 ${input.ignored.join('、')}` : ''}${gone.length ? `；不再有规则的告警类型 ${gone.join('、')}，清掉活动告警 ${cleared} 条` : ''}${cam.text ? `；${cam.text}` : ''}`
     this.log.log(`版本 ${input.version} 已生效：${detail}`)
     this.audit.write({ user: who.user, name: who.name, via: 'sp', ip: who.ip, action: retry ? '应用子站配置（排队后自动）' : '应用子站配置', target: input.version, ok: true, detail })
-    if (cam.restart) this.restartSoon()
     return { version: input.version, status: 'APPLIED', changed: plan.length, ...ign, ...rid, meters: this.meters.effective() }
   }
 
