@@ -190,7 +190,8 @@ writeFileSync(
 
 整个系统就这一个文件，子站主机和各柜 EG 都用它，装的时候选角色。目标机：x86_64 + Ubuntu Server 24.04（子站主机、EG 都是；别的系统装不了，一开头就会报错，先按部署手册改装）。
 
-  子站主机：sudo bash ${NAME}.run --role sp            （本机站内 IP 自动取，或 --ip 指定；口令随机生成，见 /opt/lsa9600sp/初始账号口令.txt）
+  子站主机：sudo bash ${NAME}.run --role sp --model <本站模型.yaml>   （本机站内 IP 自动取，或 --ip 指定；口令随机生成，见 /opt/lsa9600sp/初始账号口令.txt）
+            首次安装就给 --model（不给先用样板模型 provision，单元序号、EG 地址会排错）；安徽 S19 各站：--model sites-S19/<站>/model.yaml
 ${KIOSK ? `            连机柜双屏一起装：sudo bash ${NAME}.run --role sp --kiosk
 ` : `            （这个安装文件不带机柜双屏组件，--kiosk 会报错停下）
 `}  EG：      sudo bash ${NAME}.run --role eg --lan1 <摄像机网口>（单网口不给）

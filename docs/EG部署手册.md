@@ -163,12 +163,14 @@
 `pnpm bundle -- --sp <子站离线包目录>`（子站离线包由后端库 `scripts/pack-offline.sh --web <前端 dist>` 打；EG 发布件不给就现打）出 `dist/bundle/LSA-9600SP-<版本>-offline.run`：自解压 bash + tar，约 3.7 GB，子站主机与各柜 EG 都用它，装时选角色。负载打包前后各扫一遍，不带任何密钥 / 凭据；`SHA256SUMS` 覆盖每个文件，装前自动校验。
 
 ```bash
-sudo bash LSA-9600SP-<版本>-offline.run --role sp [--ip <站内 IP>]     # 子站：随机口令写 /opt/lsa9600sp/初始账号口令.txt
+sudo bash LSA-9600SP-<版本>-offline.run --role sp --model <本站模型.yaml> [--ip <站内 IP>]   # 子站：随机口令写 /opt/lsa9600sp/初始账号口令.txt
 sudo bash LSA-9600SP-<版本>-offline.run --role sp --kiosk             # 0.16：子站装好后接着装机柜双屏（安装文件要带 sp/kiosk/）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口>  # EG 第一轮（= 下面 §4 的 install.sh）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --lan1 <摄像机网口> --join-key '<子站给的一行>'   # 0.17.4：一键加柜，其余在子站做（§4a）
 sudo bash LSA-9600SP-<版本>-offline.run --role eg --eg-config <目录>   # 子站 provision:eg + pack-eg.sh 之后，带 eg.yaml、sp-ca.pem 起全部
 ```
+
+`--model <本站模型.yaml>`（0.19.4 之后的包）只用于 `--role sp`：原样传给子站 `scripts/up.sh --prod --model`，拷成 `tb/model.station.yaml` 再 provision（已有的不同存 `.bak-<时刻>`）。**首次安装就要给**：不给就先用包里的样板模型 provision，单元序号按样板记进 `model.site.yaml`，之后再放本站模型 EG 地址会排错（紫蓬山 0.19.4：应 `.11–.30` 排成了 `.48–.67`）。安徽 S19 各站用一键包旁边的 `sites-S19/<站>/model.yaml`，例：`sudo bash LSA-9600SP-<版本>-offline.run --role sp --model sites-S19/S19-03/model.yaml --ip 192.168.0.10`。相对路径按运行安装文件时所在的目录算；文件不在、是空的、里面没有 `cabinets:`、或包里的子站不认 `--model` 时，**装任何东西之前**就报错停下。升级时给 = 换本站模型；不给 = 沿用已装的 `tb/model.station.yaml`。
 
 `--kiosk`（0.16）只用于 `--role sp`：子站装好后调子站的 `scripts/install-kiosk.sh sp/kiosk` 装机柜双屏；安装文件里没有 `sp/kiosk/`（子站离线包打的时候没带 `--with-kiosk`；安装说明与 MANIFEST 里写着「机柜双屏 kiosk：有 / 没有」）时，**装任何东西之前**就报错停下，不会只装一半；双屏装失败时子站本身已装好，修好后重跑 `--role sp --kiosk`（幂等）。不带 `--kiosk` 行为不变。
 
