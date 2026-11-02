@@ -2,7 +2,10 @@
 # LSA-9600SP 一键安装入口（在解包目录里；通常由 .run 自解压后调用）。
 #
 #   sudo bash setup.sh                                  交互选角色
-#   sudo bash setup.sh --role sp [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--no-tb-backup] [--disable-web-upgrade | --enable-web-upgrade] [--yes]
+#   sudo bash setup.sh --role sp [--model <本站模型.yaml>] [--ip <本机站内 IP>] [--ntp <站内时钟源>] [--kiosk] [--no-tb-backup] [--disable-web-upgrade | --enable-web-upgrade] [--yes]
+#       --model（0.19.4 之后；子站 up.sh 要认 --model，后端 #228）：本站模型原样传给子站 up.sh --prod --model（拷成 tb/model.station.yaml 再 provision；旧的不同存 .bak-<时刻>）。
+#       首次安装就要给（不给就用包里的样板模型 provision，单元序号会按样板记下来）；S19 各站用 sites-S19/<站>/model.yaml。
+#       文件不在 / 是空的 / 不像本站模型时装任何东西之前就停；只用于子站（--role eg 给了直接报错）
 #       网页升级 EG 的主机侧执行器 0.19.0 起缺省打开（0.18.2 装了但不启用）。--disable-web-upgrade 关掉并记住（以后升级照样关着），
 #       --enable-web-upgrade 重新打开（清掉记住的「关」）；子站网页入口另看扩展服务的 EXT_EGUP_ENABLED
 #       子站主机：Docker（没有就装离线包）→ 导入镜像 → /opt/lsa9600sp → 首次自动生成 docker/.env（随机口令、
@@ -21,7 +24,10 @@
 # 只支持 x86_64 + Ubuntu Server 24.04（子站主机、EG 都是）：开头就查，别的系统直接报错退出（EG 0.5.x；以前只在要装离线 Docker 时才查）。
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 相对路径的参数（--model、--eg-config、--sp-key）按调用时的目录算：下面 cd 到解包目录（.run 解在 /var/tmp 下）之前先记住
+CALLER_PWD="$PWD"
 cd "$HERE"
+abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$CALLER_PWD/$1" ;; esac; }
 
 ROLE=''
 IP=''
@@ -34,6 +40,7 @@ JOINKEY=''
 NTP=''
 KIOSK=0
 NO_TB_BACKUP=0
+MODEL=''
 EGUP_ENABLE="${EGUP_ENABLE:-}"   # 0.19.0：空 = 照记住的（缺省打开）；--disable-web-upgrade = 0、--enable-web-upgrade = 1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,12 +53,14 @@ while [ $# -gt 0 ]; do
     --disable-web-upgrade) EGUP_ENABLE=0 ;;
     --lan1) LAN1="${2:?}"; shift ;;
     --force) FORCE=1 ;;
-    --sp-key) SPKEY="$(readlink -f "${2:?}" 2>/dev/null || echo "$2")"; shift ;;
+    --sp-key) SPKEY="$(readlink -f "$(abspath "${2:?}")" 2>/dev/null || abspath "$2")"; shift ;;
     --join-key) JOINKEY="${2:?--join-key 后面给子站 join-egs.sh --keygen 打印的那一行（整行加引号）}"; shift ;;
-    --eg-config) EGCFG="$(readlink -f "${2:?}")"; shift ;;
+    --eg-config) EGCFG="$(readlink -f "$(abspath "${2:?}")")"; shift ;;
+    --model) MODEL="$(abspath "${2:?--model 后面给本站模型文件（如 sites-S19/S19-03/model.yaml）}")"; shift ;;
+    --model=*) MODEL="$(abspath "${1#--model=}")" ;;
     --yes | -y) YES=1 ;;
     --keep) ;;
-    --help | -h) sed -n '2,18p' "$HERE/$(basename "$0")" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help | -h) sed -n '2,22p' "$HERE/$(basename "$0")" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "不认识的参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -138,6 +147,16 @@ fi
 if [ "$ROLE" = sp ] && [ -d /opt/lsa-eg ] && [ "$FORCE" != 1 ]; then
   die "这台是 EG（有 /opt/lsa-eg）：子站要装在子站主机上，不要用 --role sp 装在 EG 上。
   EG 升级用 --role eg。确实要在这台装子站加 --force"
+fi
+# 本站模型（--model）：同样在改系统之前查完 —— 子站 up.sh 也查，但到它那里 Docker、镜像、文件都已经动过了
+if [ -n "$MODEL" ]; then
+  [ "$ROLE" = sp ] || die '--model 只用于子站主机（--role sp）：本站模型放在子站，EG 不用'
+  [ -f "$MODEL" ] || die "--model：没有这个文件 $MODEL（相对路径按运行安装文件时的目录算）"
+  [ -s "$MODEL" ] || die "--model：$MODEL 是空文件"
+  grep -q '^cabinets:' "$MODEL" || die "--model：$MODEL 里没有 cabinets:，不像本站模型（S19 各站用 sites-S19/<站>/model.yaml）"
+  grep -q -- '--model' sp/lsa9600sp-backend/scripts/up.sh 2>/dev/null ||
+    die "这个安装文件里的子站（$(cat VERSION)）的 up.sh 不认 --model（后端 #228 之后的子站包才有）：本站模型按子站部署手册 §5 手工放 tb/model.station.yaml"
+  echo "本站模型：$MODEL（装到 tb/model.station.yaml）"
 fi
 if [ "$ROLE" = eg ] && [ -n "$LAN1" ] && [ ! -e "/sys/class/net/$LAN1" ]; then
   die "没有网口 $LAN1（本机：$(ls /sys/class/net | tr '\n' ' ')）：--lan1 给摄像机那个网口的名字（ip -br link 看）"
@@ -461,6 +480,7 @@ install_sp() {
 
   say '启动（证书 → 建库 → provision → 扩展服务、Nginx、视频）'
   local upargs=(--prod)
+  [ -n "$MODEL" ] && upargs+=(--model "$MODEL")
   if [ "$NO_TB_BACKUP" = 1 ]; then
     if grep -q 'no-tb-backup' "$SP_B/scripts/up.sh" 2>/dev/null; then upargs+=(--no-tb-backup)
     else echo '（这个子站版本的 up.sh 不认 --no-tb-backup，没传）'; fi

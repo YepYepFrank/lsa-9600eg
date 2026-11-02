@@ -2,7 +2,7 @@
 # LSA-9600SP 离线一键安装文件（自解压）。本文件 = 这段脚本 + 一个 tar 负载（scripts/bundle-all.mjs 生成）。
 #
 #   sudo bash LSA-9600SP-<版本>.run                    交互：选「子站主机」或「EG」，其余自动
-#   sudo bash LSA-9600SP-<版本>.run --role sp --yes    子站主机，不问（本机 IP 自动取缺省路由的地址，或 --ip 指定）
+#   sudo bash LSA-9600SP-<版本>.run --role sp --model <本站模型.yaml> --yes    子站主机，不问（本机 IP 自动取缺省路由的地址，或 --ip 指定）
 #   sudo bash LSA-9600SP-<版本>.run --role eg --lan1 enp2s0 [--eg-config <目录>]
 #   bash LSA-9600SP-<版本>.run --extract <目录>        只解包（不装）
 #   bash LSA-9600SP-<版本>.run --help
