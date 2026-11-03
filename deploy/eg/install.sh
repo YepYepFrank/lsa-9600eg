@@ -265,6 +265,62 @@ cam_ntp_apply() {  # $1 = LAN1 网口（空 = 没给过 --lan1）；改了 chron
   fi
   mkdir -p /etc/chrony/conf.d
   printf '# LSA-9600EG（install.sh 写）：给 LAN1 上的摄像机对时。关掉：sudo bash install.sh --cam-ntp-off\nallow %s\nlocal stratum 12\n' "$cidr" > "$CAM_NTP_CONF"
+  chmod 644 "$CAM_NTP_CONF"   # 0.9.1：umask 077 下写出来是 600（见 sp_ntp_apply 上面）
+}
+# ---------- 跟子站对时（chrony 指向 eg.yaml sp.host） ----------
+SP_NTP_SOURCES=/etc/chrony/sources.d/lsa-eg.sources
+# 0.9.1：chronyd 降成 _chrony 以后才读 sourcedir（启动加源、chronyc reload sources 都是），conf.d 是启动时 root 读的。
+# 一键加柜 / 批量升级经 lsa-eg-upgrade(-job) 跑本脚本，那里 umask 077 —— 新写的文件成 600，chronyd 读不了 sources：
+# 一个上级源都没有，只剩摄像机对时的 local stratum 12 自己报时（紫蓬山 2026-11-02 全部 EG 中招，钟快 7.8 h）。
+# 写完一律 644；> 写已有文件不改权限，老的 600 也在这里收回。
+chrony_files_readable() { local f; for f in "$SP_NTP_SOURCES" "$CAM_NTP_CONF"; do [ ! -f "$f" ] || chmod 644 "$f"; done; }
+sp_ntp_apply() {  # $1 = 子站地址；改了配置返回前不重启，调用方负责
+  mkdir -p /etc/chrony/sources.d
+  echo "server $1 iburst prefer" > "$SP_NTP_SOURCES"
+  chrony_files_readable
+  # X26A 没有 RTC 电池：断电后开机时钟是错的，子站又可能比 EG 晚起来 —— 缺省的 makestep 1 3 只在头 3 次更新里跳，
+  # 之后差几分钟也只慢慢追（几小时），这期间子站下发配置 / 单点登录的票据会因时钟差被拒。改成任何时候差 > 1 s 就跳。
+  # 要改 chrony.conf 本身那一行：conf.d 在文件开头被引入，后面的 makestep 1 3 会盖掉 conf.d 里写的（Ubuntu 24.04 实测）
+  # chrony 不认行尾注释（「Too many arguments for makestep」，chronyd 起不来 —— 无 AVX 样机上踩到），说明写在上一行
+  if grep -q '^makestep ' /etc/chrony/chrony.conf; then
+    sed -i 's/^makestep .*/makestep 1 -1/' /etc/chrony/chrony.conf
+  else
+    echo 'makestep 1 -1' >> /etc/chrony/chrony.conf
+  fi
+  grep -q '^# LSA-9600EG makestep' /etc/chrony/chrony.conf ||
+    sed -i '/^makestep /i # LSA-9600EG makestep：install.sh 改为 1 -1（没有 RTC 电池，差 > 1 s 随时跳到子站时间）' /etc/chrony/chrony.conf
+}
+# --status：跟子站对上了没有。没有上级源 / 参考的是本机钟（7F7F0101 = local stratum）/ 文件 chronyd 读不了都给 ！
+sp_ntp_status() {
+  [ -d /etc/chrony ] || return 0
+  if [ ! -f "$SP_NTP_SOURCES" ]; then
+    [ -f config/eg.yaml ] && echo '子站对时：！ 没有 /etc/chrony/sources.d/lsa-eg.sources —— sudo bash install.sh 重写'
+    return 0
+  fi
+  local sp f m bad='' src ref
+  sp="$(awk '$1=="server"{print $2; exit}' "$SP_NTP_SOURCES")"
+  for f in "$SP_NTP_SOURCES" "$CAM_NTP_CONF"; do
+    [ -f "$f" ] || continue
+    m="$(stat -c %a "$f" 2>/dev/null || echo 644)"
+    (( (8#$m & 4) != 0 )) || bad+="$f（$m）"
+  done
+  if ! command -v chronyc >/dev/null 2>&1; then echo "子站对时：$sp（没有 chronyc，查不了状态）"; return 0; fi
+  # chronyc -n sources 的源行：第一列两个字符（^* ^? =+ …），第二列地址；表头「MS Name…」「====」不算
+  src="$(chronyc -n sources 2>/dev/null | awk '$1 ~ /^[\^=#][*+?x~-]$/ {print $1, $2}' || true)"
+  ref="$(chronyc -n tracking 2>/dev/null | awk -F': *' '/^Reference ID/{print $2; exit}' || true)"
+  local mine loc=''
+  mine="$(awk -v h="$sp" '$2 == h {print $1; exit}' <<<"$src")"
+  [[ "$ref" == 7F7F0101* ]] && loc='，在拿本机钟报时（LOCAL）'
+  if [ "$mine" = '^*' ]; then
+    echo "子站对时：跟 $sp（chrony 已选中）"
+  elif [ -z "$src" ]; then
+    echo "子站对时：！ chrony 一个上级源都没有（应有 $sp）$loc"
+  elif [ -z "$mine" ]; then
+    echo "子站对时：！ chrony 的源里没有 $sp（有 $(awk '{print $2}' <<<"$src" | tr '\n' ' ')）$loc"
+  else
+    echo "子站对时：！ 还没对上 $sp（chrony 状态 $mine）$loc"
+  fi
+  [ -z "$bad" ] || echo "  ！ chronyd（_chrony 用户）读不了：$bad —— sudo bash install.sh 会改成 644，或 sudo chmod 644 后 sudo chronyc reload sources"
 }
 # 0.19.0 改了摄像机地址自动同步放行：对时开着、防火墙开着（有 lsa-eg-fw 单元）时装 lsa-eg-camntp.path / .service 盯 config/local.yaml，
 # 否则撤掉。内容没变不重写、已启用不重复 enable（--cam-ntp-sync 里 fw_apply 又会走到这里）
@@ -575,6 +631,7 @@ status() {
   bk="$(ls -1t "$TB_BACKUPS"/tb-*.dump 2>/dev/null | head -1 || true)"
   [ -n "$bk" ] && echo "本地库备份（补丁升级前）：$bk —— 回到旧版 TB 用 --rollback --restore-tb"
   fw_status
+  sp_ntp_status
   cam_ntp_status
   wd_status
   conv_status
@@ -1233,19 +1290,7 @@ fi
 # 对时：chrony 跟子站主机（eg.yaml sp.host）
 sp_host="$(awk '/^sp:/{f=1;next} f&&/^[^ ]/{f=0} f&&$1=="host:"{gsub(/["'\'']/,"",$2);print $2;exit}' config/eg.yaml)"
 if [ -n "$sp_host" ] && [ -d /etc/chrony ]; then
-  mkdir -p /etc/chrony/sources.d
-  echo "server $sp_host iburst prefer" > /etc/chrony/sources.d/lsa-eg.sources
-  # X26A 没有 RTC 电池：断电后开机时钟是错的，子站又可能比 EG 晚起来 —— 缺省的 makestep 1 3 只在头 3 次更新里跳，
-  # 之后差几分钟也只慢慢追（几小时），这期间子站下发配置 / 单点登录的票据会因时钟差被拒。改成任何时候差 > 1 s 就跳。
-  # 要改 chrony.conf 本身那一行：conf.d 在文件开头被引入，后面的 makestep 1 3 会盖掉 conf.d 里写的（Ubuntu 24.04 实测）
-  # chrony 不认行尾注释（「Too many arguments for makestep」，chronyd 起不来 —— 无 AVX 样机上踩到），说明写在上一行
-  if grep -q '^makestep ' /etc/chrony/chrony.conf; then
-    sed -i 's/^makestep .*/makestep 1 -1/' /etc/chrony/chrony.conf
-  else
-    echo 'makestep 1 -1' >> /etc/chrony/chrony.conf
-  fi
-  grep -q '^# LSA-9600EG makestep' /etc/chrony/chrony.conf ||
-    sed -i '/^makestep /i # LSA-9600EG makestep：install.sh 改为 1 -1（没有 RTC 电池，差 > 1 s 随时跳到子站时间）' /etc/chrony/chrony.conf
+  sp_ntp_apply "$sp_host"
   cam_ntp_apply "$lan1_now"
   systemctl enable chrony >/dev/null 2>&1 || true
   systemctl restart chrony >/dev/null 2>&1 || true
