@@ -27,6 +27,8 @@
 #   --cam-ntp-off 关掉并记住，--cam-ntp-on 重新打开；--status 显示它。摄像机那边把 NTP 服务器设成 EG 的 LAN1 地址
 #   0.19.0：本地页改了摄像机地址（config/local.yaml）自动同步放行 —— 宿主机 systemd 单元 lsa-eg-camntp.path 盯 local.yaml，
 #   变了跑 install.sh --cam-ntp-sync（只在放行跟当前地址对不上时重写防火墙，记 /var/log/lsa-eg-camntp.log）
+# 公网 pool（0.9.1）：接了子站（有 lsa-eg.sources）时把 chrony 里 Ubuntu 缺省的公网源注释掉（站内没外网）；
+#   --ntp-pools-on 恢复并记住（站里真能上外网、想留着做备用），--ntp-pools-off 回到缺省（注释掉）
 # 摄像机缺省测温区（0.8.0，restv1 真机）：--cam-regions-default [--force --yes] [--cam-distance <米>] [--cam-set-global] 给没画测温区的摄像机写 R1–R3
 #   （左 / 中 / 右三竖条、辐射率 0.95、距离缺省 2 m）；摄像机上已有启用的测温区就拒绝；--force 先列出会覆盖什么，再加 --yes 才覆盖 R1–R3。
 #   0.8.1：写法照摄像机读回的来（真机 rectangle、区域没有本地参数）；区域没有本地参数时辐射率 / 距离是全局的，--cam-set-global 才改；
@@ -80,6 +82,8 @@ while [ $# -gt 0 ]; do
     --cam-ntp-off) MODE='cam-ntp-off' ;;
     --cam-ntp-on) MODE='cam-ntp-on' ;;
     --cam-ntp-sync) MODE='cam-ntp-sync' ;;
+    --ntp-pools-on) MODE='ntp-pools-on' ;;
+    --ntp-pools-off) MODE='ntp-pools-off' ;;
     --cam-regions-default) MODE='cam-regions-default' ;;
     --cam-regions-probe) MODE='cam-regions-probe' ;;
     --cam-region-disable) CAMREG_IDS="${2:?--cam-region-disable 后面给区号（0–11，逗号分开，如 5 或 5,6）}"; MODE='cam-region-disable'; shift ;;
@@ -278,6 +282,7 @@ sp_ntp_apply() {  # $1 = 子站地址；改了配置返回前不重启，调用�
   mkdir -p /etc/chrony/sources.d
   echo "server $1 iburst prefer" > "$SP_NTP_SOURCES"
   chrony_files_readable
+  ntp_pools_apply
   # X26A 没有 RTC 电池：断电后开机时钟是错的，子站又可能比 EG 晚起来 —— 缺省的 makestep 1 3 只在头 3 次更新里跳，
   # 之后差几分钟也只慢慢追（几小时），这期间子站下发配置 / 单点登录的票据会因时钟差被拒。改成任何时候差 > 1 s 就跳。
   # 要改 chrony.conf 本身那一行：conf.d 在文件开头被引入，后面的 makestep 1 3 会盖掉 conf.d 里写的（Ubuntu 24.04 实测）
@@ -289,6 +294,36 @@ sp_ntp_apply() {  # $1 = 子站地址；改了配置返回前不重启，调用�
   fi
   grep -q '^# LSA-9600EG makestep' /etc/chrony/chrony.conf ||
     sed -i '/^makestep /i # LSA-9600EG makestep：install.sh 改为 1 -1（没有 RTC 电池，差 > 1 s 随时跳到子站时间）' /etc/chrony/chrony.conf
+}
+# 公网 pool（0.9.1，同子站 setup-ntp.sh 0.19.2 #200）：有子站源时把 Ubuntu 缺省的公网源注释掉 —— 站内没有外网，
+# chrony 只会一直往外解析（紫蓬山 chronyd -p 里 pool ntp.ubuntu.com / 0–2.ubuntu.pool.ntp.org 4 行）。
+# 只认 pool 行、指向 *.pool.ntp.org / ntp.ubuntu.com 的 server 行，行首加记号；站里自己加的 server 行、我们的 lsa-eg.sources 不动。
+# .env EG_NTP_POOLS=on（--ntp-pools-on）恢复并记住；记号开头是 #，重跑不会再匹配（幂等）。
+NTP_POOL_OFF='#LSA-9600EG-pool-off# '
+NTP_POOL_RE='^[[:space:]]*(pool[[:space:]]|server[[:space:]]+[^[:space:]]*(pool\.ntp\.org|ntp\.ubuntu\.com))'
+ntp_pool_files() {
+  local f
+  [ ! -f /etc/chrony/chrony.conf ] || echo /etc/chrony/chrony.conf
+  for f in /etc/chrony/sources.d/*.sources; do [ -f "$f" ] && [ "$f" != "$SP_NTP_SOURCES" ] && echo "$f"; done
+  return 0
+}
+ntp_pools_apply() {  # 打印改了几行（0 不打印）；改了配置不重启，调用方负责
+  local f c n=0
+  if grep -q '^EG_NTP_POOLS=on' .env 2>/dev/null; then
+    while read -r f; do
+      c="$(grep -c "^$NTP_POOL_OFF" "$f" || true)"
+      [ "$c" = 0 ] || { sed -i "s/^$NTP_POOL_OFF//" "$f"; n=$((n + c)); }
+    done < <(ntp_pool_files)
+    [ "$n" = 0 ] || echo "（公网 pool：恢复 $n 行）"
+    return 0
+  fi
+  [ -f "$SP_NTP_SOURCES" ] || return 0   # 没有子站源（待接入）时不动：那时公网源是仅有的源
+  while read -r f; do
+    c="$(grep -Ec "$NTP_POOL_RE" "$f" || true)"
+    [ "$c" = 0 ] || { sed -Ei "/$NTP_POOL_RE/s/^/$NTP_POOL_OFF/" "$f"; n=$((n + c)); }
+  done < <(ntp_pool_files)
+  [ "$n" = 0 ] || echo "（公网 pool：站内用不上，注释掉 $n 行（行首「$NTP_POOL_OFF」）；要留着：sudo bash install.sh --ntp-pools-on）"
+  return 0
 }
 # --status：跟子站对上了没有。没有上级源 / 参考的是本机钟（7F7F0101 = local stratum）/ 文件 chronyd 读不了都给 ！
 sp_ntp_status() {
@@ -948,6 +983,16 @@ if [ "$MODE" = 'cam-ntp-off' ] || [ "$MODE" = 'cam-ntp-on' ]; then
   # 防火墙规则跟着重写（开：按 local.yaml 现在的摄像机地址放行；关：去掉）
   if [ -n "$nic" ] && ! grep -q '^EG_LAN1_FW=off' .env; then fw_apply "$nic" >/dev/null; fi
   cam_ntp_status
+  exit 0
+fi
+if [ "$MODE" = 'ntp-pools-off' ] || [ "$MODE" = 'ntp-pools-on' ]; then
+  env_set EG_NTP_POOLS "${MODE#ntp-pools-}"
+  [ -d /etc/chrony ] || { echo '没有 /etc/chrony（没装 chrony）'; exit 1; }
+  r="$(ntp_pools_apply)"
+  [ -z "$r" ] || systemctl restart chrony >/dev/null 2>&1 || true
+  echo "${r:-（公网 pool：没有要改的）}"
+  [ "$MODE" = 'ntp-pools-on' ] && echo '已记住：以后重跑 install.sh 也不再注释（回到缺省：sudo bash install.sh --ntp-pools-off）'
+  sp_ntp_status
   exit 0
 fi
 # 部署文件（升级时整个发布件覆盖过来的那些）

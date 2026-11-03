@@ -19,8 +19,8 @@ printf '#!/bin/sh\necho "3: eth1    inet 192.168.1.1/24 brd x scope global eth1"
 chmod +x bin/*; export PATH="$W/bin:$PATH"
 : > .env
 SRC=/d/eg/install.sh
-grep -E '^(CAM_NTP_CONF|SP_NTP_SOURCES)=' "$SRC" > fn.sh
-for fn in cam_ntp_on lan1_cidr cam_ntp_apply chrony_files_readable sp_ntp_apply sp_ntp_status; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
+grep -E '^(CAM_NTP_CONF|SP_NTP_SOURCES|NTP_POOL_OFF|NTP_POOL_RE)=' "$SRC" > fn.sh
+for fn in cam_ntp_on lan1_cidr cam_ntp_apply chrony_files_readable ntp_pool_files ntp_pools_apply sp_ntp_apply sp_ntp_status; do awk "/^${fn}\\(\\) \\{/,/^\\}/" "$SRC" >> fn.sh; done
 . ./fn.sh
 mode() { stat -c %a "$1"; }
 SP=192.0.2.10   # 文档用地址，永远对不上：只看 chronyd 认不认这个源
