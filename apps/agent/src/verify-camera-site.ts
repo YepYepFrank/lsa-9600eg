@@ -53,6 +53,18 @@ writeFileSync(join(b, 'local.yaml'), 'camera:\n  user: mine\n  password: own\n')
 site(b, 'user: u1\npassword: p1\nrestUser: u2\nrestPassword: p2\n')
 const c2 = loadConfig(b).local.camera
 check(c2.user === 'mine' && c2.password === 'own' && c2.restUser === 'u2' && c2.restPassword === 'p2', '本地填过取流口令：那一对不动，接口那一对照补')
+const n = fresh()
+site(n, 'user: admin\npassword: 012345\nrestUser: 9001\nrestPassword: 12345678901234567890\n')
+const c3 = loadConfig(n).local.camera
+check(c3.user === 'admin' && c3.password === '012345', '纯数字口令不加引号：照认，前导 0 不丢')
+check(c3.restUser === '9001' && c3.restPassword === '12345678901234567890', '纯数字接口账号 / 长数字口令：原样（不变成数字、不丢精度）')
+const q = fresh()
+site(q, "user: 'admin'\npassword: \"123456\"\nrestPassword: true\n")
+const c4 = loadConfig(q).local.camera
+check(c4.password === '123456' && c4.restPassword === 'true', '加引号照旧；true 之类也当口令原文')
+const z = fresh()
+site(z, 'user: admin\npassword:\n')
+check(loadConfig(z).local.camera.password === '', '口令空着：不补')
 const e = fresh()
 site(e, '{ 坏的: [')
 check(loadConfig(e).local.camera.password === '', '站点文件坏了：不补、不报错')
