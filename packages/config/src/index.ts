@@ -244,11 +244,12 @@ export function configDir(): string {
 /** 站点摄像机账号（0.19.5）：子站 /opt/lsa9600sp/camera-site.yaml（600）经 join-egs.sh 的配置包推到配置目录这个文件，账号不进仓库和通用包 */
 export const CAMERA_SITE_FILE = 'camera-site.yaml'
 
-/** 只补 local.yaml 里没填的：口令空着才取站点的那一对账号口令，现场在本地页填过的不动。文件没有或坏了就不补（不打内容） */
+/** 只补 local.yaml 里没填的：口令空着才取站点的那一对账号口令，现场在本地页填过的不动。文件没有或坏了就不补（不打内容）。
+ *  按 failsafe 读（大柏 11-06）：值一律当字符串，纯数字口令不加引号也认，`012345` 的前导 0、长数字都原样保留 */
 export function fillCameraSite(local: LocalFile, dir: string): void {
   let s: Partial<Record<'user' | 'password' | 'restUser' | 'restPassword', unknown>>
   try {
-    s = (parse(readFileSync(resolve(dir, CAMERA_SITE_FILE), 'utf8')) ?? {}) as typeof s
+    s = (parse(readFileSync(resolve(dir, CAMERA_SITE_FILE), 'utf8'), { schema: 'failsafe' }) ?? {}) as typeof s
   } catch {
     return
   }
